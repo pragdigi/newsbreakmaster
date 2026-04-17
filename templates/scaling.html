@@ -1,118 +1,260 @@
 {% extends "base.html" %}
 {% block title %}Scaling — NewsBreak{% endblock %}
 {% block content %}
-<h1>Scaling & performance</h1>
-<div class="nb-toolbar">
-  <label>Ad account
-    <select id="account-select" class="nb-input">
-      <option value="">—</option>
-      {% for id, name in accounts.items() %}
-      <option value="{{ id }}" {% if request.args.get('account_id') == id %}selected{% endif %}>{{ name }}</option>
-      {% endfor %}
-    </select>
-  </label>
-  <label>Level
-    <select id="level-select" class="nb-input">
-      <option value="ad">Ad</option>
-      <option value="ad_set">Ad set</option>
-      <option value="campaign">Campaign</option>
-    </select>
-  </label>
-  <label>Days
-    <input type="number" id="days-input" class="nb-input" value="7" min="1" max="90">
-  </label>
-  <button type="button" class="nb-btn nb-btn-primary" id="btn-load">Load report</button>
+<div class="nb-dash-header">
+  <div>
+    <h1>Scaling & performance</h1>
+    <p class="nb-muted">Per-ad / per-ad-set / per-campaign performance with one-click pause &amp; budget tweaks.</p>
+  </div>
 </div>
 
-<div id="report-error" class="nb-error" style="display:none;"></div>
-<table class="nb-table" id="report-table">
-  <thead id="report-head"></thead>
-  <tbody id="report-body"></tbody>
-</table>
+<div class="nb-card" style="margin-bottom:16px;">
+  <div class="nb-toolbar" style="margin-bottom:0;">
+    <label style="min-width:220px; flex:1 1 240px;">
+      <span class="nb-label">Ad account</span>
+      <select id="account-select" class="nb-select">
+        <option value="">— select an account —</option>
+        {% for id, name in accounts.items() %}
+        <option value="{{ id }}" {% if request.args.get('account_id') == id %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label style="width:140px;">
+      <span class="nb-label">Level</span>
+      <select id="level-select" class="nb-select">
+        <option value="ad">Ad</option>
+        <option value="ad_set">Ad set</option>
+        <option value="campaign">Campaign</option>
+      </select>
+    </label>
+    <label style="width:100px;">
+      <span class="nb-label">Days</span>
+      <input type="number" id="days-input" class="nb-input" value="7" min="1" max="90">
+    </label>
+    <button type="button" class="nb-btn nb-btn-primary" id="btn-load">Load report</button>
+  </div>
+</div>
+
+<div class="nb-kpi-grid" id="kpi-grid" hidden>
+  <div class="nb-kpi"><div class="nb-kpi-label">Rows</div><div class="nb-kpi-value" id="kpi-rows">—</div></div>
+  <div class="nb-kpi"><div class="nb-kpi-label">Spend</div><div class="nb-kpi-value" id="kpi-spend">—</div></div>
+  <div class="nb-kpi"><div class="nb-kpi-label">Conversions</div><div class="nb-kpi-value" id="kpi-conv">—</div></div>
+  <div class="nb-kpi"><div class="nb-kpi-label">Blended CPA</div><div class="nb-kpi-value" id="kpi-cpa">—</div></div>
+</div>
+
+<div id="report-error" class="nb-alert nb-alert-danger" style="display:none; margin-bottom:12px;"></div>
+<div id="report-empty" class="nb-empty" hidden>
+  <h3>No rows</h3>
+  <p class="nb-muted">Try a wider date range, or confirm the account has delivery in the selected window.</p>
+</div>
+
+<div class="nb-card" id="report-card" hidden>
+  <div class="nb-table-wrap">
+    <table class="nb-table nb-table-scaling">
+      <thead>
+        <tr>
+          <th style="min-width:200px;">Name</th>
+          <th class="nb-col-num">Spend</th>
+          <th class="nb-col-num">Impr</th>
+          <th class="nb-col-num">Clicks</th>
+          <th class="nb-col-num">CTR</th>
+          <th class="nb-col-num">Conv</th>
+          <th class="nb-col-num">CPA</th>
+          <th class="nb-col-num">ROAS</th>
+          <th style="width:1%;">Status</th>
+          <th style="width:1%; text-align:right;">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="report-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<style>
+  .nb-table-wrap { overflow-x: auto; }
+  .nb-table-scaling { table-layout: auto; font-size: 13px; }
+  .nb-table-scaling th, .nb-table-scaling td { padding: 8px 10px; }
+  .nb-table-scaling .nb-col-num { text-align: right; white-space: nowrap; }
+  .nb-table-scaling td.cell-name {
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .nb-table-scaling td.cell-name .sub {
+    display: block;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .nb-table-scaling td.cell-actions { white-space: nowrap; text-align: right; }
+  .nb-table-scaling td.cell-actions .nb-btn { margin-left: 4px; }
+</style>
 
 <script>
-(function() {
+(function () {
   const accountSelect = document.getElementById('account-select');
-  const levelSelect = document.getElementById('level-select');
-  const daysInput = document.getElementById('days-input');
-  const errEl = document.getElementById('report-error');
-  const head = document.getElementById('report-head');
-  const body = document.getElementById('report-body');
+  const levelSelect   = document.getElementById('level-select');
+  const daysInput     = document.getElementById('days-input');
+  const errEl         = document.getElementById('report-error');
+  const emptyEl       = document.getElementById('report-empty');
+  const card          = document.getElementById('report-card');
+  const body          = document.getElementById('report-body');
+  const kpiGrid       = document.getElementById('kpi-grid');
+
+  const fmtMoney = n => '$' + (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+  const fmtInt   = n => (Number(n) || 0).toLocaleString();
+  const fmtPct   = n => (Number(n) || 0).toFixed(2) + '%';
+  const fmtNum   = (n, d) => n == null ? '—' : Number(n).toFixed(d == null ? 2 : d);
+  function compact(n) {
+    const v = Number(n) || 0;
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k';
+    return v.toLocaleString();
+  }
+
+  function pick(row, keys) {
+    for (const k of keys) {
+      if (row[k] != null && row[k] !== '') return row[k];
+    }
+    return null;
+  }
+
+  function nameFor(row, level) {
+    if (level === 'campaign') return pick(row, ['campaignName', 'campaign_name', 'CAMPAIGN_NAME', 'name']) || 'Campaign';
+    if (level === 'ad_set')   return pick(row, ['adSetName', 'ad_set_name', 'AD_SET_NAME', 'name']) || 'Ad set';
+    return pick(row, ['adName', 'ad_name', 'AD_NAME', 'name']) || 'Ad';
+  }
+
+  function idFor(row, level) {
+    if (level === 'campaign') return row.campaign_id || row.campaignId || row.id || '';
+    if (level === 'ad_set')   return row.ad_set_id   || row.adSetId   || row.id || '';
+    return row.ad_id || row.adId || row.id || '';
+  }
+
+  function setStatus(msg) {
+    errEl.textContent = msg || '';
+    errEl.style.display = msg ? 'block' : 'none';
+  }
 
   async function loadReport() {
-    errEl.style.display = 'none';
+    setStatus('');
+    emptyEl.hidden = true;
+    card.hidden = true;
+    kpiGrid.hidden = true;
+    body.innerHTML = '';
+
     const aid = accountSelect.value;
-    if (!aid) { errEl.textContent = 'Select account'; errEl.style.display = 'block'; return; }
+    if (!aid) { setStatus('Select an ad account first.'); return; }
+
+    const level = levelSelect.value;
     const q = new URLSearchParams({
       ad_account_id: aid,
-      level: levelSelect.value,
-      days: daysInput.value || '7'
+      level,
+      days: daysInput.value || '7',
     });
-    const res = await fetch('/api/report?' + q.toString());
-    const data = await res.json();
-    if (!res.ok) {
-      errEl.textContent = data.error || 'Error';
-      errEl.style.display = 'block';
+
+    let data;
+    try {
+      const res = await fetch('/api/report?' + q.toString());
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error');
+    } catch (e) {
+      setStatus(e.message || 'Failed to load report.');
       return;
     }
-    const rows = data.rows || [];
-    if (!rows.length) {
-      head.innerHTML = '';
-      body.innerHTML = '<tr><td colspan="10">No rows (check date range / API field names).</td></tr>';
-      return;
-    }
-    const keys = Object.keys(rows[0]);
-    head.innerHTML = '<tr>' + keys.map(function(k) {
-      return '<th>' + k + '</th>';
-    }).join('') + '<th>Actions</th></tr>';
-    body.innerHTML = rows.map(function(row, idx) {
-      const adId = row.ad_id || row.adId || row.id;
-      const adSetId = row.ad_set_id || row.adSetId;
-      const budget = row.budget || row.dailyBudget || 0;
+
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    if (!rows.length) { emptyEl.hidden = false; return; }
+
+    let sumSpend = 0, sumConv = 0;
+    const html = rows.map(row => {
+      const id       = idFor(row, level);
+      const name     = nameFor(row, level);
+      const spend    = Number(row.spend) || 0;
+      const impr     = Number(pick(row, ['impression', 'IMPRESSION', 'impressions'])) || 0;
+      const clicks   = Number(pick(row, ['click', 'CLICK', 'clicks'])) || 0;
+      const ctrRaw   = pick(row, ['ctr', 'CTR']);
+      const ctr      = ctrRaw != null ? Number(ctrRaw) : (impr ? (clicks / impr) * 100 : 0);
+      const conv     = Number(row.conversions) || 0;
+      const cpa      = row.cpa != null ? Number(row.cpa) : (conv > 0 ? spend / conv : null);
+      const roas     = row.roas;
+      const status   = (pick(row, ['status', 'onlineStatus']) || '').toString().toLowerCase();
+      const budget   = Number(pick(row, ['dailyBudget', 'budget'])) || 0;
+
+      sumSpend += spend;
+      sumConv  += conv;
+
+      const statusClass = (status === 'active' || status === 'on') ? 'nb-badge-ok' :
+                          (status === 'off' || status === 'paused') ? 'nb-badge-muted' : 'nb-badge-warn';
+      const statusHtml = status ? `<span class="nb-badge ${statusClass}">${status}</span>` : '—';
+
       let actions = '';
-      if (levelSelect.value === 'ad' && adId) {
-        actions = '<button type="button" class="nb-btn nb-btn-small" data-pause-ad="' + adId + '">Pause</button> ' +
-          '<button type="button" class="nb-btn nb-btn-small" data-enable-ad="' + adId + '">Enable</button>';
+      if (level === 'ad' && id) {
+        actions =
+          `<button type="button" class="nb-btn nb-btn-small" data-pause-ad="${id}">Pause</button>` +
+          `<button type="button" class="nb-btn nb-btn-small" data-enable-ad="${id}">Enable</button>`;
+      } else if (level === 'ad_set' && id) {
+        actions =
+          `<button type="button" class="nb-btn nb-btn-small" data-budget-pct="${id}" data-pct="20"  data-cents="${budget}">+20%</button>` +
+          `<button type="button" class="nb-btn nb-btn-small" data-budget-pct="${id}" data-pct="-20" data-cents="${budget}">-20%</button>`;
+      } else {
+        actions = '<span class="nb-muted">—</span>';
       }
-      if (levelSelect.value === 'ad_set' && adSetId) {
-        actions = '<button type="button" class="nb-btn nb-btn-small" data-budget-pct="' + adSetId + '" data-pct="20" data-cents="' + budget + '">+20%</button> ' +
-          '<button type="button" class="nb-btn nb-btn-small" data-budget-pct="' + adSetId + '" data-pct="-20" data-cents="' + budget + '">-20%</button>';
-      }
-      return '<tr>' + keys.map(function(k) {
-        return '<td>' + (row[k] != null ? row[k] : '') + '</td>';
-      }).join('') + '<td>' + actions + '</td></tr>';
+
+      const escapedName = String(name).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      return `
+        <tr>
+          <td class="cell-name" title="${escapedName}">
+            <strong>${escapedName}</strong>
+            ${id ? `<span class="sub">${id}</span>` : ''}
+          </td>
+          <td class="nb-col-num">${fmtMoney(spend)}</td>
+          <td class="nb-col-num">${compact(impr)}</td>
+          <td class="nb-col-num">${compact(clicks)}</td>
+          <td class="nb-col-num">${fmtPct(ctr)}</td>
+          <td class="nb-col-num">${fmtInt(conv)}</td>
+          <td class="nb-col-num">${cpa != null ? fmtMoney(cpa) : '—'}</td>
+          <td class="nb-col-num">${roas != null ? fmtNum(roas) : '—'}</td>
+          <td>${statusHtml}</td>
+          <td class="cell-actions">${actions}</td>
+        </tr>`;
     }).join('');
 
-    body.querySelectorAll('[data-pause-ad]').forEach(function(btn) {
-      btn.addEventListener('click', async function() {
-        const id = btn.getAttribute('data-pause-ad');
-        await fetch('/api/ad/pause', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ad_id: id}) });
-        loadReport();
+    body.innerHTML = html;
+    card.hidden = false;
+
+    document.getElementById('kpi-rows').textContent  = rows.length;
+    document.getElementById('kpi-spend').textContent = fmtMoney(sumSpend);
+    document.getElementById('kpi-conv').textContent  = fmtInt(sumConv);
+    document.getElementById('kpi-cpa').textContent   = sumConv > 0 ? fmtMoney(sumSpend / sumConv) : '—';
+    kpiGrid.hidden = false;
+
+    body.querySelectorAll('[data-pause-ad]').forEach(btn => btn.addEventListener('click', async () => {
+      await fetch('/api/ad/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ad_id: btn.dataset.pauseAd }) });
+      loadReport();
+    }));
+    body.querySelectorAll('[data-enable-ad]').forEach(btn => btn.addEventListener('click', async () => {
+      await fetch('/api/ad/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ad_id: btn.dataset.enableAd }) });
+      loadReport();
+    }));
+    body.querySelectorAll('[data-budget-pct]').forEach(btn => btn.addEventListener('click', async () => {
+      const id    = btn.dataset.budgetPct;
+      const pct   = parseFloat(btn.dataset.pct);
+      const cents = parseFloat(btn.dataset.cents) || 0;
+      await fetch('/api/adset/budget_delta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ad_set_id: id, percent: pct, current_budget_cents: cents, budget_type: 'DAILY' }),
       });
-    });
-    body.querySelectorAll('[data-enable-ad]').forEach(function(btn) {
-      btn.addEventListener('click', async function() {
-        const id = btn.getAttribute('data-enable-ad');
-        await fetch('/api/ad/enable', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ad_id: id}) });
-        loadReport();
-      });
-    });
-    body.querySelectorAll('[data-budget-pct]').forEach(function(btn) {
-      btn.addEventListener('click', async function() {
-        const id = btn.getAttribute('data-budget-pct');
-        const pct = parseFloat(btn.getAttribute('data-pct'));
-        const cents = parseFloat(btn.getAttribute('data-cents')) || 0;
-        await fetch('/api/adset/budget_delta', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ ad_set_id: id, percent: pct, current_budget_cents: cents, budget_type: 'DAILY' })
-        });
-        loadReport();
-      });
-    });
+      loadReport();
+    }));
   }
 
   document.getElementById('btn-load').addEventListener('click', loadReport);
+  accountSelect.addEventListener('change', () => { if (accountSelect.value) loadReport(); });
+  levelSelect.addEventListener('change',  () => { if (accountSelect.value) loadReport(); });
+  if (accountSelect.value) loadReport();
 })();
 </script>
 {% endblock %}

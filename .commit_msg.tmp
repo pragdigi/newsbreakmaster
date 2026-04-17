@@ -1,0 +1,28 @@
+Launch: honest trafficPlatforms handling + payload logging
+
+Empirical finding: NewsBreak's public /ad-set/create endpoint accepts
+trafficPlatforms without error (HTTP 200) but silently drops the
+field — the ad set comes out with Unlimited inventory. This means
+the previous best-effort retry, which only triggered on HTTP 4xx,
+never fired, so users got no indication that NewsBreak-only was
+not applied.
+
+Changes:
+- bulk_launcher.py: after a successful create_ad_set, if the user
+  asked for NewsBreak-only, make a second-pass call to
+  /ad-set/update with just {trafficPlatforms}. Emit a warning in
+  the launch result either way (success or failure), since the
+  public API does not return this field on read and we can't
+  programmatically confirm it was applied.
+- bulk_launcher.py: add structured JSON logging of the create/update
+  payloads and responses so Render logs are useful for post-launch
+  debugging (previously all `app.logger.info` calls were silently
+  dropped because Flask runs at WARNING by default).
+- app.py: root `logging.basicConfig(level=INFO, stream=stderr)` so
+  module loggers (bulk_launcher, rules_engine, etc.) actually emit.
+  Overridable via LOG_LEVEL env var.
+- templates/launch.html: rewrite the inventory hint to be honest
+  about what we observed today — "public API silently ignores this
+  field, verify Inventory in Ad Manager after launch".
+
+Made-with: Cursor

@@ -3,11 +3,23 @@ Bulk upload creatives and create campaign / ad sets / ads per grouping strategy.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
 
 from newsbreak_api import NewsBreakClient
+
+logger = logging.getLogger(__name__)
+
+
+def _log_json(label: str, obj: Any) -> None:
+    """Emit a single JSON line to stderr so Render's log viewer can ingest it."""
+    try:
+        logger.info("%s %s", label, json.dumps(obj, default=str)[:4000])
+    except Exception:
+        logger.info("%s %r", label, obj)
 
 
 def _name_from_filename(filename: str, fallback: str = "") -> str:
@@ -193,30 +205,35 @@ def bulk_launch(
             "name": ad_set_name,
             "campaignId": cid,
         }
+        traffic_platforms = ad_set_payload.get("trafficPlatforms")
 
-        # trafficPlatforms is undocumented on the public API — scraped from
-        # the internal Ad Manager. Try it first; on 400 strip and retry.
+        _log_json("create_ad_set.request", ad_set_payload)
+
         aset = None
         ad_set_id = None
         try:
             aset = client.create_ad_set(ad_set_payload)
+            _log_json("create_ad_set.response", aset)
             ad_set_id = _extract_id(aset, "id", "adSetId")
         except Exception as e:
             msg = str(e)
+            logger.warning("create_ad_set.error %s", msg)
             looks_rejected = (
                 "trafficPlatforms" in msg
                 or "Invalid request" in msg
                 or "Unknown field" in msg
                 or "unrecognized" in msg.lower()
             )
-            if "trafficPlatforms" in ad_set_payload and looks_rejected:
+            if traffic_platforms and looks_rejected:
                 stripped = {k: v for k, v in ad_set_payload.items() if k != "trafficPlatforms"}
+                _log_json("create_ad_set.retry_without_traffic_platforms", stripped)
                 try:
                     aset = client.create_ad_set(stripped)
+                    _log_json("create_ad_set.retry_response", aset)
                     ad_set_id = _extract_id(aset, "id", "adSetId")
                     result.setdefault("warnings", []).append(
-                        "Public API rejected trafficPlatforms; ad set created with Unlimited inventory — "
-                        "toggle NewsBreak-only in the Ad Manager UI, or ask NewsBreak to expose the field on the public API."
+                        "Public API rejected trafficPlatforms on create — ad set created with Unlimited inventory. "
+                        "Open the ad set in Ad Manager → Inventory → select \"NewsBreak\" to restrict."
                     )
                 except Exception as e2:
                     result["errors"].append(f"create_ad_set: {e2}")
@@ -224,6 +241,33 @@ def bulk_launch(
             else:
                 result["errors"].append(f"create_ad_set: {e}")
                 continue
+
+        # Second-pass attempt: the public /ad-set/create endpoint silently
+        # drops trafficPlatforms (it returns 200 without applying it — the
+        # ad set comes out "Unlimited"). Try the UPDATE endpoint, which may
+        # be more permissive for undocumented fields. Regardless of the
+        # outcome we emit a warning instructing the user to verify the
+        # Inventory toggle in Ad Manager, because we cannot reliably read
+        # trafficPlatforms back via the public API to confirm.
+        if traffic_platforms and ad_set_id:
+            try:
+                upd = client.update_ad_set(
+                    str(ad_set_id),
+                    {"trafficPlatforms": traffic_platforms},
+                )
+                _log_json("update_ad_set.traffic_platforms.response", upd)
+                result.setdefault("warnings", []).append(
+                    "Requested NewsBreak-only inventory (trafficPlatforms sent via CREATE and UPDATE). "
+                    "The public API does not confirm this setting back — "
+                    f"verify the ad set's Inventory toggle in Ad Manager (ad set {ad_set_id})."
+                )
+            except Exception as upd_err:
+                logger.warning("update_ad_set.traffic_platforms.error %s", upd_err)
+                result.setdefault("warnings", []).append(
+                    f"Public API accepted create but rejected UPDATE for trafficPlatforms ({upd_err}). "
+                    "Ad set may be running with Unlimited inventory — "
+                    f"open ad set {ad_set_id} in Ad Manager and set Inventory → NewsBreak."
+                )
 
         ads_out = []
         for i, row in enumerate(uploaded):
@@ -246,10 +290,13 @@ def bulk_launch(
                 "name": ad_name,
                 "creative": creative,
             }
+            _log_json("create_ad.request", ad_payload)
             try:
                 ad_resp = client.create_ad(ad_payload)
+                _log_json("create_ad.response", ad_resp)
                 ads_out.append({"raw": ad_resp, "payload": ad_payload})
             except Exception as e:
+                logger.warning("create_ad.error %s", e)
                 result["errors"].append(f"create_ad: {e}")
 
         result["ad_sets"].append({"ad_set_id": ad_set_id, "ads": ads_out})

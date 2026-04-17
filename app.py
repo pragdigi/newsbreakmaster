@@ -3,11 +3,20 @@ NewsBreak Ads Launcher — Flask application.
 """
 from __future__ import annotations
 
+import logging
 import os
 import secrets
+import sys
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    stream=sys.stderr,
+    force=True,
+)
 
 from dotenv import load_dotenv
 from flask import (

@@ -215,7 +215,9 @@
         <span><strong>Restrict to NewsBreak-only inventory</strong> (NewsBreak app + web, no partner networks)</span>
       </label>
       <div class="nb-hint" style="margin-top:6px;">
-        Sends <code>trafficPlatforms: ["NEWSBREAK", "NBWEB"]</code> — the undocumented field the Ad Manager UI uses when you pick "NewsBreak" under <em>Apps and websites</em>. If NewsBreak's public API rejects it, we automatically retry without the field and flag it in the launch result so you can toggle Inventory in the UI post-launch.
+        Sends <code>trafficPlatforms: ["NEWSBREAK", "NBWEB"]</code> (the internal Ad Manager field) on both <code>/ad-set/create</code> and <code>/ad-set/update</code>.
+        <strong>Heads up:</strong> as of today, NewsBreak's <em>public</em> API silently ignores this field on create — verified by launching with the box ticked and seeing the ad set come out as "Unlimited".
+        We still send it (no downside if they ever wire it up on their side) and also retry via the UPDATE endpoint, but the launch result will remind you to verify Inventory in Ad Manager.
       </div>
     </div>
   </div>

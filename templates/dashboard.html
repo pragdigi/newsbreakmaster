@@ -64,46 +64,49 @@
 
 <script>
 (function() {
-  async function loadAccount(aid) {
-    try {
-      const res = await fetch('/api/report?ad_account_id=' + encodeURIComponent(aid) + '&level=campaign&days=7');
-      if (!res.ok) return null;
-      const data = await res.json();
-      const rows = data.rows || [];
-      const sum = rows.reduce(function(acc, r) {
-        acc.spend += (parseFloat(r.spend) || 0);
-        acc.conv  += (parseFloat(r.conversions) || 0);
-        acc.value += (parseFloat(r.conversionValue) || parseFloat(r.revenue) || 0);
-        return acc;
-      }, { spend: 0, conv: 0, value: 0 });
-      return sum;
-    } catch (e) { return null; }
+  function fmt(n, digits) { return (n || 0).toFixed(digits === undefined ? 2 : digits); }
+  function clearCells(tr, text) {
+    tr.querySelector('.c-spend').textContent = text;
+    tr.querySelector('.c-conv').textContent = text;
+    tr.querySelector('.c-cpa').textContent = text;
+    tr.querySelector('.c-roas').textContent = text;
   }
 
-  function fmt(n, digits) { return (n || 0).toFixed(digits || 2); }
-
   async function run() {
-    const rows = document.querySelectorAll('#accounts-table tbody tr');
-    let totalSpend = 0, totalConv = 0, totalVal = 0;
-    for (const tr of rows) {
-      const aid = tr.getAttribute('data-account-id');
-      const s = await loadAccount(aid);
-      if (!s) {
-        tr.querySelector('.c-spend').textContent = '—';
-        tr.querySelector('.c-conv').textContent = '—';
-        tr.querySelector('.c-cpa').textContent = '—';
-        tr.querySelector('.c-roas').textContent = '—';
-        continue;
-      }
-      totalSpend += s.spend; totalConv += s.conv; totalVal += s.value;
-      tr.querySelector('.c-spend').textContent = '$' + fmt(s.spend);
-      tr.querySelector('.c-conv').textContent = fmt(s.conv, 0);
-      tr.querySelector('.c-cpa').textContent = s.conv > 0 ? '$' + fmt(s.spend / s.conv) : '—';
-      tr.querySelector('.c-roas').textContent = s.spend > 0 ? fmt(s.value / s.spend) : '—';
+    const rowsEls = document.querySelectorAll('#accounts-table tbody tr');
+    rowsEls.forEach(tr => clearCells(tr, '…'));
+
+    let data;
+    try {
+      const res = await fetch('/api/report/batch?days=7');
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'batch report failed');
+    } catch (e) {
+      rowsEls.forEach(tr => clearCells(tr, '—'));
+      document.getElementById('kpi-spend').textContent = '—';
+      document.getElementById('kpi-conv').textContent = '—';
+      document.getElementById('kpi-roas').textContent = '—';
+      console.warn('dashboard report failed:', e);
+      return;
     }
-    document.getElementById('kpi-spend').textContent = '$' + fmt(totalSpend);
-    document.getElementById('kpi-conv').textContent = fmt(totalConv, 0);
-    document.getElementById('kpi-roas').textContent = totalSpend > 0 ? fmt(totalVal / totalSpend) : '—';
+
+    const byId = {};
+    (data.accounts || []).forEach(a => { byId[a.ad_account_id] = a; });
+
+    rowsEls.forEach(tr => {
+      const aid = tr.getAttribute('data-account-id');
+      const a = byId[aid];
+      if (!a) { clearCells(tr, '—'); return; }
+      tr.querySelector('.c-spend').textContent = '$' + fmt(a.spend);
+      tr.querySelector('.c-conv').textContent = fmt(a.conversions, 0);
+      tr.querySelector('.c-cpa').textContent = a.cpa !== null && a.cpa !== undefined ? '$' + fmt(a.cpa) : '—';
+      tr.querySelector('.c-roas').textContent = a.roas !== null && a.roas !== undefined ? fmt(a.roas) : '—';
+    });
+
+    const t = data.totals || {};
+    document.getElementById('kpi-spend').textContent = '$' + fmt(t.spend || 0);
+    document.getElementById('kpi-conv').textContent = fmt(t.conversions || 0, 0);
+    document.getElementById('kpi-roas').textContent = t.roas !== null && t.roas !== undefined ? fmt(t.roas) : '—';
   }
   run();
 })();

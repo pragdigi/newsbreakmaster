@@ -442,6 +442,93 @@ def api_campaigns():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/report/batch")
+def api_report_batch():
+    """Fetch spend/conversions/value for every ad account on the current token in ONE call."""
+    cl = _client()
+    if not cl:
+        return jsonify({"error": "unauthorized"}), 401
+    accounts = _ad_accounts_for_current_token()
+    if not accounts:
+        return jsonify({"accounts": [], "totals": {"spend": 0, "conversions": 0, "value": 0}})
+    days = int(request.args.get("days", "7"))
+    end = date.today()
+    start = end - timedelta(days=max(1, days))
+    try:
+        ids: list = []
+        for aid in accounts.keys():
+            try:
+                ids.append(int(aid))
+            except (TypeError, ValueError):
+                ids.append(aid)
+        payload = {
+            "name": f"dashboard_batch_{start.isoformat()}_{end.isoformat()}",
+            "timezone": "UTC",
+            "dateRange": "FIXED",
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "filter": "AD_ACCOUNT",
+            "filterIds": ids,
+            "dimensions": ["AD_ACCOUNT"],
+            "metrics": ["COST", "IMPRESSION", "CLICK", "CONVERSION", "VALUE"],
+        }
+        raw = cl.get_integrated_report(payload)
+    except Exception as e:
+        return jsonify({"error": str(e), "accounts": [], "totals": {"spend": 0, "conversions": 0, "value": 0}}), 400
+
+    rows = normalize_report_rows(raw)
+    by_account: dict = {}
+    for r in rows:
+        aid = str(
+            r.get("adAccountId")
+            or r.get("ad_account_id")
+            or r.get("accountId")
+            or r.get("AD_ACCOUNT")
+            or ""
+        )
+        if not aid:
+            continue
+        bucket = by_account.setdefault(aid, {"spend": 0.0, "conversions": 0.0, "value": 0.0})
+        bucket["spend"] += float(r.get("spend") or 0)
+        bucket["conversions"] += float(r.get("conversions") or 0)
+        bucket["value"] += float(r.get("value") or r.get("conversionValue") or 0)
+
+    out: list = []
+    totals = {"spend": 0.0, "conversions": 0.0, "value": 0.0}
+    for aid, name in accounts.items():
+        b = by_account.get(str(aid), {"spend": 0.0, "conversions": 0.0, "value": 0.0})
+        cpa = (b["spend"] / b["conversions"]) if b["conversions"] > 0 else None
+        roas = (b["value"] / b["spend"]) if b["spend"] > 0 else None
+        out.append(
+            {
+                "ad_account_id": str(aid),
+                "name": name,
+                "spend": round(b["spend"], 2),
+                "conversions": int(round(b["conversions"])),
+                "value": round(b["value"], 2),
+                "cpa": round(cpa, 2) if cpa is not None else None,
+                "roas": round(roas, 4) if roas is not None else None,
+            }
+        )
+        totals["spend"] += b["spend"]
+        totals["conversions"] += b["conversions"]
+        totals["value"] += b["value"]
+
+    blended_roas = (totals["value"] / totals["spend"]) if totals["spend"] > 0 else None
+    return jsonify(
+        {
+            "accounts": out,
+            "totals": {
+                "spend": round(totals["spend"], 2),
+                "conversions": int(round(totals["conversions"])),
+                "value": round(totals["value"], 2),
+                "roas": round(blended_roas, 4) if blended_roas is not None else None,
+            },
+            "days": days,
+        }
+    )
+
+
 @app.route("/api/report")
 def api_report():
     cl = _client()

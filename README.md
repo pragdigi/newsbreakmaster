@@ -29,6 +29,7 @@ Open http://127.0.0.1:5055
 |----------|-------------|
 | `FLASK_SECRET_KEY` | Flask session secret (required in production) |
 | `NEWSBREAK_DEFAULT_ORG_IDS` | Comma-separated org IDs prefilled on login |
+| `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` | If both set, the entire app requires HTTP Basic Auth first (recommended on public hosts) |
 | `PORT` | Listen port (default 5055) |
 
 ## API notes

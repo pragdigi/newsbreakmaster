@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from dotenv import load_dotenv
 from flask import (
     Flask,
+    Response,
     jsonify,
     redirect,
     render_template,
@@ -96,6 +97,38 @@ def _flatten_ad_accounts(api_response) -> list[dict]:
             if isinstance(a, dict):
                 rows.append({**a, "_org_id": org_id})
     return rows
+
+
+def _basic_auth_configured() -> bool:
+    u = os.environ.get("BASIC_AUTH_USER", "").strip()
+    p = os.environ.get("BASIC_AUTH_PASSWORD", "").strip()
+    return bool(u and p)
+
+
+def _basic_auth_ok() -> bool:
+    if not _basic_auth_configured():
+        return True
+    auth = request.authorization
+    if not auth:
+        return False
+    u = os.environ.get("BASIC_AUTH_USER", "")
+    p = os.environ.get("BASIC_AUTH_PASSWORD", "")
+    return secrets.compare_digest(auth.username or "", u) and secrets.compare_digest(
+        auth.password or "", p
+    )
+
+
+@app.before_request
+def _require_basic_auth():
+    if request.path.startswith("/static"):
+        return None
+    if _basic_auth_ok():
+        return None
+    return Response(
+        "Authentication required",
+        401,
+        {"WWW-Authenticate": 'Basic realm="NewsBreak Launcher"', "Content-Type": "text/plain"},
+    )
 
 
 @app.before_request

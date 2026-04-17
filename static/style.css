@@ -300,6 +300,32 @@ code { background: #243044; padding: 2px 6px; border-radius: 4px; font-size: 0.8
 .nb-badge-muted { background: rgba(148,163,184,0.15); color: #94a3b8; }
 
 /* Modal */
+/* Dark-theme friendly alert blocks (replace hardcoded light #fef2f2 / #fff7ec) */
+.nb-alert {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+.nb-alert strong { font-weight: 700; }
+.nb-alert-danger {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #fecaca;
+}
+.nb-alert-warning {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fcd34d;
+}
+.nb-alert-info {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.45);
+  color: #bfdbfe;
+}
+.nb-alert a { color: inherit; text-decoration: underline; }
+
 .nb-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
 .nb-modal[hidden] { display: none; }
 .nb-modal-dialog { background: var(--card, #131a22); border: 1px solid var(--border, #243040); border-radius: 12px; width: 100%; max-width: 640px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }

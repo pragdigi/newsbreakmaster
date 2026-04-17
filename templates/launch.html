@@ -22,13 +22,13 @@
     </div>
     <div class="nb-modal-body">
       <div class="nb-kpi-grid" style="margin-bottom:12px;">
-        <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#059669' if ok else '#dc2626' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
+        <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#34d399' if ok else '#f87171' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
         <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}</div></div>
         <div class="nb-kpi"><div class="nb-kpi-label">Ad sets created</div><div class="nb-kpi-value">{{ adset_count }}</div></div>
-        <div class="nb-kpi"><div class="nb-kpi-label">Errors</div><div class="nb-kpi-value" style="color:{{ '#dc2626' if err_count else '#111' }};">{{ err_count }}</div></div>
+        <div class="nb-kpi"><div class="nb-kpi-label">Errors</div><div class="nb-kpi-value" style="color:{{ '#f87171' if err_count else 'var(--text)' }};">{{ err_count }}</div></div>
       </div>
       {% if result.get('errors') %}
-      <div class="nb-card" style="background:#fef2f2;border-color:#fecaca;margin-bottom:12px;">
+      <div class="nb-alert nb-alert-danger" style="margin-bottom:12px;">
         <strong>Errors:</strong>
         <ul style="margin:6px 0 0 0;padding-left:18px;">
           {% for e in result.errors %}<li style="margin:4px 0;">{{ e }}</li>{% endfor %}
@@ -195,7 +195,7 @@
       </div>
     </div>
 
-    <div class="nb-hint" style="margin-top:10px;padding:10px 12px;background:#fff7ec;border:1px solid #f3d9a8;border-radius:8px;">
+    <div class="nb-alert nb-alert-warning" style="margin-top:10px;">
       <strong>Placements:</strong> NewsBreak's API doesn't expose a "NewsBreak-only / no partners" toggle — the platform auto-places ads across their owned inventory. To restrict to NewsBreak-only placements, set that in the NewsBreak UI after launch, or ask your NewsBreak rep to enable an account-level restriction.
     </div>
   </div>

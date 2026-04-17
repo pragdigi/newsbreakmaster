@@ -326,7 +326,7 @@ def launch():
         end_epoch = start_epoch + 30 * 24 * 3600
 
     ad_set_base: dict = {
-        "name_prefix": request.form.get("ad_set_name", "Bulk ad set").strip() or "Bulk ad set",
+        "name_prefix": (request.form.get("ad_set_name") or "").strip(),
         "budgetType": request.form.get("budget_type", "DAILY"),
         "budget": int(float(request.form.get("budget_dollars", "50") or 50) * 100),
         "bidType": bid_type,

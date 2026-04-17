@@ -3,9 +3,30 @@ Bulk upload creatives and create campaign / ad sets / ads per grouping strategy.
 """
 from __future__ import annotations
 
+import os
+import re
 from typing import Any, Dict, List, Optional
 
 from newsbreak_api import NewsBreakClient
+
+
+def _name_from_filename(filename: str, fallback: str = "") -> str:
+    """Strip extension, replace separators with spaces, title-case, cap length.
+
+    e.g. ``summer_promo-01.jpg`` -> ``Summer Promo 01``.
+    """
+    if not filename:
+        return fallback
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    stem = re.sub(r"[_\-\.]+", " ", stem).strip()
+    stem = re.sub(r"\s+", " ", stem)
+    if not stem:
+        return fallback
+    # Preserve existing casing if it already has spaces / mixed case,
+    # otherwise title-case to make dashboard names readable.
+    if stem == stem.lower():
+        stem = stem.title()
+    return stem[:120]
 
 
 def _first_id(obj: Any, *keys: str) -> Optional[str]:
@@ -101,7 +122,7 @@ def bulk_launch(
         )
         return result
 
-    base_name = ad_set_base.get("name_prefix", "Ad set")
+    base_name = (ad_set_base.get("name_prefix") or "").strip()
     brand_name = ad_set_base.get("_brand_name", "Advertiser")
     cta = ad_set_base.get("_cta", "Learn More")
 
@@ -146,6 +167,7 @@ def bulk_launch(
                     {
                         "asset_url": asset_url,
                         "creative_type": _guess_creative_type(c.get("filename", "")),
+                        "filename": c.get("filename", ""),
                         "headline": c.get("headline", ""),
                         "body": c.get("body", ""),
                         "landing_url": c.get("landing_url", ""),
@@ -157,7 +179,15 @@ def bulk_launch(
         if not uploaded:
             continue
 
-        ad_set_name = f"{base_name} {gi + 1}" if len(groups) > 1 else base_name
+        # Derive a human-readable ad-set name. If the user supplied a prefix,
+        # keep the old numbered behaviour; otherwise use the first creative's
+        # filename as the ad-set name so it has meaning on the dashboard.
+        first_name = _name_from_filename(group[0].get("filename", ""), fallback="Ad set")
+        if base_name:
+            ad_set_name = f"{base_name} {gi + 1}" if len(groups) > 1 else base_name
+        else:
+            ad_set_name = first_name if len(groups) == 1 or len(group) == 1 else f"{first_name} +{len(group) - 1}"
+
         ad_set_payload = {
             **{k: v for k, v in ad_set_base.items() if not k.startswith("_") and k != "name_prefix"},
             "name": ad_set_name,
@@ -183,9 +213,13 @@ def bulk_launch(
             }
             if row["landing_url"]:
                 creative["clickThroughUrl"] = row["landing_url"]
+            ad_name = _name_from_filename(
+                row.get("filename", ""),
+                fallback=f"{ad_set_name} — Ad {i + 1}",
+            )
             ad_payload = {
                 "adSetId": ad_set_id,
-                "name": f"{ad_set_name} — Ad {i + 1}",
+                "name": ad_name,
                 "creative": creative,
             }
             try:

@@ -167,8 +167,14 @@ def normalize_report_rows(raw: Any) -> List[Dict[str, Any]]:
     """Flatten integrated report response into numeric-friendly rows."""
     rows = unwrap_list_response(raw)
     if not rows and isinstance(raw, dict):
-        inner = raw.get("result") or raw.get("rows") or raw.get("reportData")
-        rows = unwrap_list_response(inner)
+        # NewsBreak often wraps as { code, data: { rows: [...] | list: [...] } }
+        data = raw.get("data")
+        if isinstance(data, dict):
+            inner = data.get("rows") or data.get("list") or data.get("records") or data.get("items") or data.get("reportData") or data.get("result")
+            rows = unwrap_list_response(inner)
+        if not rows:
+            inner = raw.get("result") or raw.get("rows") or raw.get("reportData")
+            rows = unwrap_list_response(inner)
     out: List[Dict[str, Any]] = []
     for r in rows:
         if not isinstance(r, dict):

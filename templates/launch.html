@@ -60,8 +60,8 @@
       </div>
       <div>
         <label class="nb-label">Objective</label>
-        <input type="text" class="nb-input" value="CONVERSION (locked)" disabled>
-        <div class="nb-hint">Only Conversion objective is supported.</div>
+        <input type="text" class="nb-input" value="WEB_CONVERSION (locked)" disabled>
+        <div class="nb-hint">Only Website Conversion objective is supported.</div>
       </div>
     </div>
 
@@ -136,20 +136,24 @@
         <div class="nb-check-row">
           <label><input type="checkbox" name="age_groups" value="18-24"> 18–24</label>
           <label><input type="checkbox" name="age_groups" value="25-30"> 25–30</label>
-          <label><input type="checkbox" name="age_groups" value="31-44"> 31–44</label>
-          <label><input type="checkbox" name="age_groups" value="45-54"> 45–54</label>
-          <label><input type="checkbox" name="age_groups" value="55 +"> 55+</label>
+          <label><input type="checkbox" name="age_groups" value="31-44" checked> 31–44</label>
+          <label><input type="checkbox" name="age_groups" value="45-54" checked> 45–54</label>
+          <label><input type="checkbox" name="age_groups" value="55+" checked> 55+</label>
         </div>
-        <div class="nb-hint">Leave empty to target all ages.</div>
+        <div class="nb-hint">Default: 31+ (our best-performing segment).</div>
       </div>
       <div>
         <label class="nb-label">Gender</label>
         <select name="gender" class="nb-select">
           <option value="">All genders</option>
-          <option value="MALE">Male</option>
-          <option value="FEMALE">Female</option>
+          <option value="male">Male</option>
+          <option value="female">Female</option>
         </select>
       </div>
+    </div>
+
+    <div class="nb-hint" style="margin-top:10px;padding:10px 12px;background:#fff7ec;border:1px solid #f3d9a8;border-radius:8px;">
+      <strong>Placements:</strong> NewsBreak's API doesn't expose a "NewsBreak-only / no partners" toggle — the platform auto-places ads across their owned inventory. To restrict to NewsBreak-only placements, set that in the NewsBreak UI after launch, or ask your NewsBreak rep to enable an account-level restriction.
     </div>
   </div>
 
@@ -158,7 +162,7 @@
     <h3>4 · Conversion tracking</h3>
     <div class="nb-row-2">
       <div>
-        <label class="nb-label">Pixel</label>
+        <label class="nb-label">Pixel <span class="nb-muted" style="font-weight:400;">(optional, for your records)</span></label>
         <select name="pixel_ref" id="pixel_ref" class="nb-select">
           <option value="">— Select saved pixel —</option>
           {% for p in pixels %}
@@ -174,33 +178,41 @@
         </div>
       </div>
       <div>
-        <label class="nb-label">Conversion event</label>
+        <label class="nb-label">Tracking event <span class="nb-muted" style="font-weight:400;">(required for conversion bidding)</span></label>
         <select name="event_ref" id="event_ref" class="nb-select">
           <option value="">— Select saved event —</option>
           {% for e in events %}
-          <option value="{{ e.id }}">{{ e.name }} · {{ e.event_type }}</option>
+          <option value="{{ e.id }}">{{ e.name }} · ID: {{ e.tracking_id or e.event_type }}</option>
           {% endfor %}
-          <option value="__manual__">Enter manually…</option>
+          <option value="__manual__">Enter tracking ID manually…</option>
         </select>
         <div id="event-manual-wrap" style="margin-top:8px;display:none;">
-          <select name="conversion_event" id="conversion_event_manual" class="nb-select">
-            <option value="PURCHASE">Purchase</option>
-            <option value="LEAD">Lead</option>
-            <option value="SIGN_UP">Sign up</option>
-            <option value="COMPLETE_REGISTRATION">Complete registration</option>
-            <option value="ADD_TO_CART">Add to cart</option>
-            <option value="INITIATE_CHECKOUT">Initiate checkout</option>
-            <option value="ADD_PAYMENT_INFO">Add payment info</option>
-            <option value="SUBSCRIBE">Subscribe</option>
-            <option value="SUBMIT_APPLICATION">Submit application</option>
-            <option value="VIEW_CONTENT">View content</option>
-            <option value="SEARCH">Search</option>
-            <option value="PAGE_VIEW">Page view</option>
-            <option value="CONTACT">Contact</option>
-            <option value="CUSTOM">Custom event</option>
-          </select>
-          <input type="text" name="custom_event_name" id="custom_event_name_manual" class="nb-input" style="margin-top:8px;" placeholder="Custom event name (only if Custom)">
+          <input type="text" name="conversion_event" id="conversion_event_manual" class="nb-input" placeholder="Tracking ID from NewsBreak Ad Manager → Event Management">
+          <input type="hidden" name="custom_event_name" id="custom_event_name_manual" value="">
         </div>
+        <div class="nb-hint">This is the <code>trackingId</code> NewsBreak assigns to each conversion event you create. Find it in Ad Manager → Event Management.</div>
+      </div>
+    </div>
+
+    <div class="nb-row-2" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Brand name <span class="nb-muted" style="font-weight:400;">(shown on creative)</span></label>
+        <input type="text" name="brand_name" id="brand_name" class="nb-input" value="Advertiser" required>
+      </div>
+      <div>
+        <label class="nb-label">Call-to-action</label>
+        <select name="cta" id="cta" class="nb-select">
+          <option value="Learn More">Learn More</option>
+          <option value="Shop Now">Shop Now</option>
+          <option value="Sign Up">Sign Up</option>
+          <option value="Get Offer">Get Offer</option>
+          <option value="Subscribe">Subscribe</option>
+          <option value="Download">Download</option>
+          <option value="Get Quote">Get Quote</option>
+          <option value="Apply Now">Apply Now</option>
+          <option value="Book Now">Book Now</option>
+          <option value="Contact Us">Contact Us</option>
+        </select>
       </div>
     </div>
   </div>
@@ -242,16 +254,13 @@
       <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — you can select multiple files</div>
     </label>
 
-    <!-- Defaults (auto-applied to new creatives) -->
+    <!-- Defaults (live-applied to every creative) -->
     <div class="nb-defaults-panel">
-      <div class="nb-defaults-title">Defaults <span class="nb-muted">(auto-fills new creatives; edit per card below)</span></div>
+      <div class="nb-defaults-title">Defaults <span class="nb-muted">(changes here propagate to every creative instantly)</span></div>
       <div class="nb-row-3">
         <input type="text" id="default-headline" class="nb-input" placeholder="Default headline">
         <input type="text" id="default-body" class="nb-input" placeholder="Default body">
         <input type="url"  id="default-landing" class="nb-input" placeholder="Default landing URL">
-      </div>
-      <div style="margin-top:8px;">
-        <button type="button" class="nb-btn nb-btn-small" id="btn-apply-defaults">Apply to all</button>
       </div>
     </div>
 
@@ -276,10 +285,23 @@
   const grid       = document.getElementById('creative-grid');
   const countText  = document.getElementById('creative-count-text');
   const btnClear   = document.getElementById('btn-clear-all');
-  const btnApply   = document.getElementById('btn-apply-defaults');
   const defH       = document.getElementById('default-headline');
   const defB       = document.getElementById('default-body');
   const defL       = document.getElementById('default-landing');
+
+  const prevDefaults = { h: '', b: '', l: '' };
+
+  function applyDefaultsToItems(opts) {
+    const { force } = opts || {};
+    items.forEach(it => {
+      if (force || !it.headline || it.headline === prevDefaults.h) it.headline = defH.value || it.headline;
+      if (force || !it.body     || it.body === prevDefaults.b)     it.body     = defB.value || it.body;
+      if (force || !it.landing_url || it.landing_url === prevDefaults.l) it.landing_url = defL.value || it.landing_url;
+    });
+    prevDefaults.h = defH.value;
+    prevDefaults.b = defB.value;
+    prevDefaults.l = defL.value;
+  }
 
   // state
   let items = []; // { file, headline, body, landing_url, url }
@@ -380,13 +402,11 @@
 
   btnClear.addEventListener('click', () => { items = []; renderAll(); });
 
-  btnApply.addEventListener('click', () => {
-    items.forEach(it => {
-      if (defH.value) it.headline = defH.value;
-      if (defB.value) it.body = defB.value;
-      if (defL.value) it.landing_url = defL.value;
+  ;[defH, defB, defL].forEach(inp => {
+    inp.addEventListener('input', () => {
+      applyDefaultsToItems({ force: false });
+      renderAll();
     });
-    renderAll();
   });
 
   // Prevent submit if no creatives
@@ -487,7 +507,8 @@
       url = base + (base.includes('?') ? '&' : '?') + utm.replace(/^\?|^&/, '');
     }
     if (url) { defL.value = url; }
-    btnApply.click();
+    applyDefaultsToItems({ force: true });
+    renderAll();
 
     if (o.pixel_id && PIXELS.find(p => p.id === o.pixel_id)) {
       pixelSel.value = o.pixel_id;

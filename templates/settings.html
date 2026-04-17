@@ -30,10 +30,10 @@
       <h2>Conversion events</h2>
       <button type="button" class="nb-btn nb-btn-sm" data-new="event">Add event</button>
     </div>
-    <p class="nb-muted nb-small">Standard NewsBreak events (PURCHASE, LEAD, etc.) or your custom events from Ad Manager &gt; Event Management.</p>
+    <p class="nb-muted nb-small">Grab the <strong>tracking ID</strong> for each conversion event from NewsBreak Ad Manager → Tools → Event Management. That ID is what NewsBreak optimizes against.</p>
     <table class="nb-table" id="events-table">
       <thead>
-        <tr><th>Name</th><th>Event</th><th>Custom?</th><th></th></tr>
+        <tr><th>Name</th><th>Tracking ID</th><th>Type</th><th></th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -98,16 +98,22 @@ function renderPixels() {
 
 function renderEvents() {
   const tb = document.querySelector('#events-table tbody');
-  tb.innerHTML = state.events.length ? state.events.map(e => `
+  tb.innerHTML = state.events.length ? state.events.map(e => {
+    const tid = e.tracking_id || e.event_type || '';
+    const typeLabel = e.event_type && e.event_type !== tid
+      ? `<span class="nb-muted nb-small">${escape(e.event_type)}</span>`
+      : '<span class="nb-badge nb-badge-muted">Conversion</span>';
+    return `
     <tr>
       <td><strong>${escape(e.name)}</strong></td>
-      <td><code>${escape(e.event_type)}</code></td>
-      <td>${e.is_custom ? '<span class="nb-badge">Custom</span>' : '<span class="nb-badge nb-badge-muted">Standard</span>'}</td>
+      <td><code>${escape(tid)}</code></td>
+      <td>${typeLabel}</td>
       <td class="nb-row-actions">
         <button type="button" class="nb-btn-ghost" data-edit="event" data-id="${e.id}">Edit</button>
         <button type="button" class="nb-btn-ghost nb-danger" data-del="event" data-id="${e.id}">Delete</button>
       </td>
-    </tr>`).join('') : `<tr><td colspan="4" class="nb-muted">No events yet.</td></tr>`;
+    </tr>`;
+  }).join('') : `<tr><td colspan="4" class="nb-muted">No events yet.</td></tr>`;
 }
 
 function renderOffers() {
@@ -140,14 +146,16 @@ function formHtml(kind, item) {
   if (kind === 'event') {
     const opts = STANDARD_EVENTS.map(e => `<option value="${e}" ${item.event_type===e?'selected':''}>${e}</option>`).join('');
     return `
-      <label class="nb-field"><span>Name</span><input name="name" required value="${escape(item.name||'')}" placeholder="e.g. Store purchase"></label>
-      <label class="nb-field"><span>Standard event</span>
-        <select name="event_type_std">
-          <option value="">— pick one —</option>${opts}
-        </select>
+      <label class="nb-field"><span>Name</span><input name="name" required value="${escape(item.name||'')}" placeholder="e.g. Lead form submit"></label>
+      <label class="nb-field"><span>Tracking ID (from NewsBreak Ad Manager → Event Management)</span>
+        <input name="tracking_id" required value="${escape(item.tracking_id || item.event_type || '')}" placeholder="e.g. 29384756 or evt_abc123">
       </label>
-      <label class="nb-check-row"><input type="checkbox" name="is_custom" ${item.is_custom?'checked':''}> Custom event (use custom name below)</label>
-      <label class="nb-field"><span>Custom event name</span><input name="event_type_custom" value="${escape(item.is_custom? item.event_type : '')}" placeholder="e.g. complete_payment"></label>`;
+      <p class="nb-muted nb-small" style="margin:0;">This is the exact ID NewsBreak returns after you create the conversion event. It gets sent as <code>trackingId</code> in the ad set payload and is required whenever you use <code>TARGET_CPA</code>, <code>MAX_CONVERSION</code>, <code>MAX_CONVERSION_VALUE</code>, or <code>TARGET_ROAS</code>.</p>
+      <label class="nb-field"><span>Event category (optional label, for your notes)</span>
+        <select name="event_type_std">
+          <option value="">— optional —</option>${opts}
+        </select>
+      </label>`;
   }
   // offer
   const pixelOpts = state.pixels.map(p => `<option value="${p.id}" ${item.pixel_id===p.id?'selected':''}>${escape(p.name)} (${escape(p.pixel_id)})</option>`).join('');
@@ -199,9 +207,10 @@ async function saveModal() {
     body.name = fd.get('name'); body.pixel_id = fd.get('pixel_id'); body.notes = fd.get('notes');
   } else if (kind === 'event') {
     body.name = fd.get('name');
-    body.is_custom = !!fd.get('is_custom');
-    body.event_type = body.is_custom ? (fd.get('event_type_custom') || '').trim() : (fd.get('event_type_std') || '').trim();
-    if (!body.event_type) { alert('Pick a standard event or enter a custom event name.'); return; }
+    body.tracking_id = (fd.get('tracking_id') || '').trim();
+    body.event_type = (fd.get('event_type_std') || '').trim();
+    body.is_custom = !!body.event_type && !STANDARD_EVENTS.includes(body.event_type) ? true : false;
+    if (!body.tracking_id) { alert('Tracking ID is required — grab it from NewsBreak Ad Manager → Event Management.'); return; }
   } else {
     for (const k of ['name','landing_url','headline','body','pixel_id','event_id','payout','target_cpa','utm_parameters','notes']) {
       body[k] = fd.get(k);

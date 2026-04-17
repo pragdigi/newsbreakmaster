@@ -94,9 +94,34 @@ def bulk_launch(
 
     groups = group_creatives(creatives, grouping, group_size)
     base_name = ad_set_base.get("name_prefix", "Ad set")
+    brand_name = ad_set_base.get("_brand_name", "Advertiser")
+    cta = ad_set_base.get("_cta", "Learn More")
+
+    def _guess_creative_type(filename: str) -> str:
+        f = (filename or "").lower()
+        if f.endswith(".gif"):
+            return "GIF"
+        if f.endswith((".mp4", ".mov", ".webm", ".m4v")):
+            return "VIDEO"
+        return "IMAGE"
+
+    def _extract_asset_url(resp: Any) -> Optional[str]:
+        if not isinstance(resp, dict):
+            return None
+        for k in ("assetUrl", "url", "cdnUrl"):
+            v = resp.get(k)
+            if isinstance(v, str) and v:
+                return v
+        data = resp.get("data")
+        if isinstance(data, dict):
+            for k in ("assetUrl", "url", "cdnUrl"):
+                v = data.get(k)
+                if isinstance(v, str) and v:
+                    return v
+        return None
 
     for gi, group in enumerate(groups):
-        asset_ids: List[str] = []
+        uploaded: List[Dict[str, Any]] = []
         for c in group:
             try:
                 raw = client.upload_asset(
@@ -105,13 +130,14 @@ def bulk_launch(
                     ad_account_id,
                     media_name=c.get("media_name"),
                 )
-                aid = _extract_id(raw, "id", "assetId")
-                if not aid:
-                    result["errors"].append(f"upload_asset missing id: {raw}")
+                asset_url = _extract_asset_url(raw)
+                if not asset_url:
+                    result["errors"].append(f"upload_asset missing assetUrl: {raw}")
                     continue
-                asset_ids.append(
+                uploaded.append(
                     {
-                        "asset_id": aid,
+                        "asset_url": asset_url,
+                        "creative_type": _guess_creative_type(c.get("filename", "")),
                         "headline": c.get("headline", ""),
                         "body": c.get("body", ""),
                         "landing_url": c.get("landing_url", ""),
@@ -120,11 +146,15 @@ def bulk_launch(
             except Exception as e:
                 result["errors"].append(f"upload: {e}")
 
-        if not asset_ids:
+        if not uploaded:
             continue
 
         ad_set_name = f"{base_name} {gi + 1}" if len(groups) > 1 else base_name
-        ad_set_payload = {**{k: v for k, v in ad_set_base.items() if k != "name_prefix"}, "name": ad_set_name, "campaignId": cid}
+        ad_set_payload = {
+            **{k: v for k, v in ad_set_base.items() if not k.startswith("_") and k != "name_prefix"},
+            "name": ad_set_name,
+            "campaignId": cid,
+        }
 
         try:
             aset = client.create_ad_set(ad_set_payload)
@@ -134,15 +164,21 @@ def bulk_launch(
             continue
 
         ads_out = []
-        for i, row in enumerate(asset_ids):
+        for i, row in enumerate(uploaded):
+            creative = {
+                "type": row["creative_type"],
+                "headline": row["headline"] or ad_set_name,
+                "assetUrl": row["asset_url"],
+                "description": row["body"] or row["headline"] or ad_set_name,
+                "callToAction": cta,
+                "brandName": brand_name,
+            }
+            if row["landing_url"]:
+                creative["clickThroughUrl"] = row["landing_url"]
             ad_payload = {
                 "adSetId": ad_set_id,
-                "adAccountId": ad_account_id,
                 "name": f"{ad_set_name} — Ad {i + 1}",
-                "headline": row["headline"],
-                "body": row["body"],
-                "landingUrl": row["landing_url"],
-                "assetId": row["asset_id"],
+                "creative": creative,
             }
             try:
                 ad_resp = client.create_ad(ad_payload)

@@ -6,7 +6,8 @@ from __future__ import annotations
 import os
 import secrets
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional
 
 from dotenv import load_dotenv
 from flask import (
@@ -260,11 +261,12 @@ def launch():
         campaign_payload = {
             "adAccountId": ad_account_id,
             "name": campaign_name,
-            "objective": "CONVERSION",
+            "objective": "WEB_CONVERSION",
         }
 
     bid_type = (request.form.get("bid_type") or "MAX_CONVERSION").strip().upper()
-    needs_bid = bid_type in {"CPC", "CPM", "TARGET_CPA", "TARGET_ROAS"}
+    needs_bid = bid_type in {"CPC", "CPM", "TARGET_CPA"}
+    needs_roas = bid_type == "TARGET_ROAS"
 
     pixel_ref = (request.form.get("pixel_ref") or "").strip()
     pixel_id = (request.form.get("pixel_id") or "").strip()
@@ -275,51 +277,63 @@ def launch():
                 break
 
     event_ref = (request.form.get("event_ref") or "").strip()
-    conversion_event = (request.form.get("conversion_event") or "PURCHASE").strip()
+    tracking_id = ""
     custom_event_name = (request.form.get("custom_event_name") or "").strip()
+    manual_event = (request.form.get("conversion_event") or "").strip().upper()
     if event_ref and event_ref != "__manual__":
         for e in storage.list_events():
             if e.get("id") == event_ref:
-                et = (e.get("event_type") or "").strip()
-                if e.get("is_custom"):
-                    conversion_event = "CUSTOM"
-                    custom_event_name = et
-                else:
-                    conversion_event = et.upper() or conversion_event
+                tracking_id = (e.get("tracking_id") or e.get("event_type") or "").strip()
                 break
     else:
-        conversion_event = conversion_event.upper() if conversion_event != "CUSTOM" else conversion_event
+        tracking_id = custom_event_name if manual_event == "CUSTOM" else manual_event
+
+    def _to_epoch(dt_local_str: str) -> Optional[int]:
+        if not dt_local_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(dt_local_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp())
+        except ValueError:
+            return None
+
+    start_epoch = _to_epoch(request.form.get("start_time", ""))
+    end_epoch = _to_epoch(request.form.get("end_time", ""))
+    if start_epoch is None:
+        start_epoch = int(datetime.now(timezone.utc).timestamp())
+    if end_epoch is None:
+        end_epoch = start_epoch + 30 * 24 * 3600
 
     ad_set_base: dict = {
         "name_prefix": request.form.get("ad_set_name", "Bulk ad set").strip() or "Bulk ad set",
-        "adAccountId": ad_account_id,
         "budgetType": request.form.get("budget_type", "DAILY"),
         "budget": int(float(request.form.get("budget_dollars", "50") or 50) * 100),
         "bidType": bid_type,
-        "startTime": request.form.get("start_time") or None,
-        "endTime": request.form.get("end_time") or None,
+        "startTime": start_epoch,
+        "endTime": end_epoch,
     }
     if needs_bid:
-        if bid_type == "TARGET_ROAS":
-            ad_set_base["targetRoas"] = float(request.form.get("bid_dollars") or 2.0)
-        else:
-            ad_set_base["bidAmount"] = int(float(request.form.get("bid_dollars", "1") or 1) * 100)
+        ad_set_base["bidRate"] = int(float(request.form.get("bid_dollars", "1") or 1) * 100)
+    elif needs_roas:
+        ad_set_base["roas"] = float(request.form.get("bid_dollars") or 2.0)
 
-    if pixel_id:
-        ad_set_base["pixelId"] = pixel_id
-        event_value = custom_event_name if (conversion_event == "CUSTOM" and custom_event_name) else conversion_event
-        ad_set_base["conversionEvent"] = event_value
-        ad_set_base["optimizationGoal"] = "CONVERSION"
+    if tracking_id:
+        ad_set_base["trackingId"] = tracking_id
 
-    age_groups = [a for a in request.form.getlist("age_groups") if a]
-    gender = (request.form.get("gender") or "").strip().upper()
-    targeting: dict = {}
+    age_groups = [a.replace(" +", "+") for a in request.form.getlist("age_groups") if a]
+    gender = (request.form.get("gender") or "").strip().lower()
+    targeting: dict = {"location": {"positive": ["all"]}}
     if age_groups:
         targeting["ageGroup"] = {"positive": age_groups}
-    if gender in {"MALE", "FEMALE"}:
+    if gender in {"male", "female"}:
         targeting["gender"] = {"positive": [gender]}
-    if targeting:
-        ad_set_base["targeting"] = targeting
+    ad_set_base["targeting"] = targeting
+
+    ad_set_base["_ad_account_id_for_upload"] = ad_account_id
+    ad_set_base["_brand_name"] = (request.form.get("brand_name") or "Advertiser").strip() or "Advertiser"
+    ad_set_base["_cta"] = (request.form.get("cta") or "Learn More").strip() or "Learn More"
 
     ad_set_base = {k: v for k, v in ad_set_base.items() if v is not None}
 

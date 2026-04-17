@@ -216,14 +216,14 @@ def bulk_launch(
             result["errors"].append(f"create_ad_set: {e}")
             continue
 
-        # Publisher scope (trafficPlatforms) is an undocumented field on
-        # the public API. /ad-set/create accepts it with HTTP 200 but may
-        # silently strip it from the stored entity. Retry via /ad-set/update
-        # which sometimes honours fields create ignores. Log payload +
-        # response so we can verify from Render logs.
+        # Publisher/surface scope (trafficPlatforms + placements) are
+        # undocumented fields on the public API. /ad-set/create may silently
+        # strip them from the stored entity. Retry via /ad-set/update which
+        # sometimes honours fields create ignores. Log payload + response
+        # so we can verify conclusively from Render logs.
         inventory_fields = {
             k: ad_set_payload[k]
-            for k in ("trafficPlatforms",)
+            for k in ("trafficPlatforms", "placements")
             if k in ad_set_payload
         }
         if inventory_fields and ad_set_id:

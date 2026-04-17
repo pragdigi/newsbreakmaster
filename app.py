@@ -394,17 +394,20 @@ def launch():
     ad_set_base["_brand_name"] = (request.form.get("brand_name") or "Advertiser").strip() or "Advertiser"
     ad_set_base["_cta"] = (request.form.get("cta") or "Learn More").strip() or "Learn More"
 
-    # Inventory (NewsBreak-only vs Unlimited). The Nova Ad Manager UI has
-    # publisher checkboxes: NewsBreak / Scoopz / Premium Partners / Unlimited.
-    # When "NewsBreak" is checked, DevTools shows the internal request
-    # sends `trafficPlatforms: ["NBWEB", "NEWSBREAK"]` (the NewsBreak
-    # publisher across its web + app surfaces). This is the PUBLISHER
-    # filter — it's orthogonal to `placements` which controls ad format
-    # (IN_FEED / INTERSTITIAL / VIDEO / WEB_NATIVE), not publisher.
-    # bulk_launcher retries via /ad-set/update after create since
-    # /ad-set/create may silently drop undocumented fields.
+    # Inventory (NewsBreak-only vs Unlimited). DevTools capture of the
+    # Nova Ad Manager UI's save-payload (2026-04-17, with only the
+    # NewsBreak publisher checkbox ticked) always sends these TWO fields
+    # together:
+    #   placements:        ["NATIVE_UNLIMITED"]     (format/surface axis)
+    #   trafficPlatforms:  ["NBWEB", "NEWSBREAK"]   (publisher axis)
+    # Previous attempts sending trafficPlatforms alone were silently
+    # dropped by /ad-set/create — hypothesis: the API treats them as a
+    # bound pair and ignores trafficPlatforms when placements is not
+    # also provided. bulk_launcher retries via /ad-set/update after
+    # create in case that endpoint behaves differently.
     nb_only = (request.form.get("nb_only_inventory") or "").strip().lower() in {"1", "on", "true", "yes"}
     if nb_only:
+        ad_set_base["placements"] = ["NATIVE_UNLIMITED"]
         ad_set_base["trafficPlatforms"] = ["NBWEB", "NEWSBREAK"]
 
     ad_set_base = {k: v for k, v in ad_set_base.items() if v is not None}

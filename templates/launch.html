@@ -9,10 +9,53 @@
 </div>
 
 {% if result %}
-<div class="nb-card" style="margin-bottom:16px;">
-  <h3 style="margin-top:0;">Result</h3>
-  <pre class="nb-pre">{{ result | tojson(indent=2) }}</pre>
+<div id="result-modal" class="nb-modal">
+  <div class="nb-modal-dialog">
+    {% set ok = result.get('success') %}
+    {% set adset_count = result.get('ad_sets', [])|length %}
+    {% set err_count = result.get('errors', [])|length %}
+    <div class="nb-modal-head">
+      <h3 style="margin:0;">
+        {% if ok %}Campaign launched{% else %}Launch failed{% endif %}
+      </h3>
+      <button type="button" class="nb-btn nb-btn-small" data-close="result" aria-label="Close">×</button>
+    </div>
+    <div class="nb-modal-body">
+      <div class="nb-kpi-grid" style="margin-bottom:12px;">
+        <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#059669' if ok else '#dc2626' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
+        <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}</div></div>
+        <div class="nb-kpi"><div class="nb-kpi-label">Ad sets created</div><div class="nb-kpi-value">{{ adset_count }}</div></div>
+        <div class="nb-kpi"><div class="nb-kpi-label">Errors</div><div class="nb-kpi-value" style="color:{{ '#dc2626' if err_count else '#111' }};">{{ err_count }}</div></div>
+      </div>
+      {% if result.get('errors') %}
+      <div class="nb-card" style="background:#fef2f2;border-color:#fecaca;margin-bottom:12px;">
+        <strong>Errors:</strong>
+        <ul style="margin:6px 0 0 0;padding-left:18px;">
+          {% for e in result.errors %}<li style="margin:4px 0;">{{ e }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      <details>
+        <summary style="cursor:pointer;color:#6b7280;">Raw response</summary>
+        <pre class="nb-pre" style="max-height:240px;overflow:auto;">{{ result | tojson(indent=2) }}</pre>
+      </details>
+    </div>
+    <div class="nb-modal-foot">
+      {% if ok %}
+      <a href="{{ url_for('dashboard') }}" class="nb-btn nb-btn-primary">Back to dashboard</a>
+      {% endif %}
+      <button type="button" class="nb-btn" data-close="result">Close</button>
+    </div>
+  </div>
 </div>
+<script>
+(function(){
+  const m = document.getElementById('result-modal');
+  if (!m) return;
+  m.querySelectorAll('[data-close="result"]').forEach(el => el.addEventListener('click', () => m.remove()));
+  m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+})();
+</script>
 {% endif %}
 
 <form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="launch-form">
@@ -69,7 +112,7 @@
       <label class="nb-label">Existing campaign</label>
       <div style="display:flex;gap:8px;align-items:center;">
         <select name="campaign_id" id="campaign_id" class="nb-select" style="flex:1;"></select>
-        <button type="button" class="nb-btn nb-btn-small" id="btn-load-campaigns">Load</button>
+        <button type="button" class="nb-btn nb-btn-small" id="btn-load-campaigns" title="Reload campaigns from NewsBreak">Reload</button>
       </div>
     </div>
 
@@ -266,6 +309,10 @@
         <input type="text" id="default-body" class="nb-input" placeholder="Default body">
         <input type="url"  id="default-landing" class="nb-input" placeholder="Default landing URL">
       </div>
+      <div style="margin-top:8px;">
+        <input type="text" id="default-utm" class="nb-input" placeholder="UTM parameters (e.g. utm_source=newsbreak&utm_campaign=launch)">
+        <div class="nb-hint">Appended to every landing URL on submit — leave blank to skip. Don't include the leading <code>?</code> or <code>&amp;</code>.</div>
+      </div>
     </div>
 
     <!-- Creative preview grid -->
@@ -292,6 +339,13 @@
   const defH       = document.getElementById('default-headline');
   const defB       = document.getElementById('default-body');
   const defL       = document.getElementById('default-landing');
+  const defU       = document.getElementById('default-utm');
+
+  function appendUtm(url, utm) {
+    const u = (utm || '').trim().replace(/^[?&]+/, '');
+    if (!url || !u) return url;
+    return url + (url.includes('?') ? '&' : '?') + u;
+  }
 
   const prevDefaults = { h: '', b: '', l: '' };
 
@@ -423,7 +477,18 @@
       e.preventDefault();
       alert('Browser lost track of the uploaded files — please re-drop them and launch again.');
       dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
     }
+    const utm = (defU && defU.value || '').trim();
+    if (utm) {
+      const cards = document.querySelectorAll('.nb-creative-card');
+      cards.forEach(card => {
+        const inp = card.querySelector('input[name="landing_url"]');
+        if (inp && inp.value) inp.value = appendUtm(inp.value, utm);
+      });
+    }
+    const btn = document.getElementById('btn-launch');
+    if (btn) { btn.disabled = true; btn.textContent = 'Launching…'; }
   });
 
   // Campaign mode toggle
@@ -586,28 +651,48 @@
   }
   offerSel.addEventListener('change', () => applyOffer(offerSel.value));
 
-  // Load campaigns
-  document.getElementById('btn-load-campaigns').addEventListener('click', async function() {
-    const aid = document.getElementById('ad_account_id').value;
-    if (!aid) { alert('Select an ad account first'); return; }
-    const res = await fetch('/api/campaigns?ad_account_id=' + encodeURIComponent(aid));
-    const data = await res.json();
-    const sel = document.getElementById('campaign_id');
-    sel.innerHTML = '';
-    (data.campaigns || []).forEach(function(c) {
-      const id = c.id || c.campaignId;
+  // Auto-load campaigns whenever the ad account changes (or page loads with one selected)
+  const campaignSel = document.getElementById('campaign_id');
+  const btnLoadCampaigns = document.getElementById('btn-load-campaigns');
+  async function loadCampaigns() {
+    const acc = document.getElementById('ad_account_id').value;
+    campaignSel.innerHTML = '';
+    if (!acc) {
       const opt = document.createElement('option');
-      opt.value = id;
-      opt.textContent = (c.name || id) + ' (' + id + ')';
-      sel.appendChild(opt);
-    });
-    if (!sel.options.length) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'No campaigns found';
-      sel.appendChild(opt);
+      opt.value = ''; opt.textContent = 'Select an ad account first';
+      campaignSel.appendChild(opt);
+      return;
     }
-  });
+    const placeholder = document.createElement('option');
+    placeholder.value = ''; placeholder.textContent = 'Loading campaigns…';
+    campaignSel.appendChild(placeholder);
+    try {
+      const res = await fetch('/api/campaigns?ad_account_id=' + encodeURIComponent(acc));
+      const data = await res.json();
+      campaignSel.innerHTML = '';
+      (data.campaigns || []).forEach(function(c) {
+        const id = c.id || c.campaignId;
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = (c.name || id) + ' (' + id + ')';
+        campaignSel.appendChild(opt);
+      });
+      if (!campaignSel.options.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No campaigns — switch to "Create new"';
+        campaignSel.appendChild(opt);
+      }
+    } catch (e) {
+      campaignSel.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = ''; opt.textContent = 'Failed to load campaigns: ' + e.message;
+      campaignSel.appendChild(opt);
+    }
+  }
+  document.getElementById('ad_account_id').addEventListener('change', loadCampaigns);
+  if (btnLoadCampaigns) btnLoadCampaigns.addEventListener('click', loadCampaigns);
+  loadCampaigns();
 })();
 </script>
 {% endblock %}

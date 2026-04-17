@@ -388,6 +388,18 @@ def launch():
         group_size=group_size,
     )
 
+    try:
+        app.logger.info(
+            "bulk_launch: account=%s success=%s campaign_id=%s ad_sets=%d errors=%s",
+            ad_account_id,
+            result.get("success"),
+            result.get("campaign_id"),
+            len(result.get("ad_sets") or []),
+            result.get("errors") or [],
+        )
+    except Exception:
+        pass
+
     return render_template(
         "launch.html",
         accounts=account_options,

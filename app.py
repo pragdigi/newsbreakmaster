@@ -238,20 +238,37 @@ def launch():
         campaign_payload = {
             "adAccountId": ad_account_id,
             "name": campaign_name,
-            "objective": request.form.get("objective") or "TRAFFIC",
+            "objective": "CONVERSION",
         }
 
-    ad_set_base = {
+    bid_type = (request.form.get("bid_type") or "MAX_CONVERSION").strip().upper()
+    needs_bid = bid_type in {"CPC", "CPM", "TARGET_CPA", "TARGET_ROAS"}
+
+    pixel_id = (request.form.get("pixel_id") or "").strip()
+    conversion_event = (request.form.get("conversion_event") or "PURCHASE").strip().upper()
+    custom_event_name = (request.form.get("custom_event_name") or "").strip()
+
+    ad_set_base: dict = {
         "name_prefix": request.form.get("ad_set_name", "Bulk ad set").strip() or "Bulk ad set",
         "adAccountId": ad_account_id,
         "budgetType": request.form.get("budget_type", "DAILY"),
         "budget": int(float(request.form.get("budget_dollars", "50") or 50) * 100),
-        "bidType": request.form.get("bid_type", "CPC"),
-        "bidAmount": int(float(request.form.get("bid_dollars", "1") or 1) * 100),
+        "bidType": bid_type,
         "startTime": request.form.get("start_time") or None,
         "endTime": request.form.get("end_time") or None,
     }
-    # Remove Nones for JSON
+    if needs_bid:
+        if bid_type == "TARGET_ROAS":
+            ad_set_base["targetRoas"] = float(request.form.get("bid_dollars") or 2.0)
+        else:
+            ad_set_base["bidAmount"] = int(float(request.form.get("bid_dollars", "1") or 1) * 100)
+
+    if pixel_id:
+        ad_set_base["pixelId"] = pixel_id
+        event_value = custom_event_name if (conversion_event == "CUSTOM" and custom_event_name) else conversion_event
+        ad_set_base["conversionEvent"] = event_value
+        ad_set_base["optimizationGoal"] = "CONVERSION"
+
     ad_set_base = {k: v for k, v in ad_set_base.items() if v is not None}
 
     result = bulk_launch(

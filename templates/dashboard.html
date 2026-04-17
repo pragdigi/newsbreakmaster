@@ -1,30 +1,118 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — NewsBreak{% endblock %}
 {% block content %}
-<h1>Ad accounts</h1>
+<div class="nb-dash-header">
+  <div>
+    <h1>Ad accounts</h1>
+    <p class="nb-muted">Last 7 days · click an account to launch or manage</p>
+  </div>
+  <div class="nb-dash-actions">
+    <a class="nb-btn nb-btn-primary" href="{{ url_for('launch') }}">+ Bulk launch</a>
+    <a class="nb-btn" href="{{ url_for('rules_page') }}">Rules</a>
+  </div>
+</div>
+
 {% if error %}
 <div class="nb-error">{{ error }}</div>
 {% endif %}
+
 {% if accounts %}
-<table class="nb-table">
-  <thead>
-    <tr><th>Name</th><th>Account ID</th><th>Actions</th></tr>
-  </thead>
-  <tbody>
-    {% for a in accounts %}
-    <tr>
-      <td>{{ a.get('name', '—') }}</td>
-      <td><code>{{ a.get('id') }}</code></td>
-      <td>
-        <a class="nb-btn nb-btn-small" href="{{ url_for('launch') }}?account={{ a.get('id') }}">Bulk launch</a>
-        <a class="nb-btn nb-btn-small" href="{{ url_for('scaling') }}?account_id={{ a.get('id') }}">Scaling</a>
-        <a class="nb-btn nb-btn-small" href="{{ url_for('rules_page', account_id=a.get('id')) }}">Rules</a>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="nb-kpi-grid">
+  <div class="nb-kpi"><div class="nb-kpi-label">Accounts</div><div class="nb-kpi-value">{{ accounts|length }}</div></div>
+  <div class="nb-kpi"><div class="nb-kpi-label">Total 7d spend</div><div class="nb-kpi-value" id="kpi-spend">—</div></div>
+  <div class="nb-kpi"><div class="nb-kpi-label">Total 7d conv.</div><div class="nb-kpi-value" id="kpi-conv">—</div></div>
+  <div class="nb-kpi"><div class="nb-kpi-label">Blended ROAS</div><div class="nb-kpi-value" id="kpi-roas">—</div></div>
+</div>
+
+<div class="nb-card">
+  <table class="nb-table" id="accounts-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Account ID</th>
+        <th>Status</th>
+        <th>7d spend</th>
+        <th>7d conv.</th>
+        <th>CPA</th>
+        <th>ROAS</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in accounts %}
+      <tr data-account-id="{{ a.get('id') }}">
+        <td><strong>{{ a.get('name', '—') }}</strong></td>
+        <td><code>{{ a.get('id') }}</code></td>
+        <td>
+          {% set s = a.get('status', 'active')|lower %}
+          <span class="nb-badge {{ 'nb-badge-ok' if s == 'active' else 'nb-badge-warn' }}">{{ s }}</span>
+        </td>
+        <td class="c-spend">…</td>
+        <td class="c-conv">…</td>
+        <td class="c-cpa">…</td>
+        <td class="c-roas">…</td>
+        <td>
+          <a class="nb-btn nb-btn-small" href="{{ url_for('launch') }}?account={{ a.get('id') }}">Launch</a>
+          <a class="nb-btn nb-btn-small" href="{{ url_for('scaling') }}?account_id={{ a.get('id') }}">Scaling</a>
+          <a class="nb-btn nb-btn-small" href="{{ url_for('rules_page', account_id=a.get('id')) }}">Rules</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function() {
+  async function loadAccount(aid) {
+    try {
+      const res = await fetch('/api/report?ad_account_id=' + encodeURIComponent(aid) + '&level=campaign&days=7');
+      if (!res.ok) return null;
+      const data = await res.json();
+      const rows = data.rows || [];
+      const sum = rows.reduce(function(acc, r) {
+        acc.spend += (parseFloat(r.spend) || 0);
+        acc.conv  += (parseFloat(r.conversions) || 0);
+        acc.value += (parseFloat(r.conversionValue) || parseFloat(r.revenue) || 0);
+        return acc;
+      }, { spend: 0, conv: 0, value: 0 });
+      return sum;
+    } catch (e) { return null; }
+  }
+
+  function fmt(n, digits) { return (n || 0).toFixed(digits || 2); }
+
+  async function run() {
+    const rows = document.querySelectorAll('#accounts-table tbody tr');
+    let totalSpend = 0, totalConv = 0, totalVal = 0;
+    for (const tr of rows) {
+      const aid = tr.getAttribute('data-account-id');
+      const s = await loadAccount(aid);
+      if (!s) {
+        tr.querySelector('.c-spend').textContent = '—';
+        tr.querySelector('.c-conv').textContent = '—';
+        tr.querySelector('.c-cpa').textContent = '—';
+        tr.querySelector('.c-roas').textContent = '—';
+        continue;
+      }
+      totalSpend += s.spend; totalConv += s.conv; totalVal += s.value;
+      tr.querySelector('.c-spend').textContent = '$' + fmt(s.spend);
+      tr.querySelector('.c-conv').textContent = fmt(s.conv, 0);
+      tr.querySelector('.c-cpa').textContent = s.conv > 0 ? '$' + fmt(s.spend / s.conv) : '—';
+      tr.querySelector('.c-roas').textContent = s.spend > 0 ? fmt(s.value / s.spend) : '—';
+    }
+    document.getElementById('kpi-spend').textContent = '$' + fmt(totalSpend);
+    document.getElementById('kpi-conv').textContent = fmt(totalConv, 0);
+    document.getElementById('kpi-roas').textContent = totalSpend > 0 ? fmt(totalVal / totalSpend) : '—';
+  }
+  run();
+})();
+</script>
 {% else %}
-<p class="nb-muted">No accounts returned. Check org IDs and token permissions.</p>
+<div class="nb-empty">
+  <h3>No ad accounts yet</h3>
+  <p class="nb-muted">Check your Access-Token permissions and the Organization IDs used at login.</p>
+  <a class="nb-btn" href="{{ url_for('logout') }}">Log in again</a>
+</div>
 {% endif %}
 {% endblock %}

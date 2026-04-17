@@ -2,17 +2,20 @@
 {% block title %}Bulk launch — NewsBreak{% endblock %}
 {% block content %}
 <h1>Bulk launch</h1>
+<p class="nb-muted">Conversion campaigns only. Upload creatives, pick a bid strategy, attach your pixel and event.</p>
+
 {% if result %}
-<div class="nb-card nb-result">
-  <h3>Result</h3>
+<div class="nb-card" style="margin-bottom:16px;">
+  <h3 style="margin-top:0;">Result</h3>
   <pre class="nb-pre">{{ result | tojson(indent=2) }}</pre>
 </div>
 {% endif %}
 
 <form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="launch-form">
-  <div class="nb-field">
-    <label class="nb-label">Ad account</label>
-    <select name="ad_account_id" id="ad_account_id" class="nb-input" required>
+  <!-- Account -->
+  <div class="nb-field-group">
+    <h3>1 · Ad account</h3>
+    <select name="ad_account_id" id="ad_account_id" class="nb-select" required>
       <option value="">— Select —</option>
       {% for id, name in accounts.items() %}
       <option value="{{ id }}" {% if request.args.get('account') == id %}selected{% endif %}>{{ name }} ({{ id }})</option>
@@ -20,82 +23,177 @@
     </select>
   </div>
 
-  <div class="nb-field">
-    <label class="nb-label">Campaign</label>
-    <label><input type="radio" name="campaign_mode" value="existing" checked> Existing</label>
-    <label><input type="radio" name="campaign_mode" value="new"> New</label>
-  </div>
-  <div id="existing-campaign" class="nb-field">
-    <label class="nb-label">Campaign ID</label>
-    <select name="campaign_id" id="campaign_id" class="nb-input"></select>
-    <button type="button" class="nb-btn nb-btn-small" id="btn-load-campaigns">Load campaigns</button>
-  </div>
-  <div id="new-campaign" class="nb-field" style="display:none;">
-    <label class="nb-label">New campaign name</label>
-    <input type="text" name="campaign_name" class="nb-input" value="API Campaign">
-    <label class="nb-label">Objective</label>
-    <input type="text" name="objective" class="nb-input" value="TRAFFIC" placeholder="TRAFFIC / CONVERSIONS / …">
-  </div>
+  <!-- Campaign -->
+  <div class="nb-field-group">
+    <h3>2 · Campaign</h3>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Mode</label>
+        <div>
+          <label style="margin-right:12px;"><input type="radio" name="campaign_mode" value="existing" checked> Use existing</label>
+          <label><input type="radio" name="campaign_mode" value="new"> Create new</label>
+        </div>
+      </div>
+      <div>
+        <label class="nb-label">Objective</label>
+        <input type="text" class="nb-input" value="CONVERSION (locked)" disabled>
+        <div class="nb-hint">Only Conversion objective is supported.</div>
+      </div>
+    </div>
 
-  <h2>Ad set</h2>
-  <div class="nb-grid">
-    <div class="nb-field">
-      <label class="nb-label">Ad set name</label>
-      <input type="text" name="ad_set_name" class="nb-input" value="Bulk ad set">
+    <div id="existing-campaign" style="margin-top:12px;">
+      <label class="nb-label">Existing campaign</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select name="campaign_id" id="campaign_id" class="nb-select" style="flex:1;"></select>
+        <button type="button" class="nb-btn nb-btn-small" id="btn-load-campaigns">Load</button>
+      </div>
     </div>
-    <div class="nb-field">
-      <label class="nb-label">Budget ($ daily or total — check NB UI)</label>
-      <input type="number" step="0.01" name="budget_dollars" class="nb-input" value="50">
-    </div>
-    <div class="nb-field">
-      <label class="nb-label">Budget type</label>
-      <select name="budget_type" class="nb-input"><option>DAILY</option><option>TOTAL</option></select>
-    </div>
-    <div class="nb-field">
-      <label class="nb-label">Bid type</label>
-      <select name="bid_type" class="nb-input">
-        <option>CPC</option><option>CPM</option><option>TARGET_CPA</option><option>TARGET_ROAS</option>
-      </select>
-    </div>
-    <div class="nb-field">
-      <label class="nb-label">Bid ($)</label>
-      <input type="number" step="0.01" name="bid_dollars" class="nb-input" value="1">
+
+    <div id="new-campaign" style="display:none;margin-top:12px;">
+      <label class="nb-label">New campaign name</label>
+      <input type="text" name="campaign_name" class="nb-input" value="API Campaign">
     </div>
   </div>
 
-  <h2>Grouping</h2>
-  <select name="grouping" class="nb-input">
-    <option value="all_in_one">All ads in one ad set</option>
-    <option value="isolate">One ad set per creative</option>
-    <option value="groups_of_n" selected>Groups of N</option>
-  </select>
-  <input type="number" name="group_size" class="nb-input" value="5" min="1" title="Group size">
+  <!-- Ad set -->
+  <div class="nb-field-group">
+    <h3>3 · Ad set</h3>
+    <div class="nb-row-3">
+      <div>
+        <label class="nb-label">Ad set name</label>
+        <input type="text" name="ad_set_name" class="nb-input" value="Bulk ad set">
+      </div>
+      <div>
+        <label class="nb-label">Budget ($)</label>
+        <input type="number" step="0.01" name="budget_dollars" class="nb-input" value="50">
+      </div>
+      <div>
+        <label class="nb-label">Budget type</label>
+        <select name="budget_type" class="nb-select">
+          <option value="DAILY">Daily</option>
+          <option value="TOTAL">Lifetime</option>
+        </select>
+      </div>
+    </div>
 
-  <h2>Creatives</h2>
-  <p class="nb-muted">Add rows: image/video file, headline, body, landing URL.</p>
-  <div id="creative-rows"></div>
-  <button type="button" class="nb-btn nb-btn-small" id="add-row">+ Add creative</button>
+    <div class="nb-row-2" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Bid strategy</label>
+        <select name="bid_type" id="bid_type" class="nb-select">
+          <option value="MAX_CONVERSION">Highest volume (max conversions)</option>
+          <option value="TARGET_CPA">Target CPA (bid cap)</option>
+          <option value="TARGET_ROAS">Target ROAS</option>
+          <option value="MAX_CONVERSION_VALUE">Maximize conversion value</option>
+          <option value="CPC">Manual CPC</option>
+          <option value="CPM">Manual CPM</option>
+        </select>
+        <div class="nb-hint" id="bid-hint">Let NewsBreak get the most conversions for your budget.</div>
+      </div>
+      <div id="bid-amount-wrap" style="display:none;">
+        <label class="nb-label" id="bid-amount-label">Bid / target ($)</label>
+        <input type="number" step="0.01" name="bid_dollars" id="bid_dollars" class="nb-input" value="5">
+      </div>
+    </div>
 
-  <button type="submit" class="nb-btn nb-btn-primary">Launch</button>
+    <div class="nb-row-2" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Start time (optional)</label>
+        <input type="datetime-local" name="start_time" class="nb-input">
+      </div>
+      <div>
+        <label class="nb-label">End time (optional)</label>
+        <input type="datetime-local" name="end_time" class="nb-input">
+      </div>
+    </div>
+  </div>
+
+  <!-- Conversion tracking -->
+  <div class="nb-field-group">
+    <h3>4 · Conversion tracking</h3>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Pixel ID</label>
+        <input type="text" name="pixel_id" class="nb-input" placeholder="e.g. 1234567890" required>
+        <div class="nb-hint">Find it in NewsBreak Ad Manager → Tools → Event Management.</div>
+      </div>
+      <div>
+        <label class="nb-label">Conversion event</label>
+        <select name="conversion_event" class="nb-select">
+          <option value="PURCHASE">Purchase</option>
+          <option value="LEAD">Lead</option>
+          <option value="SIGN_UP">Sign up</option>
+          <option value="COMPLETE_REGISTRATION">Complete registration</option>
+          <option value="ADD_TO_CART">Add to cart</option>
+          <option value="INITIATE_CHECKOUT">Initiate checkout</option>
+          <option value="ADD_PAYMENT_INFO">Add payment info</option>
+          <option value="SUBSCRIBE">Subscribe</option>
+          <option value="SUBMIT_APPLICATION">Submit application</option>
+          <option value="VIEW_CONTENT">View content</option>
+          <option value="SEARCH">Search</option>
+          <option value="PAGE_VIEW">Page view</option>
+          <option value="CONTACT">Contact</option>
+          <option value="CUSTOM">Custom event</option>
+        </select>
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      <label class="nb-label">Custom event name (only if &ldquo;Custom event&rdquo; above)</label>
+      <input type="text" name="custom_event_name" class="nb-input" placeholder="e.g. my_custom_event">
+    </div>
+  </div>
+
+  <!-- Grouping -->
+  <div class="nb-field-group">
+    <h3>5 · Ad grouping</h3>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Strategy</label>
+        <select name="grouping" id="grouping" class="nb-select">
+          <option value="all_in_one">All ads in one ad set</option>
+          <option value="isolate">One ad set per creative</option>
+          <option value="groups_of_n" selected>Groups of N</option>
+        </select>
+      </div>
+      <div id="group-size-wrap">
+        <label class="nb-label">Group size</label>
+        <input type="number" name="group_size" class="nb-input" value="5" min="1">
+      </div>
+    </div>
+  </div>
+
+  <!-- Creatives -->
+  <div class="nb-field-group">
+    <h3>6 · Creatives</h3>
+    <p class="nb-muted" style="margin-top:0;">Each row: file (image/video) + headline + body + landing URL.</p>
+    <div id="creative-rows"></div>
+    <button type="button" class="nb-btn nb-btn-small" id="add-row">+ Add creative</button>
+  </div>
+
+  <div>
+    <button type="submit" class="nb-btn nb-btn-primary">Launch campaign</button>
+    <a href="{{ url_for('dashboard') }}" class="nb-btn">Cancel</a>
+  </div>
 </form>
 
 <script>
 (function() {
-  const rows = document.getElementById('creative-rows');
+  const rowsEl = document.getElementById('creative-rows');
   function addRow() {
     const div = document.createElement('div');
     div.className = 'nb-creative-row nb-card';
+    div.style.marginBottom = '8px';
     div.innerHTML = `
       <input type="file" name="creatives" accept="image/*,video/*" required>
       <input type="text" name="headline" placeholder="Headline" class="nb-input">
       <input type="text" name="body" placeholder="Body" class="nb-input">
       <input type="url" name="landing_url" placeholder="https://..." class="nb-input" required>
     `;
-    rows.appendChild(div);
+    rowsEl.appendChild(div);
   }
   document.getElementById('add-row').addEventListener('click', addRow);
   addRow();
 
+  // Campaign mode toggle
   document.querySelectorAll('input[name=campaign_mode]').forEach(function(r) {
     r.addEventListener('change', function() {
       document.getElementById('existing-campaign').style.display = r.value === 'existing' ? 'block' : 'none';
@@ -103,9 +201,43 @@
     });
   });
 
+  // Bid strategy toggle + hints
+  const bidHints = {
+    MAX_CONVERSION: { label: null, hint: 'Let NewsBreak get the most conversions for your budget.' },
+    TARGET_CPA: { label: 'Target CPA ($)', hint: 'Set the max average cost per conversion.' },
+    TARGET_ROAS: { label: 'Target ROAS (e.g. 2.0)', hint: 'Set the minimum return on ad spend.' },
+    MAX_CONVERSION_VALUE: { label: null, hint: 'Optimize for highest total conversion value.' },
+    CPC: { label: 'CPC bid ($)', hint: 'Manual cost-per-click bidding.' },
+    CPM: { label: 'CPM bid ($)', hint: 'Manual cost-per-thousand-impressions bidding.' }
+  };
+  const bidSel = document.getElementById('bid_type');
+  const bidWrap = document.getElementById('bid-amount-wrap');
+  const bidLabel = document.getElementById('bid-amount-label');
+  const bidHint = document.getElementById('bid-hint');
+  function refreshBid() {
+    const info = bidHints[bidSel.value] || {};
+    bidHint.textContent = info.hint || '';
+    if (info.label) {
+      bidWrap.style.display = 'block';
+      bidLabel.textContent = info.label;
+    } else {
+      bidWrap.style.display = 'none';
+    }
+  }
+  bidSel.addEventListener('change', refreshBid);
+  refreshBid();
+
+  // Grouping toggle
+  const groupSel = document.getElementById('grouping');
+  const gWrap = document.getElementById('group-size-wrap');
+  function refreshGroup() { gWrap.style.display = groupSel.value === 'groups_of_n' ? 'block' : 'none'; }
+  groupSel.addEventListener('change', refreshGroup);
+  refreshGroup();
+
+  // Load campaigns
   document.getElementById('btn-load-campaigns').addEventListener('click', async function() {
     const aid = document.getElementById('ad_account_id').value;
-    if (!aid) { alert('Select ad account'); return; }
+    if (!aid) { alert('Select an ad account first'); return; }
     const res = await fetch('/api/campaigns?ad_account_id=' + encodeURIComponent(aid));
     const data = await res.json();
     const sel = document.getElementById('campaign_id');
@@ -117,6 +249,12 @@
       opt.textContent = (c.name || id) + ' (' + id + ')';
       sel.appendChild(opt);
     });
+    if (!sel.options.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No campaigns found';
+      sel.appendChild(opt);
+    }
   });
 })();
 </script>

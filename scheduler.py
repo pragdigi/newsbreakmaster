@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -40,14 +41,32 @@ def _flatten_ad_accounts(api_response: Any) -> List[str]:
     return list(dict.fromkeys(ids))
 
 
-def run_scheduled_rules() -> None:
-    user_ids = storage.list_token_user_ids()
-    for uid in user_ids:
+def _env_credentials() -> List[Dict[str, Any]]:
+    """Env-configured credentials (preferred — survives redeploys)."""
+    tok = (os.environ.get("NEWSBREAK_ACCESS_TOKEN") or "").strip()
+    raw = os.environ.get("NEWSBREAK_DEFAULT_ORG_IDS", "")
+    org_ids = [x.strip() for x in raw.split(",") if x.strip()]
+    if tok and org_ids:
+        return [{"uid": "env", "access_token": tok, "org_ids": org_ids}]
+    return []
+
+
+def _file_credentials() -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for uid in storage.list_token_user_ids():
         tok = storage.load_token(uid)
         if not tok:
             continue
-        token = tok.get("access_token")
-        org_ids = tok.get("org_ids") or []
+        out.append({"uid": uid, "access_token": tok.get("access_token"), "org_ids": tok.get("org_ids") or []})
+    return out
+
+
+def run_scheduled_rules() -> None:
+    creds = _env_credentials() or _file_credentials()
+    for cred in creds:
+        uid = cred["uid"]
+        token = cred.get("access_token")
+        org_ids = cred.get("org_ids") or []
         if not token or not org_ids:
             logger.warning("Scheduler skip user %s: missing token or org_ids", uid)
             continue

@@ -69,8 +69,25 @@ def _org_ids_from_form() -> list[str]:
     return []
 
 
+def _env_access_token() -> str:
+    return (_cfg_val("NEWSBREAK_ACCESS_TOKEN", "") or "").strip()
+
+
+def _env_org_ids() -> list[str]:
+    raw = _cfg_val("NEWSBREAK_DEFAULT_ORG_IDS", "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _effective_token() -> dict | None:
+    """Prefer env-configured token so Render redeploys don't force re-login."""
+    env_tok = _env_access_token()
+    if env_tok:
+        return {"access_token": env_tok, "org_ids": _env_org_ids()}
+    return storage.load_token(_user_id())
+
+
 def _client() -> NewsBreakClient | None:
-    tok = storage.load_token(_user_id())
+    tok = _effective_token()
     if not tok:
         return None
     return NewsBreakClient(tok["access_token"])
@@ -140,13 +157,15 @@ def _start_jobs():
 
 @app.route("/")
 def index():
-    if storage.load_token(_user_id()):
+    if _effective_token():
         return redirect(url_for("dashboard"))
     return redirect(url_for("login"))
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    if _env_access_token():
+        return redirect(url_for("dashboard"))
     err = None
     if request.method == "POST":
         token = (request.form.get("access_token") or "").strip()
@@ -183,7 +202,7 @@ def dashboard():
     err = None
     accounts: list[dict] = []
     try:
-        tok = storage.load_token(_user_id())
+        tok = _effective_token() or {}
         raw = cl.get_ad_accounts(tok.get("org_ids") or [])
         accounts = _flatten_ad_accounts(raw)
     except Exception as e:
@@ -196,7 +215,7 @@ def launch():
     cl = _client()
     if not cl:
         return redirect(url_for("login"))
-    tok = storage.load_token(_user_id())
+    tok = _effective_token() or {}
     accounts = _flatten_ad_accounts(cl.get_ad_accounts(tok.get("org_ids") or []))
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
 
@@ -306,7 +325,7 @@ def scaling():
     cl = _client()
     if not cl:
         return redirect(url_for("login"))
-    tok = storage.load_token(_user_id())
+    tok = _effective_token() or {}
     accounts = _flatten_ad_accounts(cl.get_ad_accounts(tok.get("org_ids") or []))
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
     return render_template("scaling.html", accounts=account_options)
@@ -317,7 +336,7 @@ def rules_page():
     cl = _client()
     if not cl:
         return redirect(url_for("login"))
-    tok = storage.load_token(_user_id())
+    tok = _effective_token() or {}
     accounts = _flatten_ad_accounts(cl.get_ad_accounts(tok.get("org_ids") or []))
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
     account_id = request.args.get("account_id", "")
@@ -341,7 +360,7 @@ def api_accounts():
     cl = _client()
     if not cl:
         return jsonify({"error": "unauthorized"}), 401
-    tok = storage.load_token(_user_id())
+    tok = _effective_token() or {}
     try:
         raw = cl.get_ad_accounts(tok.get("org_ids") or [])
         return jsonify({"accounts": _flatten_ad_accounts(raw)})

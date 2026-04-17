@@ -3,12 +3,13 @@ Bulk upload creatives and create campaign / ad sets / ads per grouping strategy.
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from newsbreak_api import NewsBreakClient
 
@@ -21,6 +22,53 @@ def _log_json(label: str, obj: Any) -> None:
         logger.info("%s %s", label, json.dumps(obj, default=str)[:4000])
     except Exception:
         logger.info("%s %r", label, obj)
+
+
+# NewsBreak's /ad/uploadAssets endpoint silently rejects formats outside
+# of {jpg, jpeg, png, gif, mp4, mov, webm} with a generic
+# "Fail to create media: unexpected error occurred". Transparently
+# convert .webp / .heic / .heif / .avif / .bmp / .tiff images to PNG
+# before upload so the user doesn't have to pre-process them.
+_IMAGE_EXT_OK = {".jpg", ".jpeg", ".png", ".gif"}
+_VIDEO_EXT_OK = {".mp4", ".mov", ".webm", ".m4v"}
+_IMAGE_EXT_CONVERT = {".webp", ".heic", ".heif", ".avif", ".bmp", ".tif", ".tiff"}
+
+
+def _normalize_upload(file_bytes: bytes, filename: str) -> Tuple[bytes, str, bool]:
+    """
+    Returns (bytes, filename, converted). If the input is an unsupported
+    image format, converts to PNG in memory and rewrites the filename.
+    Non-image formats and already-supported formats pass through unchanged.
+    """
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in _IMAGE_EXT_OK or ext in _VIDEO_EXT_OK:
+        return file_bytes, filename, False
+    if ext not in _IMAGE_EXT_CONVERT:
+        return file_bytes, filename, False
+    try:
+        from PIL import Image
+    except Exception as e:
+        logger.warning("pillow import failed, cannot convert %s: %s", ext, e)
+        return file_bytes, filename, False
+    try:
+        with Image.open(io.BytesIO(file_bytes)) as im:
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGBA" if "A" in im.mode else "RGB")
+            buf = io.BytesIO()
+            im.save(buf, format="PNG", optimize=True)
+            new_bytes = buf.getvalue()
+        new_filename = (os.path.splitext(filename)[0] or "asset") + ".png"
+        logger.info(
+            "normalize_upload converted filename=%r (%d bytes) -> %r (%d bytes)",
+            filename,
+            len(file_bytes),
+            new_filename,
+            len(new_bytes),
+        )
+        return new_bytes, new_filename, True
+    except Exception as e:
+        logger.warning("normalize_upload failed filename=%r err=%s", filename, e)
+        return file_bytes, filename, False
 
 
 def _name_from_filename(filename: str, fallback: str = "") -> str:
@@ -172,20 +220,23 @@ def bulk_launch(
 
     def _upload_with_retry(c: Dict[str, Any], max_attempts: int = 3) -> Any:
         """
-        NewsBreak's /ad/uploadAssets occasionally returns 400 "Fail to create
-        media: unexpected error occurred" for valid files — looks transient
-        (observed 10/10 failures in a burst, then works again on retry).
-        Retry with exponential backoff on that specific error; re-raise
-        anything else immediately so bad payloads don't get retried.
+        NewsBreak's /ad/uploadAssets returns 400 "Fail to create media:
+        unexpected error occurred" for both unsupported formats AND
+        genuine transient errors. We normalize unsupported image
+        formats to PNG up-front (see _normalize_upload) and then retry
+        on the same generic error in case it's truly transient.
+        Non-transient errors with specific messages re-raise immediately.
         """
-        file_bytes = c.get("file_bytes") or b""
-        filename = c.get("filename") or "asset.bin"
-        media_name = c.get("media_name")
+        raw_bytes = c.get("file_bytes") or b""
+        raw_filename = c.get("filename") or "asset.bin"
+        file_bytes, filename, converted = _normalize_upload(raw_bytes, raw_filename)
+        media_name = filename if converted else c.get("media_name")
         logger.info(
-            "upload_asset.request filename=%r size=%d media_name=%r ad_account=%s",
+            "upload_asset.request filename=%r size=%d media_name=%r converted=%s ad_account=%s",
             filename,
             len(file_bytes),
             media_name,
+            converted,
             ad_account_id,
         )
         last_err: Optional[Exception] = None

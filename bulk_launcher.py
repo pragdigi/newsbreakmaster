@@ -93,6 +93,14 @@ def bulk_launch(
     result["campaign_id"] = cid
 
     groups = group_creatives(creatives, grouping, group_size)
+    if not groups:
+        result["success"] = False
+        result["errors"].append(
+            "No creatives were submitted — the form POST had an empty file list. "
+            "Drop at least one image/video in the launch form and try again."
+        )
+        return result
+
     base_name = ad_set_base.get("name_prefix", "Ad set")
     brand_name = ad_set_base.get("_brand_name", "Advertiser")
     cta = ad_set_base.get("_cta", "Learn More")
@@ -188,8 +196,13 @@ def bulk_launch(
 
         result["ad_sets"].append({"ad_set_id": ad_set_id, "ads": ads_out})
 
-    if result["errors"] and not result["ad_sets"]:
+    if not result["ad_sets"]:
         result["success"] = False
+        if not result["errors"]:
+            result["errors"].append(
+                "Campaign was created but no ad sets were produced. This usually means "
+                "every creative upload failed silently; re-check the file types and try again."
+            )
     return result
 
 

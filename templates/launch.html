@@ -397,10 +397,7 @@
   });
   fileInput.addEventListener('change', e => {
     if (e.target.files && e.target.files.length) {
-      const fl = e.target.files;
-      // don't replay: clear input, then add
-      addFiles(fl);
-      setTimeout(() => { fileInput.value = ''; }, 0);
+      addFiles(e.target.files);
     }
   });
 
@@ -413,11 +410,18 @@
     });
   });
 
-  // Prevent submit if no creatives
+  // Prevent submit if no creatives AND guarantee the file input carries the latest selection
   document.getElementById('launch-form').addEventListener('submit', function(e) {
     if (items.length === 0) {
       e.preventDefault();
       alert('Please add at least one creative before launching.');
+      dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    rebuildFileList();
+    if (!fileInput.files || fileInput.files.length === 0) {
+      e.preventDefault();
+      alert('Browser lost track of the uploaded files — please re-drop them and launch again.');
       dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   });

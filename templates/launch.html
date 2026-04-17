@@ -72,7 +72,7 @@
           {% endfor %}
         </select>
         <div class="nb-hint">
-          {% if offers %}Picking an offer fills pixel, event, landing URL, headline, body & target CPA.{% else %}No offers saved yet — <a href="{{ url_for('settings_page') }}">create one here</a>.{% endif %}
+          {% if offers %}Picking an offer fills brand, CTA, pixel, event, landing URL, UTMs, headline, body & target CPA.{% else %}No offers saved yet — <a href="{{ url_for('settings_page') }}">create one here</a>.{% endif %}
         </div>
       </div>
       <div id="offer-summary" class="nb-hint" style="align-self:end;"></div>
@@ -610,15 +610,21 @@
 
     if (o.headline) { defH.value = o.headline; }
     if (o.body) { defB.value = o.body; }
-    const base = o.landing_url || '';
-    const utm = o.utm_parameters || '';
-    let url = base;
-    if (base && utm) {
-      url = base + (base.includes('?') ? '&' : '?') + utm.replace(/^\?|^&/, '');
-    }
-    if (url) { defL.value = url; }
+    if (o.utm_parameters && defU) { defU.value = o.utm_parameters; }
+    if (o.landing_url) { defL.value = o.landing_url; }
     applyDefaultsToItems({ force: true });
     renderAll();
+
+    if (o.brand_name) {
+      const brandEl = document.getElementById('brand_name');
+      if (brandEl) brandEl.value = o.brand_name;
+    }
+    if (o.cta) {
+      const ctaEl = document.getElementById('cta');
+      if (ctaEl && Array.from(ctaEl.options).some(op => op.value === o.cta)) {
+        ctaEl.value = o.cta;
+      }
+    }
 
     if (o.pixel_id && PIXELS.find(p => p.id === o.pixel_id)) {
       pixelSel.value = o.pixel_id;
@@ -637,6 +643,8 @@
     }
 
     const bits = [];
+    if (o.brand_name) bits.push(`Brand: ${o.brand_name}`);
+    if (o.cta) bits.push(`CTA: ${o.cta}`);
     if (o.payout) bits.push(`Payout $${Number(o.payout).toFixed(2)}`);
     if (o.target_cpa) bits.push(`Target CPA $${Number(o.target_cpa).toFixed(2)}`);
     if (o.pixel_id) {

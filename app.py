@@ -1049,6 +1049,8 @@ def api_offers_save():
         {
             "id": data.get("id"),
             "name": name,
+            "brand_name": (data.get("brand_name") or "").strip(),
+            "cta": (data.get("cta") or "").strip(),
             "landing_url": (data.get("landing_url") or "").strip(),
             "headline": (data.get("headline") or "").strip(),
             "body": (data.get("body") or "").strip(),

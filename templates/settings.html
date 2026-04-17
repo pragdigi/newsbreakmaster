@@ -51,7 +51,7 @@
     <p class="nb-muted nb-small">Bundle a pixel, event, default creative copy, landing URL and payout. Selecting an offer on the launch page auto-fills everything.</p>
     <table class="nb-table" id="offers-table">
       <thead>
-        <tr><th>Offer</th><th>Landing URL</th><th>Pixel</th><th>Event</th><th>Payout</th><th>Target CPA</th><th></th></tr>
+        <tr><th>Offer</th><th>Brand</th><th>Landing URL</th><th>Pixel</th><th>Event</th><th>Payout</th><th>Target CPA</th><th></th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -125,6 +125,7 @@ function renderOffers() {
   tb.innerHTML = state.offers.length ? state.offers.map(o => `
     <tr>
       <td><strong>${escape(o.name)}</strong><br><span class="nb-muted nb-small">${escape((o.headline||'').slice(0,60))}</span></td>
+      <td>${escape(o.brand_name||'—')}${o.cta ? `<br><span class="nb-muted nb-small">CTA: ${escape(o.cta)}</span>` : ''}</td>
       <td class="nb-muted nb-small">${escape((o.landing_url||'').slice(0,50))}</td>
       <td>${pixelName(o.pixel_id)}</td>
       <td>${eventName(o.event_id)}</td>
@@ -134,7 +135,7 @@ function renderOffers() {
         <button type="button" class="nb-btn-ghost" data-edit="offer" data-id="${o.id}">Edit</button>
         <button type="button" class="nb-btn-ghost nb-danger" data-del="offer" data-id="${o.id}">Delete</button>
       </td>
-    </tr>`).join('') : `<tr><td colspan="7" class="nb-muted">No offers yet.</td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="8" class="nb-muted">No offers yet.</td></tr>`;
 }
 
 function escape(s) { return (s||'').toString().replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
@@ -164,10 +165,16 @@ function formHtml(kind, item) {
   // offer
   const pixelOpts = state.pixels.map(p => `<option value="${p.id}" ${item.pixel_id===p.id?'selected':''}>${escape(p.name)} (${escape(p.pixel_id)})</option>`).join('');
   const eventOpts = state.events.map(e => `<option value="${e.id}" ${item.event_id===e.id?'selected':''}>${escape(e.name)}</option>`).join('');
+  const CTA_OPTIONS = ['Learn More','Shop Now','Sign Up','Get Offer','Subscribe','Download','Get Quote','Apply Now','Book Now','Contact Us'];
+  const ctaOpts = CTA_OPTIONS.map(c => `<option value="${c}" ${(item.cta||'Learn More')===c?'selected':''}>${c}</option>`).join('');
   return `
     <div class="nb-row-2">
       <label class="nb-field"><span>Offer name</span><input name="name" required value="${escape(item.name||'')}" placeholder="e.g. Magnura Q2"></label>
       <label class="nb-field"><span>Landing URL</span><input name="landing_url" value="${escape(item.landing_url||'')}" placeholder="https://..."></label>
+    </div>
+    <div class="nb-row-2">
+      <label class="nb-field"><span>Brand name <small class="nb-muted">(appears on the ad)</small></span><input name="brand_name" value="${escape(item.brand_name||'')}" placeholder="e.g. Acme Corp"></label>
+      <label class="nb-field"><span>Default CTA</span><select name="cta">${ctaOpts}</select></label>
     </div>
     <div class="nb-row-2">
       <label class="nb-field"><span>Default headline</span><input name="headline" value="${escape(item.headline||'')}"></label>
@@ -216,7 +223,7 @@ async function saveModal() {
     body.is_custom = !!body.event_type && !STANDARD_EVENTS.includes(body.event_type) ? true : false;
     if (!body.tracking_id) { alert('Tracking ID is required — grab it from NewsBreak Ad Manager → Event Management.'); return; }
   } else {
-    for (const k of ['name','landing_url','headline','body','pixel_id','event_id','payout','target_cpa','utm_parameters','notes']) {
+    for (const k of ['name','brand_name','cta','landing_url','headline','body','pixel_id','event_id','payout','target_cpa','utm_parameters','notes']) {
       body[k] = fd.get(k);
     }
   }

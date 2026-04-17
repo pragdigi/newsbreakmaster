@@ -322,7 +322,15 @@ def launch():
     end_epoch = _to_epoch(request.form.get("end_time", ""))
     if start_epoch is None:
         start_epoch = int(datetime.now(timezone.utc).timestamp())
-    if end_epoch is None:
+    # NewsBreak Create Ad Set requires endTime, but the UI's "no end date"
+    # checkbox really just sends a far-future timestamp under the hood.
+    # If the user left the box checked (no_end_date), honour that;
+    # otherwise fall back to the supplied datetime or start + 30d.
+    no_end_date = (request.form.get("no_end_date") or "").strip().lower() in {"1", "on", "true", "yes"}
+    FAR_FUTURE = int(datetime(2099, 12, 31, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+    if no_end_date:
+        end_epoch = FAR_FUTURE
+    elif end_epoch is None:
         end_epoch = start_epoch + 30 * 24 * 3600
 
     ad_set_base: dict = {

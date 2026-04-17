@@ -170,12 +170,13 @@
         <div class="nb-hint">Leave blank to start immediately.</div>
       </div>
       <div>
-        <details id="end-time-toggle">
-          <summary style="cursor:pointer;color:var(--muted);font-size:0.85rem;user-select:none;">Set an end date (optional)</summary>
-          <label class="nb-label" style="margin-top:8px;">End time</label>
-          <input type="datetime-local" name="end_time" class="nb-input">
-          <div class="nb-hint">If blank, runs open-ended (server defaults to start + 30 days, NewsBreak's API requires an end timestamp).</div>
-        </details>
+        <label class="nb-label">End time</label>
+        <label style="display:flex;align-items:center;gap:8px;margin:6px 0 8px 0;cursor:pointer;">
+          <input type="checkbox" name="no_end_date" id="no_end_date" value="1" checked>
+          <span style="font-size:0.9rem;">No end date (run open-ended)</span>
+        </label>
+        <input type="datetime-local" name="end_time" id="end_time" class="nb-input" disabled>
+        <div class="nb-hint">NewsBreak's API requires a timestamp, so "no end date" sends 2099-12-31 under the hood (same trick their Ads Manager UI uses).</div>
       </div>
     </div>
 
@@ -515,6 +516,16 @@
   }
   bidSel.addEventListener('change', refreshBid);
   refreshBid();
+
+  // End-date checkbox toggles the datetime input
+  const noEndChk = document.getElementById('no_end_date');
+  const endInput = document.getElementById('end_time');
+  function refreshEndDate() {
+    endInput.disabled = noEndChk.checked;
+    if (noEndChk.checked) endInput.value = '';
+  }
+  noEndChk.addEventListener('change', refreshEndDate);
+  refreshEndDate();
 
   // Grouping toggle
   const groupSel = document.getElementById('grouping');

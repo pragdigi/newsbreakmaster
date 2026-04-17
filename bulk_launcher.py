@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from newsbreak_api import NewsBreakClient
@@ -169,16 +170,68 @@ def bulk_launch(
                     return v
         return None
 
+    def _upload_with_retry(c: Dict[str, Any], max_attempts: int = 3) -> Any:
+        """
+        NewsBreak's /ad/uploadAssets occasionally returns 400 "Fail to create
+        media: unexpected error occurred" for valid files — looks transient
+        (observed 10/10 failures in a burst, then works again on retry).
+        Retry with exponential backoff on that specific error; re-raise
+        anything else immediately so bad payloads don't get retried.
+        """
+        file_bytes = c.get("file_bytes") or b""
+        filename = c.get("filename") or "asset.bin"
+        media_name = c.get("media_name")
+        logger.info(
+            "upload_asset.request filename=%r size=%d media_name=%r ad_account=%s",
+            filename,
+            len(file_bytes),
+            media_name,
+            ad_account_id,
+        )
+        last_err: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                raw = client.upload_asset(
+                    file_bytes,
+                    filename,
+                    ad_account_id,
+                    media_name=media_name,
+                )
+                if attempt > 1:
+                    logger.info("upload_asset.retry_ok filename=%r attempt=%d", filename, attempt)
+                return raw
+            except Exception as e:
+                last_err = e
+                msg = str(e)
+                transient = (
+                    "unexpected error occurred" in msg
+                    or "502" in msg
+                    or "503" in msg
+                    or "504" in msg
+                    or "timed out" in msg.lower()
+                )
+                if not transient or attempt == max_attempts:
+                    raise
+                delay = 0.5 * (2 ** (attempt - 1))
+                logger.warning(
+                    "upload_asset.retry filename=%r attempt=%d/%d delay=%.1fs err=%s",
+                    filename,
+                    attempt,
+                    max_attempts,
+                    delay,
+                    msg[:200],
+                )
+                time.sleep(delay)
+        # unreachable — loop either returns or raises
+        if last_err:
+            raise last_err
+        raise RuntimeError("upload_asset: no attempts made")
+
     for gi, group in enumerate(groups):
         uploaded: List[Dict[str, Any]] = []
         for c in group:
             try:
-                raw = client.upload_asset(
-                    c.get("file_bytes") or b"",
-                    c.get("filename") or "asset.bin",
-                    ad_account_id,
-                    media_name=c.get("media_name"),
-                )
+                raw = _upload_with_retry(c)
                 asset_url = _extract_asset_url(raw)
                 if not asset_url:
                     result["errors"].append(f"upload_asset missing assetUrl: {raw}")
@@ -194,7 +247,15 @@ def bulk_launch(
                     }
                 )
             except Exception as e:
-                result["errors"].append(f"upload: {e}")
+                fname = c.get("filename", "?")
+                size = len(c.get("file_bytes") or b"")
+                logger.warning(
+                    "upload_asset.error filename=%r size=%d err=%s",
+                    fname,
+                    size,
+                    str(e)[:500],
+                )
+                result["errors"].append(f"upload {fname} ({size} bytes): {e}")
 
         if not uploaded:
             continue

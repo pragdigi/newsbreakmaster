@@ -139,21 +139,25 @@ def build_report_payload(
 ) -> Dict[str, Any]:
     """
     dimension: AD | AD_SET | CAMPAIGN (NewsBreak enums — uppercase)
+    NewsBreak `getIntegratedReport` shape:
+      { name, timezone, dateRange: FIXED, startDate, endDate,
+        filter: "AD_ACCOUNT", filterIds: [<int>],
+        dimensions: [...], metrics: [...] }
     """
     if metrics is None:
-        metrics = [
-            "COST",
-            "IMPRESSION",
-            "CLICK",
-            "CTR",
-            "CONVERSION",
-            "CPA",
-            "ROAS",
-        ]
+        metrics = ["COST", "IMPRESSION", "CLICK", "CTR", "CONVERSION", "CPA", "VALUE"]
+    try:
+        filter_id: Any = int(ad_account_id)
+    except (TypeError, ValueError):
+        filter_id = ad_account_id
     return {
-        "adAccountId": ad_account_id,
+        "name": f"report_{dimension.lower()}_{start.isoformat()}_{end.isoformat()}",
+        "timezone": "UTC",
+        "dateRange": "FIXED",
         "startDate": start.isoformat(),
         "endDate": end.isoformat(),
+        "filter": "AD_ACCOUNT",
+        "filterIds": [filter_id],
         "dimensions": [dimension],
         "metrics": metrics,
     }
@@ -173,6 +177,12 @@ def normalize_report_rows(raw: Any) -> List[Dict[str, Any]]:
         conv = r.get("conversion") or r.get("CONVERSION") or r.get("conversions")
         cpa = r.get("cpa") or r.get("CPA")
         roas = r.get("roas") or r.get("ROAS")
+        value = (
+            r.get("value")
+            or r.get("VALUE")
+            or r.get("conversionValue")
+            or r.get("revenue")
+        )
         def _f(x: Any) -> Optional[float]:
             if x is None:
                 return None
@@ -186,13 +196,20 @@ def normalize_report_rows(raw: Any) -> List[Dict[str, Any]]:
         if spend_f is not None and spend_f > 1_000_000:
             spend_f = spend_f / 1_000_000.0
 
+        value_f = _f(value)
+        conv_f = _f(conv) or 0.0
+        computed_roas = None
+        if spend_f and spend_f > 0 and value_f is not None:
+            computed_roas = value_f / spend_f
         out.append(
             {
                 **r,
                 "spend": spend_f,
-                "conversions": _f(conv) or 0.0,
+                "conversions": conv_f,
+                "conversionValue": value_f,
+                "value": value_f,
                 "cpa": _f(cpa),
-                "roas": _f(roas),
+                "roas": _f(roas) if _f(roas) is not None else computed_roas,
                 "ad_id": r.get("adId") or r.get("ad_id") or r.get("id"),
                 "ad_set_id": r.get("adSetId") or r.get("ad_set_id"),
                 "campaign_id": r.get("campaignId") or r.get("campaign_id"),

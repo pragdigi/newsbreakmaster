@@ -141,8 +141,14 @@ class NewsBreakClient:
         *,
         campaign_ids: Optional[List[str]] = None,
         status: Optional[str] = None,
+        page_no: int = 1,
+        page_size: int = 100,
     ) -> Any:
-        params: Dict[str, Any] = {"adAccountId": ad_account_id}
+        params: Dict[str, Any] = {
+            "adAccountId": ad_account_id,
+            "pageNo": page_no,
+            "pageSize": page_size,
+        }
         if campaign_ids:
             params["campaignIds"] = campaign_ids
         if status:

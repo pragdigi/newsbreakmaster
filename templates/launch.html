@@ -72,7 +72,7 @@
           {% endfor %}
         </select>
         <div class="nb-hint">
-          {% if offers %}Picking an offer fills brand, CTA, pixel, event, landing URL, UTMs, headline, body & target CPA.{% else %}No offers saved yet — <a href="{{ url_for('settings_page') }}">create one here</a>.{% endif %}
+          {% if offers %}Picking an offer fills brand, CTA, event, landing URL, UTMs, headline, body & target CPA.{% else %}No offers saved yet — <a href="{{ url_for('settings_page') }}">create one here</a>.{% endif %}
         </div>
       </div>
       <div id="offer-summary" class="nb-hint" style="align-self:end;"></div>
@@ -203,43 +203,25 @@
   <!-- 4 Conversion tracking -->
   <div class="nb-field-group">
     <h3>4 · Conversion tracking</h3>
-    <div class="nb-row-2">
-      <div>
-        <label class="nb-label">Pixel <span class="nb-muted" style="font-weight:400;">(optional, for your records)</span></label>
-        <select name="pixel_ref" id="pixel_ref" class="nb-select">
-          <option value="">— Select saved pixel —</option>
-          {% for p in pixels %}
-          <option value="{{ p.id }}" data-pixel-id="{{ p.pixel_id }}">{{ p.name }} ({{ p.pixel_id }})</option>
+    <div>
+      <label class="nb-label">Tracking event <span class="nb-muted" style="font-weight:400;">(required for conversion bidding · defaults to complete_payment)</span></label>
+      <select name="event_ref" id="event_ref" class="nb-select">
+        <option value="">— Select event —</option>
+        <optgroup id="event_group_newsbreak" label="From NewsBreak (live)"></optgroup>
+        {% if events %}
+        <optgroup id="event_group_saved" label="Saved in Offers catalog">
+          {% for e in events %}
+          <option value="{{ e.id }}">{{ e.name }} · ID: {{ e.tracking_id or e.event_type }}</option>
           {% endfor %}
-          <option value="__manual__">Enter manually…</option>
-        </select>
-        <div id="pixel-manual-wrap" style="margin-top:8px;display:none;">
-          <input type="text" name="pixel_id" id="pixel_id_manual" class="nb-input" placeholder="e.g. 1234567890">
-        </div>
-        <div class="nb-hint">
-          {% if pixels %}Manage pixels on the <a href="{{ url_for('settings_page') }}">Offers page</a>.{% else %}No pixels saved — <a href="{{ url_for('settings_page') }}">add one here</a> or enter manually.{% endif %}
-        </div>
+        </optgroup>
+        {% endif %}
+        <option value="__manual__">Enter tracking ID manually…</option>
+      </select>
+      <div id="event-manual-wrap" style="margin-top:8px;display:none;">
+        <input type="text" name="conversion_event" id="conversion_event_manual" class="nb-input" placeholder="Tracking ID from NewsBreak Ad Manager → Event Management">
+        <input type="hidden" name="custom_event_name" id="custom_event_name_manual" value="">
       </div>
-      <div>
-        <label class="nb-label">Tracking event <span class="nb-muted" style="font-weight:400;">(required for conversion bidding)</span></label>
-        <select name="event_ref" id="event_ref" class="nb-select">
-          <option value="">— Select event —</option>
-          <optgroup id="event_group_newsbreak" label="From NewsBreak (live)"></optgroup>
-          {% if events %}
-          <optgroup id="event_group_saved" label="Saved in Offers catalog">
-            {% for e in events %}
-            <option value="{{ e.id }}">{{ e.name }} · ID: {{ e.tracking_id or e.event_type }}</option>
-            {% endfor %}
-          </optgroup>
-          {% endif %}
-          <option value="__manual__">Enter tracking ID manually…</option>
-        </select>
-        <div id="event-manual-wrap" style="margin-top:8px;display:none;">
-          <input type="text" name="conversion_event" id="conversion_event_manual" class="nb-input" placeholder="Tracking ID from NewsBreak Ad Manager → Event Management">
-          <input type="hidden" name="custom_event_name" id="custom_event_name_manual" value="">
-        </div>
-        <div id="event-live-status" class="nb-hint" style="margin-top:6px;">Pick an ad account above — events will auto-load from NewsBreak.</div>
-      </div>
+      <div id="event-live-status" class="nb-hint" style="margin-top:6px;">Pick an ad account above — events will auto-load from NewsBreak.</div>
     </div>
 
     <div class="nb-row-2" style="margin-top:12px;">
@@ -533,20 +515,7 @@
   groupSel.addEventListener('change', refreshGroup);
   refreshGroup();
 
-  // Pixel / event manual toggles
-  const pixelSel = document.getElementById('pixel_ref');
-  const pixelManualWrap = document.getElementById('pixel-manual-wrap');
-  const pixelManualInput = document.getElementById('pixel_id_manual');
-  function refreshPixel() {
-    const v = pixelSel.value;
-    const isManual = v === '__manual__';
-    pixelManualWrap.style.display = isManual ? 'block' : 'none';
-    pixelManualInput.disabled = !isManual;
-    if (!isManual) pixelManualInput.value = '';
-  }
-  pixelSel.addEventListener('change', refreshPixel);
-  refreshPixel();
-
+  // Event manual toggle
   const eventSel = document.getElementById('event_ref');
   const eventManualWrap = document.getElementById('event-manual-wrap');
   const convSel = document.getElementById('conversion_event_manual');
@@ -560,6 +529,18 @@
   }
   eventSel.addEventListener('change', refreshEvent);
   refreshEvent();
+
+  // Pre-select a saved complete_payment / purchase event on page load
+  (function preferPaymentEventSaved() {
+    if (eventSel.value) return;
+    const opts = Array.from(eventSel.options);
+    const match = opts.find(o => {
+      const t = (o.textContent || '').toLowerCase();
+      return o.value && !o.value.startsWith('nb:') && o.value !== '__manual__'
+        && (t.includes('complete_payment') || t.includes('complete payment') || t.includes('purchase'));
+    });
+    if (match) { eventSel.value = match.value; refreshEvent(); }
+  })();
 
   // Auto-load events from NewsBreak on ad account change
   const accountSel = document.getElementById('ad_account_id');
@@ -590,7 +571,18 @@
         opt.textContent = `${ev.name}${typeLabel} · ID: ${ev.tracking_id}`;
         liveGroup.appendChild(opt);
       }
-      liveStatus.textContent = `${events.length} event(s) loaded from NewsBreak. Select one above.`;
+      const isPaymentEvent = (ev) => {
+        const hay = `${ev.event_type || ''} ${ev.name || ''}`.toLowerCase();
+        return hay.includes('complete_payment') || hay.includes('complete payment') || hay.includes('purchase');
+      };
+      const defaultEv = events.find(isPaymentEvent);
+      if (defaultEv && !eventSel.value) {
+        eventSel.value = 'nb:' + defaultEv.tracking_id;
+        refreshEvent();
+        liveStatus.textContent = `${events.length} event(s) loaded · defaulted to "${defaultEv.name}" (complete_payment). Change above if needed.`;
+      } else {
+        liveStatus.textContent = `${events.length} event(s) loaded from NewsBreak. Select one above.`;
+      }
     } catch (e) {
       liveStatus.textContent = `Could not load events: ${e.message}. You can still pick a saved event or enter a tracking ID manually.`;
     }
@@ -600,7 +592,6 @@
 
   // Offer prefill
   const OFFERS = {{ offers|tojson }};
-  const PIXELS = {{ pixels|tojson }};
   const EVENTS = {{ events|tojson }};
   const offerSel = document.getElementById('offer_ref');
   const offerSummary = document.getElementById('offer-summary');
@@ -627,11 +618,6 @@
       }
     }
 
-    if (o.pixel_id && PIXELS.find(p => p.id === o.pixel_id)) {
-      pixelSel.value = o.pixel_id;
-    }
-    refreshPixel();
-
     if (o.event_id && EVENTS.find(e => e.id === o.event_id)) {
       eventSel.value = o.event_id;
     }
@@ -652,10 +638,6 @@
     if (o.target_cpa) {
       bits.push(`Target CPA $${Number(o.target_cpa).toFixed(2)}`);
       bits.push(`Budget $${(Number(o.target_cpa) * 10).toFixed(2)}`);
-    }
-    if (o.pixel_id) {
-      const p = PIXELS.find(x => x.id === o.pixel_id);
-      if (p) bits.push(`Pixel: ${p.name}`);
     }
     if (o.event_id) {
       const e = EVENTS.find(x => x.id === o.event_id);

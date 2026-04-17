@@ -341,7 +341,27 @@ def launch():
     if tracking_id:
         ad_set_base["trackingId"] = tracking_id
 
-    age_groups = [a.replace(" +", "+") for a in request.form.getlist("age_groups") if a]
+    _AGE_ALIASES = {
+        "18-24": "18-30",
+        "18-30": "18-30",
+        "25-30": "18-30",
+        "25-34": "18-30",
+        "31-44": "31-44",
+        "35-44": "31-44",
+        "45-54": "45-64",
+        "45-64": "45-64",
+        "55-64": "45-64",
+        "55+": "45-64",
+        "65+": "65+",
+        "65 or more": "65+",
+    }
+    _AGE_VALID = {"18-30", "31-44", "45-64", "65+"}
+    raw_ages = [a.replace(" +", "+").strip() for a in request.form.getlist("age_groups") if a]
+    age_groups = []
+    for a in raw_ages:
+        mapped = _AGE_ALIASES.get(a, a)
+        if mapped in _AGE_VALID and mapped not in age_groups:
+            age_groups.append(mapped)
     gender = (request.form.get("gender") or "").strip().lower()
     targeting: dict = {"location": {"positive": ["all"]}}
     if age_groups:

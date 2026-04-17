@@ -1,8 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Bulk launch — NewsBreak{% endblock %}
 {% block content %}
-<h1>Bulk launch</h1>
-<p class="nb-muted">Conversion campaigns only. Upload creatives, pick a bid strategy, attach your pixel and event.</p>
+<div class="nb-dash-header">
+  <div>
+    <h1>Bulk launch</h1>
+    <p class="nb-muted">Conversion campaigns. Drag & drop creatives, pick a bid strategy, ship in one click.</p>
+  </div>
+</div>
 
 {% if result %}
 <div class="nb-card" style="margin-bottom:16px;">
@@ -12,7 +16,7 @@
 {% endif %}
 
 <form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="launch-form">
-  <!-- Account -->
+  <!-- 1 Account -->
   <div class="nb-field-group">
     <h3>1 · Ad account</h3>
     <select name="ad_account_id" id="ad_account_id" class="nb-select" required>
@@ -23,7 +27,7 @@
     </select>
   </div>
 
-  <!-- Campaign -->
+  <!-- 2 Campaign -->
   <div class="nb-field-group">
     <h3>2 · Campaign</h3>
     <div class="nb-row-2">
@@ -55,7 +59,7 @@
     </div>
   </div>
 
-  <!-- Ad set -->
+  <!-- 3 Ad set -->
   <div class="nb-field-group">
     <h3>3 · Ad set</h3>
     <div class="nb-row-3">
@@ -129,7 +133,7 @@
     </div>
   </div>
 
-  <!-- Conversion tracking -->
+  <!-- 4 Conversion tracking -->
   <div class="nb-field-group">
     <h3>4 · Conversion tracking</h3>
     <div class="nb-row-2">
@@ -164,7 +168,7 @@
     </div>
   </div>
 
-  <!-- Grouping -->
+  <!-- 5 Grouping -->
   <div class="nb-field-group">
     <h3>5 · Ad grouping</h3>
     <div class="nb-row-2">
@@ -183,37 +187,179 @@
     </div>
   </div>
 
-  <!-- Creatives -->
+  <!-- 6 Creatives -->
   <div class="nb-field-group">
     <h3>6 · Creatives</h3>
-    <p class="nb-muted" style="margin-top:0;">Each row: file (image/video) + headline + body + landing URL.</p>
-    <div id="creative-rows"></div>
-    <button type="button" class="nb-btn nb-btn-small" id="add-row">+ Add creative</button>
+
+    <!-- Dropzone -->
+    <label for="file-input" class="nb-dropzone" id="dropzone">
+      <input type="file" id="file-input" name="creatives" multiple accept="image/*,video/*" hidden>
+      <div class="nb-dropzone-icon" aria-hidden="true">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </div>
+      <div class="nb-dropzone-title">Drop images & videos here</div>
+      <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — you can select multiple files</div>
+    </label>
+
+    <!-- Defaults (auto-applied to new creatives) -->
+    <div class="nb-defaults-panel">
+      <div class="nb-defaults-title">Defaults <span class="nb-muted">(auto-fills new creatives; edit per card below)</span></div>
+      <div class="nb-row-3">
+        <input type="text" id="default-headline" class="nb-input" placeholder="Default headline">
+        <input type="text" id="default-body" class="nb-input" placeholder="Default body">
+        <input type="url"  id="default-landing" class="nb-input" placeholder="Default landing URL">
+      </div>
+      <div style="margin-top:8px;">
+        <button type="button" class="nb-btn nb-btn-small" id="btn-apply-defaults">Apply to all</button>
+      </div>
+    </div>
+
+    <!-- Creative preview grid -->
+    <div class="nb-creative-count">
+      <span id="creative-count-text">No creatives yet</span>
+      <button type="button" class="nb-btn nb-btn-small" id="btn-clear-all" style="display:none;">Clear all</button>
+    </div>
+    <div id="creative-grid" class="nb-creative-grid"></div>
   </div>
 
-  <div>
-    <button type="submit" class="nb-btn nb-btn-primary">Launch campaign</button>
+  <div class="nb-submit-bar">
+    <button type="submit" class="nb-btn nb-btn-primary" id="btn-launch">Launch campaign</button>
     <a href="{{ url_for('dashboard') }}" class="nb-btn">Cancel</a>
   </div>
 </form>
 
 <script>
 (function() {
-  const rowsEl = document.getElementById('creative-rows');
-  function addRow() {
-    const div = document.createElement('div');
-    div.className = 'nb-creative-row nb-card';
-    div.style.marginBottom = '8px';
-    div.innerHTML = `
-      <input type="file" name="creatives" accept="image/*,video/*" required>
-      <input type="text" name="headline" placeholder="Headline" class="nb-input">
-      <input type="text" name="body" placeholder="Body" class="nb-input">
-      <input type="url" name="landing_url" placeholder="https://..." class="nb-input" required>
-    `;
-    rowsEl.appendChild(div);
+  const dropzone   = document.getElementById('dropzone');
+  const fileInput  = document.getElementById('file-input');
+  const grid       = document.getElementById('creative-grid');
+  const countText  = document.getElementById('creative-count-text');
+  const btnClear   = document.getElementById('btn-clear-all');
+  const btnApply   = document.getElementById('btn-apply-defaults');
+  const defH       = document.getElementById('default-headline');
+  const defB       = document.getElementById('default-body');
+  const defL       = document.getElementById('default-landing');
+
+  // state
+  let items = []; // { file, headline, body, landing_url, url }
+
+  function rebuildFileList() {
+    const dt = new DataTransfer();
+    items.forEach(it => dt.items.add(it.file));
+    fileInput.files = dt.files;
   }
-  document.getElementById('add-row').addEventListener('click', addRow);
-  addRow();
+
+  function renderCount() {
+    const n = items.length;
+    countText.textContent = n === 0 ? 'No creatives yet' : (n + ' creative' + (n === 1 ? '' : 's') + ' ready');
+    btnClear.style.display = n > 0 ? 'inline-block' : 'none';
+  }
+
+  function fmtSize(b) {
+    if (b < 1024) return b + ' B';
+    if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+    return (b/1024/1024).toFixed(1) + ' MB';
+  }
+
+  function renderItem(it, idx) {
+    const card = document.createElement('div');
+    card.className = 'nb-creative-card';
+    card.dataset.idx = String(idx);
+
+    const isVideo = it.file.type.startsWith('video/');
+    const media = isVideo
+      ? `<video src="${it.url}" muted playsinline></video>`
+      : `<img src="${it.url}" alt="">`;
+
+    card.innerHTML = `
+      <div class="nb-creative-media">
+        ${media}
+        <button type="button" class="nb-creative-remove" title="Remove" aria-label="Remove creative">×</button>
+        <div class="nb-creative-meta">${isVideo ? 'VIDEO' : 'IMAGE'} · ${fmtSize(it.file.size)}</div>
+      </div>
+      <div class="nb-creative-fields">
+        <input type="text" name="headline" class="nb-input" placeholder="Headline" value="${(it.headline || '').replace(/"/g,'&quot;')}">
+        <input type="text" name="body" class="nb-input" placeholder="Body" value="${(it.body || '').replace(/"/g,'&quot;')}">
+        <input type="url"  name="landing_url" class="nb-input" placeholder="https://..." value="${(it.landing_url || '').replace(/"/g,'&quot;')}" required>
+      </div>
+    `;
+
+    card.querySelector('.nb-creative-remove').addEventListener('click', function() {
+      items = items.filter((_, i) => i !== parseInt(card.dataset.idx, 10));
+      renderAll();
+    });
+
+    const [inH, inB, inL] = card.querySelectorAll('input');
+    inH.addEventListener('input', () => { items[idx].headline = inH.value; });
+    inB.addEventListener('input', () => { items[idx].body = inB.value; });
+    inL.addEventListener('input', () => { items[idx].landing_url = inL.value; });
+
+    return card;
+  }
+
+  function renderAll() {
+    grid.innerHTML = '';
+    items.forEach((it, i) => grid.appendChild(renderItem(it, i)));
+    rebuildFileList();
+    renderCount();
+  }
+
+  function addFiles(fileList) {
+    const allowed = Array.from(fileList).filter(f => f && f.type && (f.type.startsWith('image/') || f.type.startsWith('video/')));
+    allowed.forEach(f => {
+      items.push({
+        file: f,
+        headline: defH.value || '',
+        body: defB.value || '',
+        landing_url: defL.value || '',
+        url: URL.createObjectURL(f),
+      });
+    });
+    renderAll();
+  }
+
+  // dropzone events
+  ;['dragenter','dragover'].forEach(ev =>
+    dropzone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('dragover'); })
+  );
+  ;['dragleave','drop'].forEach(ev =>
+    dropzone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('dragover'); })
+  );
+  dropzone.addEventListener('drop', e => {
+    if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
+  });
+  fileInput.addEventListener('change', e => {
+    if (e.target.files && e.target.files.length) {
+      const fl = e.target.files;
+      // don't replay: clear input, then add
+      addFiles(fl);
+      setTimeout(() => { fileInput.value = ''; }, 0);
+    }
+  });
+
+  btnClear.addEventListener('click', () => { items = []; renderAll(); });
+
+  btnApply.addEventListener('click', () => {
+    items.forEach(it => {
+      if (defH.value) it.headline = defH.value;
+      if (defB.value) it.body = defB.value;
+      if (defL.value) it.landing_url = defL.value;
+    });
+    renderAll();
+  });
+
+  // Prevent submit if no creatives
+  document.getElementById('launch-form').addEventListener('submit', function(e) {
+    if (items.length === 0) {
+      e.preventDefault();
+      alert('Please add at least one creative before launching.');
+      dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
 
   // Campaign mode toggle
   document.querySelectorAll('input[name=campaign_mode]').forEach(function(r) {
@@ -223,7 +369,7 @@
     });
   });
 
-  // Bid strategy toggle + hints
+  // Bid strategy UX
   const bidHints = {
     MAX_CONVERSION: { label: null, hint: 'Let NewsBreak get the most conversions for your budget.' },
     TARGET_CPA: { label: 'Target CPA ($)', hint: 'Set the max average cost per conversion.' },

@@ -3,12 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Login — NewsBreak Ads Launcher</title>
+  <title>Login — NewsBreak Launcher</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body class="nb-login-body">
   <div class="nb-card nb-login-card">
-    <h1>NewsBreak Ads Launcher</h1>
+    <div style="text-align:center;margin-bottom:16px;">
+      <img src="{{ url_for('static', filename='logo.svg') }}" alt="NewsBreak Launcher" height="56">
+    </div>
     <p class="nb-muted">Paste your API <strong>Access-Token</strong> from Ad Manager → Resources → API Access Tokens.</p>
     <p class="nb-muted">Enter one or more <strong>Organization IDs</strong> (comma-separated). Required for <code>getGroupsByOrgIds</code>.</p>
     {% if error %}

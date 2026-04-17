@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 56" width="240" height="56" role="img" aria-label="NewsBreakMaster">
+  <defs>
+    <linearGradient id="nb-badge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ff3b2f"/>
+      <stop offset="55%" stop-color="#e11d48"/>
+      <stop offset="100%" stop-color="#9f1239"/>
+    </linearGradient>
+    <linearGradient id="nb-bolt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#ffe4e6"/>
+    </linearGradient>
+    <linearGradient id="nb-text" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#cbd5e1"/>
+    </linearGradient>
+  </defs>
+
+  <g>
+    <rect x="2" y="2" width="52" height="52" rx="14" fill="url(#nb-badge)"/>
+    <rect x="2" y="2" width="52" height="52" rx="14" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
+
+    <path d="M32 10 L16 32 H26 L22 46 L40 22 H30 Z"
+          fill="url(#nb-bolt)"
+          stroke="rgba(0,0,0,0.08)" stroke-width="0.5" stroke-linejoin="round"/>
+
+    <circle cx="44" cy="14" r="3" fill="#fde68a" opacity="0.9"/>
+  </g>
+
+  <g font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-weight="800" letter-spacing="-0.5">
+    <text x="66" y="30" font-size="20" fill="url(#nb-text)">NewsBreak</text>
+    <text x="66" y="48" font-size="13" font-weight="600" fill="#94a3b8" letter-spacing="2">LAUNCHER</text>
+  </g>
+</svg>

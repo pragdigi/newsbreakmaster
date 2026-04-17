@@ -194,12 +194,36 @@ def bulk_launch(
             "campaignId": cid,
         }
 
+        # trafficPlatforms is undocumented on the public API — scraped from
+        # the internal Ad Manager. Try it first; on 400 strip and retry.
+        aset = None
+        ad_set_id = None
         try:
             aset = client.create_ad_set(ad_set_payload)
             ad_set_id = _extract_id(aset, "id", "adSetId")
         except Exception as e:
-            result["errors"].append(f"create_ad_set: {e}")
-            continue
+            msg = str(e)
+            looks_rejected = (
+                "trafficPlatforms" in msg
+                or "Invalid request" in msg
+                or "Unknown field" in msg
+                or "unrecognized" in msg.lower()
+            )
+            if "trafficPlatforms" in ad_set_payload and looks_rejected:
+                stripped = {k: v for k, v in ad_set_payload.items() if k != "trafficPlatforms"}
+                try:
+                    aset = client.create_ad_set(stripped)
+                    ad_set_id = _extract_id(aset, "id", "adSetId")
+                    result.setdefault("warnings", []).append(
+                        "Public API rejected trafficPlatforms; ad set created with Unlimited inventory — "
+                        "toggle NewsBreak-only in the Ad Manager UI, or ask NewsBreak to expose the field on the public API."
+                    )
+                except Exception as e2:
+                    result["errors"].append(f"create_ad_set: {e2}")
+                    continue
+            else:
+                result["errors"].append(f"create_ad_set: {e}")
+                continue
 
         ads_out = []
         for i, row in enumerate(uploaded):

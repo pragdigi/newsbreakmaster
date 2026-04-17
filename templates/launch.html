@@ -35,6 +35,14 @@
         </ul>
       </div>
       {% endif %}
+      {% if result.get('warnings') %}
+      <div class="nb-alert nb-alert-warning" style="margin-bottom:12px;">
+        <strong>Warnings:</strong>
+        <ul style="margin:6px 0 0 0;padding-left:18px;">
+          {% for w in result.warnings %}<li style="margin:4px 0;">{{ w }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% endif %}
       <details>
         <summary style="cursor:pointer;color:#6b7280;">Raw response</summary>
         <pre class="nb-pre" style="max-height:240px;overflow:auto;">{{ result | tojson(indent=2) }}</pre>
@@ -201,12 +209,14 @@
       </div>
     </div>
 
-    <div class="nb-alert nb-alert-warning" style="margin-top:10px;">
-      <strong>Inventory (NewsBreak-only vs Partners) — API limitation:</strong>
-      verified against NewsBreak's
-      <a href="https://advertising-api.newsbreak.com/hc/en-us/articles/37869216635789-Create-an-Ad-Set" target="_blank" rel="noopener">Create an Ad Set</a>
-      schema. Full parameter list: <code>campaignId, name, googlePlayId, iosAppId, budgetType, budget, startTime, endTime, bidType, schedule, bidRate, roas, deliveryRate, trackingId, targeting, status</code>. The <code>targeting</code> map only supports <em>location, gender, ageGroup, language, interest, os, manufacturer, carrier, network (wifi/cellular)</em>.
-      There is <strong>no</strong> <code>inventory</code> / <code>inventoryType</code> / <code>appAndWeb</code> / <code>placements</code> field. In the Ad Manager UI the control is called <em>Inventory</em> (NewsBreak only vs Partners) and must be set manually after launch — or ask your NewsBreak rep for an account-level restriction so every API-created ad set inherits it.
+    <div style="margin-top:12px;padding:12px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.35);border-radius:8px;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0;">
+        <input type="checkbox" name="nb_only_inventory" id="nb_only_inventory" value="1" checked>
+        <span><strong>Restrict to NewsBreak-only inventory</strong> (NewsBreak app + web, no partner networks)</span>
+      </label>
+      <div class="nb-hint" style="margin-top:6px;">
+        Sends <code>trafficPlatforms: ["NEWSBREAK", "NBWEB"]</code> — the undocumented field the Ad Manager UI uses when you pick "NewsBreak" under <em>Apps and websites</em>. If NewsBreak's public API rejects it, we automatically retry without the field and flag it in the launch result so you can toggle Inventory in the UI post-launch.
+      </div>
     </div>
   </div>
 

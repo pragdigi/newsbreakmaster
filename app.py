@@ -327,7 +327,10 @@ def launch():
     # If the user left the box checked (no_end_date), honour that;
     # otherwise fall back to the supplied datetime or start + 30d.
     no_end_date = (request.form.get("no_end_date") or "").strip().lower() in {"1", "on", "true", "yes"}
-    FAR_FUTURE = int(datetime(2099, 12, 31, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+    # NewsBreak's own Ad Manager UI uses int32-max (Jan 19, 2038) as the
+    # "no end date" sentinel. Matching that avoids any int32 storage
+    # overflow on their side.
+    FAR_FUTURE = 2_147_483_647
     if no_end_date:
         end_epoch = FAR_FUTURE
     elif end_epoch is None:
@@ -381,6 +384,14 @@ def launch():
     ad_set_base["_ad_account_id_for_upload"] = ad_account_id
     ad_set_base["_brand_name"] = (request.form.get("brand_name") or "Advertiser").strip() or "Advertiser"
     ad_set_base["_cta"] = (request.form.get("cta") or "Learn More").strip() or "Learn More"
+
+    # Inventory (NewsBreak-only vs Unlimited). Internal Ad Manager API uses
+    # `trafficPlatforms: ["NEWSBREAK", "NBWEB"]` for NewsBreak-only. We send
+    # it on the public API too; if rejected, bulk_launcher strips it and
+    # retries transparently.
+    nb_only = (request.form.get("nb_only_inventory") or "").strip().lower() in {"1", "on", "true", "yes"}
+    if nb_only:
+        ad_set_base["trafficPlatforms"] = ["NEWSBREAK", "NBWEB"]
 
     ad_set_base = {k: v for k, v in ad_set_base.items() if v is not None}
 

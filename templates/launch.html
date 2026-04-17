@@ -167,10 +167,15 @@
       <div>
         <label class="nb-label">Start time (optional)</label>
         <input type="datetime-local" name="start_time" class="nb-input">
+        <div class="nb-hint">Leave blank to start immediately.</div>
       </div>
       <div>
-        <label class="nb-label">End time (optional)</label>
-        <input type="datetime-local" name="end_time" class="nb-input">
+        <details id="end-time-toggle">
+          <summary style="cursor:pointer;color:var(--muted);font-size:0.85rem;user-select:none;">Set an end date (optional)</summary>
+          <label class="nb-label" style="margin-top:8px;">End time</label>
+          <input type="datetime-local" name="end_time" class="nb-input">
+          <div class="nb-hint">If blank, runs open-ended (server defaults to start + 30 days, NewsBreak's API requires an end timestamp).</div>
+        </details>
       </div>
     </div>
 
@@ -196,7 +201,10 @@
     </div>
 
     <div class="nb-alert nb-alert-warning" style="margin-top:10px;">
-      <strong>Placements:</strong> NewsBreak's API doesn't expose a "NewsBreak-only / no partners" toggle — the platform auto-places ads across their owned inventory. To restrict to NewsBreak-only placements, set that in the NewsBreak UI after launch, or ask your NewsBreak rep to enable an account-level restriction.
+      <strong>Placements — API limitation:</strong> verified against NewsBreak's
+      <a href="https://advertising-api.newsbreak.com/hc/en-us/articles/37869216635789-Create-an-Ad-Set" target="_blank" rel="noopener">Create an Ad Set</a>
+      schema — the <code>targeting</code> map only supports <em>location, gender, ageGroup, language, interest, os, manufacturer, carrier, network (wifi/cellular)</em>.
+      There is <strong>no publisher/placement/partner filter</strong> exposed via API. To restrict to NewsBreak-owned inventory only, either (a) toggle it in the NewsBreak UI after launch, or (b) ask your NewsBreak rep to enable an account-level restriction.
     </div>
   </div>
 

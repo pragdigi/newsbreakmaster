@@ -105,6 +105,28 @@
         <input type="datetime-local" name="end_time" class="nb-input">
       </div>
     </div>
+
+    <div class="nb-row-2" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Age ranges</label>
+        <div class="nb-check-row">
+          <label><input type="checkbox" name="age_groups" value="18-24"> 18–24</label>
+          <label><input type="checkbox" name="age_groups" value="25-30"> 25–30</label>
+          <label><input type="checkbox" name="age_groups" value="31-44"> 31–44</label>
+          <label><input type="checkbox" name="age_groups" value="45-54"> 45–54</label>
+          <label><input type="checkbox" name="age_groups" value="55 +"> 55+</label>
+        </div>
+        <div class="nb-hint">Leave empty to target all ages.</div>
+      </div>
+      <div>
+        <label class="nb-label">Gender</label>
+        <select name="gender" class="nb-select">
+          <option value="">All genders</option>
+          <option value="MALE">Male</option>
+          <option value="FEMALE">Female</option>
+        </select>
+      </div>
+    </div>
   </div>
 
   <!-- Conversion tracking -->

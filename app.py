@@ -269,6 +269,16 @@ def launch():
         ad_set_base["conversionEvent"] = event_value
         ad_set_base["optimizationGoal"] = "CONVERSION"
 
+    age_groups = [a for a in request.form.getlist("age_groups") if a]
+    gender = (request.form.get("gender") or "").strip().upper()
+    targeting: dict = {}
+    if age_groups:
+        targeting["ageGroup"] = {"positive": age_groups}
+    if gender in {"MALE", "FEMALE"}:
+        targeting["gender"] = {"positive": [gender]}
+    if targeting:
+        ad_set_base["targeting"] = targeting
+
     ad_set_base = {k: v for k, v in ad_set_base.items() if v is not None}
 
     result = bulk_launch(

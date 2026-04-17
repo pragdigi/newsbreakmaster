@@ -190,3 +190,18 @@ code { background: #243044; padding: 2px 6px; border-radius: 4px; font-size: 0.8
   border: 1px solid #2d3a4d; background: #0f1419; color: var(--text);
 }
 
+.nb-check-row {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.nb-check-row label {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: 1px solid #2d3a4d;
+  border-radius: 999px; background: #0f1419;
+  cursor: pointer; font-size: 0.9rem;
+}
+.nb-check-row label:has(input:checked) {
+  background: rgba(59,130,246,0.18);
+  border-color: var(--accent);
+  color: #fff;
+}
+

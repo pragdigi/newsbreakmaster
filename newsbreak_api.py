@@ -163,8 +163,22 @@ class NewsBreakClient:
         return self._request("PUT", f"/campaign/update/{campaign_id}", json_body=payload)
 
     # --- Ad sets ---
-    def get_ad_sets(self, campaign_id: str) -> Any:
-        return self._request("GET", "/ad-set/list", params={"campaignId": campaign_id})
+    def get_ad_sets(
+        self,
+        campaign_id: str,
+        *,
+        page_no: int = 1,
+        page_size: int = 100,
+    ) -> Any:
+        return self._request(
+            "GET",
+            "/ad-set/getList",
+            params={
+                "campaignId": campaign_id,
+                "pageNo": page_no,
+                "pageSize": page_size,
+            },
+        )
 
     def create_ad_set(self, payload: Dict[str, Any]) -> Any:
         return self._request("POST", "/ad-set/create", json_body=payload)
@@ -241,18 +255,34 @@ class NewsBreakClient:
         return self._request("GET", f"/event/getList/{ad_account_id}")
 
 
-def unwrap_list_response(data: Any, keys: tuple = ("data", "list", "records", "items")) -> List[Dict[str, Any]]:
-    """Normalize various API response shapes to a list of dicts."""
+def unwrap_list_response(
+    data: Any,
+    keys: tuple = ("rows", "list", "records", "items", "data"),
+) -> List[Dict[str, Any]]:
+    """Normalize various API response shapes to a list of dicts.
+
+    NewsBreak's getList endpoints wrap the payload as
+    ``{"code": 0, "data": {"rows": [...], "pageNo": 1, ...}}`` so we need
+    to drill through one or two levels of nesting to find the list.
+    """
     if data is None:
         return []
     if isinstance(data, list):
         return [x for x in data if isinstance(x, dict)]
     if not isinstance(data, dict):
         return []
+    # Look for a list at the top level
     for k in keys:
         inner = data.get(k)
         if isinstance(inner, list):
             return [x for x in inner if isinstance(x, dict)]
+    # Drill into a nested "data" envelope and try again
+    nested = data.get("data")
+    if isinstance(nested, dict):
+        for k in keys:
+            inner = nested.get(k)
+            if isinstance(inner, list):
+                return [x for x in inner if isinstance(x, dict)]
     # Single object
     if "id" in data or "campaignId" in data:
         return [data]

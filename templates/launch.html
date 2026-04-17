@@ -132,7 +132,8 @@
       </div>
       <div>
         <label class="nb-label">Budget ($)</label>
-        <input type="number" step="0.01" name="budget_dollars" class="nb-input" value="50">
+        <input type="number" step="0.01" id="budget_dollars" name="budget_dollars" class="nb-input" value="50">
+        <div class="nb-hint">Auto-sets to 10× target CPA when an offer is selected.</div>
       </div>
       <div>
         <label class="nb-label">Budget type</label>
@@ -640,13 +641,18 @@
       bidSel.value = 'TARGET_CPA';
       refreshBid();
       document.getElementById('bid_dollars').value = Number(o.target_cpa).toFixed(2);
+      const budgetEl = document.getElementById('budget_dollars');
+      if (budgetEl) budgetEl.value = (Number(o.target_cpa) * 10).toFixed(2);
     }
 
     const bits = [];
     if (o.brand_name) bits.push(`Brand: ${o.brand_name}`);
     if (o.cta) bits.push(`CTA: ${o.cta}`);
     if (o.payout) bits.push(`Payout $${Number(o.payout).toFixed(2)}`);
-    if (o.target_cpa) bits.push(`Target CPA $${Number(o.target_cpa).toFixed(2)}`);
+    if (o.target_cpa) {
+      bits.push(`Target CPA $${Number(o.target_cpa).toFixed(2)}`);
+      bits.push(`Budget $${(Number(o.target_cpa) * 10).toFixed(2)}`);
+    }
     if (o.pixel_id) {
       const p = PIXELS.find(x => x.id === o.pixel_id);
       if (p) bits.push(`Pixel: ${p.name}`);

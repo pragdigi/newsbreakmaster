@@ -9,3 +9,4 @@ storage/
 .DS_Store
 .idea/
 .vscode/
+.commit_msg.tmp

@@ -16,6 +16,26 @@
 {% endif %}
 
 <form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="launch-form">
+  <!-- 0 Offer -->
+  <div class="nb-field-group">
+    <h3>0 · Offer <span class="nb-muted" style="font-weight:400;font-size:13px;">(optional — prefills everything below)</span></h3>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Offer</label>
+        <select id="offer_ref" class="nb-select">
+          <option value="">— None —</option>
+          {% for o in offers %}
+          <option value="{{ o.id }}">{{ o.name }}{% if o.payout %} · ${{ '%.2f'|format(o.payout) }}{% endif %}</option>
+          {% endfor %}
+        </select>
+        <div class="nb-hint">
+          {% if offers %}Picking an offer fills pixel, event, landing URL, headline, body & target CPA.{% else %}No offers saved yet — <a href="{{ url_for('settings_page') }}">create one here</a>.{% endif %}
+        </div>
+      </div>
+      <div id="offer-summary" class="nb-hint" style="align-self:end;"></div>
+    </div>
+  </div>
+
   <!-- 1 Account -->
   <div class="nb-field-group">
     <h3>1 · Ad account</h3>
@@ -138,33 +158,50 @@
     <h3>4 · Conversion tracking</h3>
     <div class="nb-row-2">
       <div>
-        <label class="nb-label">Pixel ID</label>
-        <input type="text" name="pixel_id" class="nb-input" placeholder="e.g. 1234567890" required>
-        <div class="nb-hint">Find it in NewsBreak Ad Manager → Tools → Event Management.</div>
+        <label class="nb-label">Pixel</label>
+        <select name="pixel_ref" id="pixel_ref" class="nb-select">
+          <option value="">— Select saved pixel —</option>
+          {% for p in pixels %}
+          <option value="{{ p.id }}" data-pixel-id="{{ p.pixel_id }}">{{ p.name }} ({{ p.pixel_id }})</option>
+          {% endfor %}
+          <option value="__manual__">Enter manually…</option>
+        </select>
+        <div id="pixel-manual-wrap" style="margin-top:8px;display:none;">
+          <input type="text" name="pixel_id" id="pixel_id_manual" class="nb-input" placeholder="e.g. 1234567890">
+        </div>
+        <div class="nb-hint">
+          {% if pixels %}Manage pixels on the <a href="{{ url_for('settings_page') }}">Offers page</a>.{% else %}No pixels saved — <a href="{{ url_for('settings_page') }}">add one here</a> or enter manually.{% endif %}
+        </div>
       </div>
       <div>
         <label class="nb-label">Conversion event</label>
-        <select name="conversion_event" class="nb-select">
-          <option value="PURCHASE">Purchase</option>
-          <option value="LEAD">Lead</option>
-          <option value="SIGN_UP">Sign up</option>
-          <option value="COMPLETE_REGISTRATION">Complete registration</option>
-          <option value="ADD_TO_CART">Add to cart</option>
-          <option value="INITIATE_CHECKOUT">Initiate checkout</option>
-          <option value="ADD_PAYMENT_INFO">Add payment info</option>
-          <option value="SUBSCRIBE">Subscribe</option>
-          <option value="SUBMIT_APPLICATION">Submit application</option>
-          <option value="VIEW_CONTENT">View content</option>
-          <option value="SEARCH">Search</option>
-          <option value="PAGE_VIEW">Page view</option>
-          <option value="CONTACT">Contact</option>
-          <option value="CUSTOM">Custom event</option>
+        <select name="event_ref" id="event_ref" class="nb-select">
+          <option value="">— Select saved event —</option>
+          {% for e in events %}
+          <option value="{{ e.id }}">{{ e.name }} · {{ e.event_type }}</option>
+          {% endfor %}
+          <option value="__manual__">Enter manually…</option>
         </select>
+        <div id="event-manual-wrap" style="margin-top:8px;display:none;">
+          <select name="conversion_event" id="conversion_event_manual" class="nb-select">
+            <option value="PURCHASE">Purchase</option>
+            <option value="LEAD">Lead</option>
+            <option value="SIGN_UP">Sign up</option>
+            <option value="COMPLETE_REGISTRATION">Complete registration</option>
+            <option value="ADD_TO_CART">Add to cart</option>
+            <option value="INITIATE_CHECKOUT">Initiate checkout</option>
+            <option value="ADD_PAYMENT_INFO">Add payment info</option>
+            <option value="SUBSCRIBE">Subscribe</option>
+            <option value="SUBMIT_APPLICATION">Submit application</option>
+            <option value="VIEW_CONTENT">View content</option>
+            <option value="SEARCH">Search</option>
+            <option value="PAGE_VIEW">Page view</option>
+            <option value="CONTACT">Contact</option>
+            <option value="CUSTOM">Custom event</option>
+          </select>
+          <input type="text" name="custom_event_name" id="custom_event_name_manual" class="nb-input" style="margin-top:8px;" placeholder="Custom event name (only if Custom)">
+        </div>
       </div>
-    </div>
-    <div style="margin-top:12px;">
-      <label class="nb-label">Custom event name (only if &ldquo;Custom event&rdquo; above)</label>
-      <input type="text" name="custom_event_name" class="nb-input" placeholder="e.g. my_custom_event">
     </div>
   </div>
 
@@ -401,6 +438,87 @@
   function refreshGroup() { gWrap.style.display = groupSel.value === 'groups_of_n' ? 'block' : 'none'; }
   groupSel.addEventListener('change', refreshGroup);
   refreshGroup();
+
+  // Pixel / event manual toggles
+  const pixelSel = document.getElementById('pixel_ref');
+  const pixelManualWrap = document.getElementById('pixel-manual-wrap');
+  const pixelManualInput = document.getElementById('pixel_id_manual');
+  function refreshPixel() {
+    const v = pixelSel.value;
+    const isManual = v === '__manual__';
+    pixelManualWrap.style.display = isManual ? 'block' : 'none';
+    pixelManualInput.disabled = !isManual;
+    if (!isManual) pixelManualInput.value = '';
+  }
+  pixelSel.addEventListener('change', refreshPixel);
+  refreshPixel();
+
+  const eventSel = document.getElementById('event_ref');
+  const eventManualWrap = document.getElementById('event-manual-wrap');
+  const convSel = document.getElementById('conversion_event_manual');
+  const customName = document.getElementById('custom_event_name_manual');
+  function refreshEvent() {
+    const v = eventSel.value;
+    const isManual = v === '__manual__';
+    eventManualWrap.style.display = isManual ? 'block' : 'none';
+    convSel.disabled = !isManual;
+    customName.disabled = !isManual;
+  }
+  eventSel.addEventListener('change', refreshEvent);
+  refreshEvent();
+
+  // Offer prefill
+  const OFFERS = {{ offers|tojson }};
+  const PIXELS = {{ pixels|tojson }};
+  const EVENTS = {{ events|tojson }};
+  const offerSel = document.getElementById('offer_ref');
+  const offerSummary = document.getElementById('offer-summary');
+
+  function applyOffer(offerId) {
+    const o = OFFERS.find(x => x.id === offerId);
+    if (!o) { offerSummary.textContent = ''; return; }
+
+    if (o.headline) { defH.value = o.headline; }
+    if (o.body) { defB.value = o.body; }
+    const base = o.landing_url || '';
+    const utm = o.utm_parameters || '';
+    let url = base;
+    if (base && utm) {
+      url = base + (base.includes('?') ? '&' : '?') + utm.replace(/^\?|^&/, '');
+    }
+    if (url) { defL.value = url; }
+    btnApply.click();
+
+    if (o.pixel_id && PIXELS.find(p => p.id === o.pixel_id)) {
+      pixelSel.value = o.pixel_id;
+    }
+    refreshPixel();
+
+    if (o.event_id && EVENTS.find(e => e.id === o.event_id)) {
+      eventSel.value = o.event_id;
+    }
+    refreshEvent();
+
+    if (o.target_cpa && Number(o.target_cpa) > 0) {
+      bidSel.value = 'TARGET_CPA';
+      refreshBid();
+      document.getElementById('bid_dollars').value = Number(o.target_cpa).toFixed(2);
+    }
+
+    const bits = [];
+    if (o.payout) bits.push(`Payout $${Number(o.payout).toFixed(2)}`);
+    if (o.target_cpa) bits.push(`Target CPA $${Number(o.target_cpa).toFixed(2)}`);
+    if (o.pixel_id) {
+      const p = PIXELS.find(x => x.id === o.pixel_id);
+      if (p) bits.push(`Pixel: ${p.name}`);
+    }
+    if (o.event_id) {
+      const e = EVENTS.find(x => x.id === o.event_id);
+      if (e) bits.push(`Event: ${e.name}`);
+    }
+    offerSummary.innerHTML = bits.length ? `<strong>Applied:</strong> ${bits.join(' · ')}` : '';
+  }
+  offerSel.addEventListener('change', () => applyOffer(offerSel.value));
 
   // Load campaigns
   document.getElementById('btn-load-campaigns').addEventListener('click', async function() {

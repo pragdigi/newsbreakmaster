@@ -224,6 +224,9 @@ def launch():
             "launch.html",
             accounts=account_options,
             campaigns=[],
+            pixels=storage.list_pixels(),
+            events=storage.list_events(),
+            offers=storage.list_offers(),
         )
 
     # POST
@@ -263,9 +266,29 @@ def launch():
     bid_type = (request.form.get("bid_type") or "MAX_CONVERSION").strip().upper()
     needs_bid = bid_type in {"CPC", "CPM", "TARGET_CPA", "TARGET_ROAS"}
 
+    pixel_ref = (request.form.get("pixel_ref") or "").strip()
     pixel_id = (request.form.get("pixel_id") or "").strip()
-    conversion_event = (request.form.get("conversion_event") or "PURCHASE").strip().upper()
+    if pixel_ref and pixel_ref != "__manual__":
+        for p in storage.list_pixels():
+            if p.get("id") == pixel_ref:
+                pixel_id = (p.get("pixel_id") or "").strip()
+                break
+
+    event_ref = (request.form.get("event_ref") or "").strip()
+    conversion_event = (request.form.get("conversion_event") or "PURCHASE").strip()
     custom_event_name = (request.form.get("custom_event_name") or "").strip()
+    if event_ref and event_ref != "__manual__":
+        for e in storage.list_events():
+            if e.get("id") == event_ref:
+                et = (e.get("event_type") or "").strip()
+                if e.get("is_custom"):
+                    conversion_event = "CUSTOM"
+                    custom_event_name = et
+                else:
+                    conversion_event = et.upper() or conversion_event
+                break
+    else:
+        conversion_event = conversion_event.upper() if conversion_event != "CUSTOM" else conversion_event
 
     ad_set_base: dict = {
         "name_prefix": request.form.get("ad_set_name", "Bulk ad set").strip() or "Bulk ad set",
@@ -316,6 +339,9 @@ def launch():
         "launch.html",
         accounts=account_options,
         campaigns=[],
+        pixels=storage.list_pixels(),
+        events=storage.list_events(),
+        offers=storage.list_offers(),
         result=result,
     )
 
@@ -620,6 +646,148 @@ def api_scheduler_run():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+# --- Catalog: pixels / events / offers ---
+
+
+@app.route("/settings")
+def settings_page():
+    if not _effective_token():
+        return redirect(url_for("login"))
+    return render_template(
+        "settings.html",
+        pixels=storage.list_pixels(),
+        events=storage.list_events(),
+        offers=storage.list_offers(),
+    )
+
+
+def _auth_required():
+    return _effective_token() is not None
+
+
+@app.route("/api/pixels", methods=["GET"])
+def api_pixels_list():
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"pixels": storage.list_pixels()})
+
+
+@app.route("/api/pixels", methods=["POST"])
+def api_pixels_save():
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    pixel_id = (data.get("pixel_id") or "").strip()
+    if not name or not pixel_id:
+        return jsonify({"error": "name and pixel_id required"}), 400
+    saved = storage.upsert_pixel(
+        {
+            "id": data.get("id"),
+            "name": name,
+            "pixel_id": pixel_id,
+            "notes": (data.get("notes") or "").strip(),
+        }
+    )
+    return jsonify({"ok": True, "pixel": saved})
+
+
+@app.route("/api/pixels/<item_id>", methods=["DELETE"])
+def api_pixels_delete(item_id):
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    ok = storage.delete_pixel(item_id)
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/events", methods=["GET"])
+def api_events_list():
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"events": storage.list_events()})
+
+
+@app.route("/api/events", methods=["POST"])
+def api_events_save():
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    event_type = (data.get("event_type") or "").strip()
+    if not name or not event_type:
+        return jsonify({"error": "name and event_type required"}), 400
+    saved = storage.upsert_event(
+        {
+            "id": data.get("id"),
+            "name": name,
+            "event_type": event_type,
+            "is_custom": bool(data.get("is_custom")),
+        }
+    )
+    return jsonify({"ok": True, "event": saved})
+
+
+@app.route("/api/events/<item_id>", methods=["DELETE"])
+def api_events_delete(item_id):
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    ok = storage.delete_event(item_id)
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/offers", methods=["GET"])
+def api_offers_list():
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"offers": storage.list_offers()})
+
+
+@app.route("/api/offers", methods=["POST"])
+def api_offers_save():
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+
+    def _num(v):
+        try:
+            return float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    payout = _num(data.get("payout"))
+    target_cpa = _num(data.get("target_cpa"))
+    if payout is not None and target_cpa is None:
+        target_cpa = round(payout * 0.8, 2)
+
+    saved = storage.upsert_offer(
+        {
+            "id": data.get("id"),
+            "name": name,
+            "landing_url": (data.get("landing_url") or "").strip(),
+            "headline": (data.get("headline") or "").strip(),
+            "body": (data.get("body") or "").strip(),
+            "pixel_id": (data.get("pixel_id") or "").strip(),
+            "event_id": (data.get("event_id") or "").strip(),
+            "payout": payout,
+            "target_cpa": target_cpa,
+            "utm_parameters": (data.get("utm_parameters") or "").strip(),
+            "notes": (data.get("notes") or "").strip(),
+        }
+    )
+    return jsonify({"ok": True, "offer": saved})
+
+
+@app.route("/api/offers/<item_id>", methods=["DELETE"])
+def api_offers_delete(item_id):
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    ok = storage.delete_offer(item_id)
+    return jsonify({"ok": ok})
 
 
 if __name__ == "__main__":

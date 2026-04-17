@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}Offers & Tracking · NewsBreak Launcher{% endblock %}
+{% block content %}
+<section class="nb-section">
+  <div class="nb-section-head">
+    <div>
+      <h1>Offers &amp; tracking</h1>
+      <p class="nb-muted">Save your pixels, conversion events, and offer bundles so they show up as dropdowns on the bulk launcher.</p>
+    </div>
+  </div>
+</section>
+
+<section class="nb-section">
+  <div class="nb-card">
+    <div class="nb-card-head">
+      <h2>Pixels</h2>
+      <button type="button" class="nb-btn nb-btn-sm" data-new="pixel">Add pixel</button>
+    </div>
+    <p class="nb-muted nb-small">NewsBreak doesn't expose a pixel list API — add them here once and reuse everywhere.</p>
+    <table class="nb-table" id="pixels-table">
+      <thead>
+        <tr><th>Name</th><th>Pixel ID</th><th>Notes</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="nb-card">
+    <div class="nb-card-head">
+      <h2>Conversion events</h2>
+      <button type="button" class="nb-btn nb-btn-sm" data-new="event">Add event</button>
+    </div>
+    <p class="nb-muted nb-small">Standard NewsBreak events (PURCHASE, LEAD, etc.) or your custom events from Ad Manager &gt; Event Management.</p>
+    <table class="nb-table" id="events-table">
+      <thead>
+        <tr><th>Name</th><th>Event</th><th>Custom?</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="nb-card">
+    <div class="nb-card-head">
+      <h2>Offers</h2>
+      <button type="button" class="nb-btn nb-btn-sm nb-btn-primary" data-new="offer">New offer</button>
+    </div>
+    <p class="nb-muted nb-small">Bundle a pixel, event, default creative copy, landing URL and payout. Selecting an offer on the launch page auto-fills everything.</p>
+    <table class="nb-table" id="offers-table">
+      <thead>
+        <tr><th>Offer</th><th>Landing URL</th><th>Pixel</th><th>Event</th><th>Payout</th><th>Target CPA</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Modal -->
+<div class="nb-modal" id="nb-modal" hidden>
+  <div class="nb-modal-dialog">
+    <div class="nb-modal-head">
+      <h3 id="nb-modal-title">Edit</h3>
+      <button type="button" class="nb-btn-icon" data-close>✕</button>
+    </div>
+    <form id="nb-modal-form" class="nb-modal-body"></form>
+    <div class="nb-modal-foot">
+      <button type="button" class="nb-btn" data-close>Cancel</button>
+      <button type="button" class="nb-btn nb-btn-primary" id="nb-modal-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const STANDARD_EVENTS = ["PURCHASE","LEAD","ADD_TO_CART","INITIATE_CHECKOUT","COMPLETE_REGISTRATION","SUBSCRIBE","VIEW_CONTENT","SEARCH","CONTACT","ADD_PAYMENT_INFO","ADD_TO_WISHLIST","START_TRIAL","COMPLETE_PAYMENT"];
+
+let state = {
+  pixels: {{ pixels|tojson }},
+  events: {{ events|tojson }},
+  offers: {{ offers|tojson }},
+};
+
+function pixelName(id) { const p = state.pixels.find(x=>x.id===id); return p ? `${p.name} (${p.pixel_id})` : '—'; }
+function eventName(id) { const e = state.events.find(x=>x.id===id); return e ? `${e.name}` : '—'; }
+function fmtMoney(v) { return v == null || v === '' ? '—' : `$${Number(v).toFixed(2)}`; }
+
+function renderPixels() {
+  const tb = document.querySelector('#pixels-table tbody');
+  tb.innerHTML = state.pixels.length ? state.pixels.map(p => `
+    <tr>
+      <td><strong>${escape(p.name)}</strong></td>
+      <td><code>${escape(p.pixel_id)}</code></td>
+      <td class="nb-muted">${escape(p.notes||'')}</td>
+      <td class="nb-row-actions">
+        <button type="button" class="nb-btn-ghost" data-edit="pixel" data-id="${p.id}">Edit</button>
+        <button type="button" class="nb-btn-ghost nb-danger" data-del="pixel" data-id="${p.id}">Delete</button>
+      </td>
+    </tr>`).join('') : `<tr><td colspan="4" class="nb-muted">No pixels yet.</td></tr>`;
+}
+
+function renderEvents() {
+  const tb = document.querySelector('#events-table tbody');
+  tb.innerHTML = state.events.length ? state.events.map(e => `
+    <tr>
+      <td><strong>${escape(e.name)}</strong></td>
+      <td><code>${escape(e.event_type)}</code></td>
+      <td>${e.is_custom ? '<span class="nb-badge">Custom</span>' : '<span class="nb-badge nb-badge-muted">Standard</span>'}</td>
+      <td class="nb-row-actions">
+        <button type="button" class="nb-btn-ghost" data-edit="event" data-id="${e.id}">Edit</button>
+        <button type="button" class="nb-btn-ghost nb-danger" data-del="event" data-id="${e.id}">Delete</button>
+      </td>
+    </tr>`).join('') : `<tr><td colspan="4" class="nb-muted">No events yet.</td></tr>`;
+}
+
+function renderOffers() {
+  const tb = document.querySelector('#offers-table tbody');
+  tb.innerHTML = state.offers.length ? state.offers.map(o => `
+    <tr>
+      <td><strong>${escape(o.name)}</strong><br><span class="nb-muted nb-small">${escape((o.headline||'').slice(0,60))}</span></td>
+      <td class="nb-muted nb-small">${escape((o.landing_url||'').slice(0,50))}</td>
+      <td>${pixelName(o.pixel_id)}</td>
+      <td>${eventName(o.event_id)}</td>
+      <td>${fmtMoney(o.payout)}</td>
+      <td>${fmtMoney(o.target_cpa)}</td>
+      <td class="nb-row-actions">
+        <button type="button" class="nb-btn-ghost" data-edit="offer" data-id="${o.id}">Edit</button>
+        <button type="button" class="nb-btn-ghost nb-danger" data-del="offer" data-id="${o.id}">Delete</button>
+      </td>
+    </tr>`).join('') : `<tr><td colspan="7" class="nb-muted">No offers yet.</td></tr>`;
+}
+
+function escape(s) { return (s||'').toString().replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+
+function formHtml(kind, item) {
+  item = item || {};
+  if (kind === 'pixel') {
+    return `
+      <label class="nb-field"><span>Name</span><input name="name" required value="${escape(item.name||'')}" placeholder="e.g. Main store pixel"></label>
+      <label class="nb-field"><span>Pixel ID</span><input name="pixel_id" required value="${escape(item.pixel_id||'')}" placeholder="123456789"></label>
+      <label class="nb-field"><span>Notes (optional)</span><input name="notes" value="${escape(item.notes||'')}"></label>`;
+  }
+  if (kind === 'event') {
+    const opts = STANDARD_EVENTS.map(e => `<option value="${e}" ${item.event_type===e?'selected':''}>${e}</option>`).join('');
+    return `
+      <label class="nb-field"><span>Name</span><input name="name" required value="${escape(item.name||'')}" placeholder="e.g. Store purchase"></label>
+      <label class="nb-field"><span>Standard event</span>
+        <select name="event_type_std">
+          <option value="">— pick one —</option>${opts}
+        </select>
+      </label>
+      <label class="nb-check-row"><input type="checkbox" name="is_custom" ${item.is_custom?'checked':''}> Custom event (use custom name below)</label>
+      <label class="nb-field"><span>Custom event name</span><input name="event_type_custom" value="${escape(item.is_custom? item.event_type : '')}" placeholder="e.g. complete_payment"></label>`;
+  }
+  // offer
+  const pixelOpts = state.pixels.map(p => `<option value="${p.id}" ${item.pixel_id===p.id?'selected':''}>${escape(p.name)} (${escape(p.pixel_id)})</option>`).join('');
+  const eventOpts = state.events.map(e => `<option value="${e.id}" ${item.event_id===e.id?'selected':''}>${escape(e.name)}</option>`).join('');
+  return `
+    <div class="nb-row-2">
+      <label class="nb-field"><span>Offer name</span><input name="name" required value="${escape(item.name||'')}" placeholder="e.g. Magnura Q2"></label>
+      <label class="nb-field"><span>Landing URL</span><input name="landing_url" value="${escape(item.landing_url||'')}" placeholder="https://..."></label>
+    </div>
+    <div class="nb-row-2">
+      <label class="nb-field"><span>Default headline</span><input name="headline" value="${escape(item.headline||'')}"></label>
+      <label class="nb-field"><span>UTM parameters (appended)</span><input name="utm_parameters" value="${escape(item.utm_parameters||'')}" placeholder="utm_source=newsbreak&utm_campaign={{ '{{offer}}' }}"></label>
+    </div>
+    <label class="nb-field"><span>Default body text</span><textarea name="body" rows="2">${escape(item.body||'')}</textarea></label>
+    <div class="nb-row-2">
+      <label class="nb-field"><span>Pixel</span>
+        <select name="pixel_id"><option value="">— none —</option>${pixelOpts}</select>
+      </label>
+      <label class="nb-field"><span>Conversion event</span>
+        <select name="event_id"><option value="">— none —</option>${eventOpts}</select>
+      </label>
+    </div>
+    <div class="nb-row-2">
+      <label class="nb-field"><span>Payout ($)</span><input name="payout" type="number" step="0.01" value="${item.payout ?? ''}" placeholder="e.g. 50"></label>
+      <label class="nb-field"><span>Target CPA ($)</span><input name="target_cpa" type="number" step="0.01" value="${item.target_cpa ?? ''}" placeholder="auto = payout × 0.8"></label>
+    </div>
+    <label class="nb-field"><span>Notes</span><input name="notes" value="${escape(item.notes||'')}"></label>`;
+}
+
+function openModal(kind, item) {
+  const titles = { pixel: 'Pixel', event: 'Conversion event', offer: 'Offer' };
+  document.getElementById('nb-modal-title').textContent = `${item ? 'Edit' : 'New'} ${titles[kind].toLowerCase()}`;
+  const form = document.getElementById('nb-modal-form');
+  form.dataset.kind = kind;
+  form.dataset.id = item ? item.id : '';
+  form.innerHTML = formHtml(kind, item);
+  document.getElementById('nb-modal').hidden = false;
+}
+
+function closeModal() { document.getElementById('nb-modal').hidden = true; }
+
+async function saveModal() {
+  const form = document.getElementById('nb-modal-form');
+  const kind = form.dataset.kind;
+  const id = form.dataset.id || undefined;
+  const fd = new FormData(form);
+  let body = { id };
+  if (kind === 'pixel') {
+    body.name = fd.get('name'); body.pixel_id = fd.get('pixel_id'); body.notes = fd.get('notes');
+  } else if (kind === 'event') {
+    body.name = fd.get('name');
+    body.is_custom = !!fd.get('is_custom');
+    body.event_type = body.is_custom ? (fd.get('event_type_custom') || '').trim() : (fd.get('event_type_std') || '').trim();
+    if (!body.event_type) { alert('Pick a standard event or enter a custom event name.'); return; }
+  } else {
+    for (const k of ['name','landing_url','headline','body','pixel_id','event_id','payout','target_cpa','utm_parameters','notes']) {
+      body[k] = fd.get(k);
+    }
+  }
+  const url = `/api/${kind}s` + (id ? '' : '');
+  const res = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) { alert(data.error || 'Save failed'); return; }
+  await reload();
+  closeModal();
+}
+
+async function deleteItem(kind, id) {
+  if (!confirm('Delete this?')) return;
+  const res = await fetch(`/api/${kind}s/${id}`, { method: 'DELETE' });
+  if (res.ok) reload();
+}
+
+async function reload() {
+  const [p, e, o] = await Promise.all([
+    fetch('/api/pixels').then(r=>r.json()),
+    fetch('/api/events').then(r=>r.json()),
+    fetch('/api/offers').then(r=>r.json()),
+  ]);
+  state.pixels = p.pixels || [];
+  state.events = e.events || [];
+  state.offers = o.offers || [];
+  renderPixels(); renderEvents(); renderOffers();
+}
+
+document.addEventListener('click', (e) => {
+  const newKind = e.target.closest('[data-new]')?.dataset.new;
+  if (newKind) { openModal(newKind); return; }
+  const editKind = e.target.closest('[data-edit]')?.dataset.edit;
+  if (editKind) {
+    const id = e.target.closest('[data-edit]').dataset.id;
+    const item = state[`${editKind}s`].find(x => x.id === id);
+    openModal(editKind, item);
+    return;
+  }
+  const delKind = e.target.closest('[data-del]')?.dataset.del;
+  if (delKind) {
+    deleteItem(delKind, e.target.closest('[data-del]').dataset.id);
+    return;
+  }
+  if (e.target.closest('[data-close]')) closeModal();
+});
+document.getElementById('nb-modal-save').addEventListener('click', saveModal);
+
+renderPixels(); renderEvents(); renderOffers();
+</script>
+{% endblock %}

@@ -285,3 +285,37 @@ code { background: #243044; padding: 2px 6px; border-radius: 4px; font-size: 0.8
   padding: 16px 0 8px; display: flex; gap: 8px;
 }
 
+/* --- Settings page --- */
+.nb-section { margin-bottom: 24px; display: grid; gap: 16px; }
+.nb-section-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
+.nb-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.nb-card-head h2 { margin: 0; font-size: 16px; }
+.nb-small { font-size: 12px; }
+.nb-btn-sm { padding: 6px 10px; font-size: 12px; }
+.nb-btn-ghost { background: transparent; border: 1px solid transparent; color: var(--text); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 13px; }
+.nb-btn-ghost:hover { background: rgba(255,255,255,0.06); }
+.nb-btn-ghost.nb-danger { color: #f87171; }
+.nb-btn-ghost.nb-danger:hover { background: rgba(248,113,113,0.1); }
+.nb-row-actions { white-space: nowrap; text-align: right; }
+.nb-badge-muted { background: rgba(148,163,184,0.15); color: #94a3b8; }
+
+/* Modal */
+.nb-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
+.nb-modal[hidden] { display: none; }
+.nb-modal-dialog { background: var(--card, #131a22); border: 1px solid var(--border, #243040); border-radius: 12px; width: 100%; max-width: 640px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+.nb-modal-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border, #243040); }
+.nb-modal-head h3 { margin: 0; font-size: 16px; }
+.nb-modal-body { padding: 20px; overflow: auto; display: grid; gap: 12px; }
+.nb-modal-foot { padding: 12px 20px; border-top: 1px solid var(--border, #243040); display: flex; justify-content: flex-end; gap: 8px; }
+.nb-btn-icon { background: transparent; border: none; color: var(--muted); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+.nb-btn-icon:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+
+.nb-field { display: block; }
+.nb-field > span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+.nb-field input, .nb-field select, .nb-field textarea {
+  width: 100%; padding: 8px 10px; border-radius: 6px; background: var(--bg, #0f1419);
+  border: 1px solid var(--border, #243040); color: var(--text, #e2e8f0); font-size: 14px;
+  font-family: inherit;
+}
+.nb-field textarea { resize: vertical; }
+

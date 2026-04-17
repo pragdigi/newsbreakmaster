@@ -7,14 +7,22 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-STORAGE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage")
+STORAGE_ROOT = os.environ.get(
+    "NEWSBREAK_STORAGE_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage"),
+)
 TOKENS_DIR = os.path.join(STORAGE_ROOT, "tokens")
 RULES_DIR = os.path.join(STORAGE_ROOT, "rules")
 AUDIT_DIR = os.path.join(STORAGE_ROOT, "audit")
+CATALOG_DIR = os.path.join(STORAGE_ROOT, "catalog")
+
+PIXELS_FILE = os.path.join(CATALOG_DIR, "pixels.json")
+EVENTS_FILE = os.path.join(CATALOG_DIR, "events.json")
+OFFERS_FILE = os.path.join(CATALOG_DIR, "offers.json")
 
 
 def ensure_dirs() -> None:
-    for d in (STORAGE_ROOT, TOKENS_DIR, RULES_DIR, AUDIT_DIR):
+    for d in (STORAGE_ROOT, TOKENS_DIR, RULES_DIR, AUDIT_DIR, CATALOG_DIR):
         os.makedirs(d, exist_ok=True)
 
 
@@ -137,6 +145,78 @@ def list_accounts_with_rules() -> List[str]:
     if not os.path.isdir(RULES_DIR):
         return []
     return [f.replace(".json", "") for f in os.listdir(RULES_DIR) if f.endswith(".json")]
+
+
+# --- Catalog: pixels, conversion events, offers ---
+def _load_catalog(path: str) -> List[Dict[str, Any]]:
+    data = _read_json(path, [])
+    return data if isinstance(data, list) else []
+
+
+def _save_catalog(path: str, items: List[Dict[str, Any]]) -> None:
+    _write_json(path, items)
+
+
+def _upsert_catalog(path: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    items = _load_catalog(path)
+    now = datetime.now(timezone.utc).isoformat()
+    if not item.get("id"):
+        item["id"] = str(uuid.uuid4())
+        item["created_at"] = now
+    item["updated_at"] = now
+    for i, existing in enumerate(items):
+        if existing.get("id") == item["id"]:
+            items[i] = {**existing, **item}
+            _save_catalog(path, items)
+            return items[i]
+    items.append(item)
+    _save_catalog(path, items)
+    return item
+
+
+def _delete_catalog(path: str, item_id: str) -> bool:
+    items = _load_catalog(path)
+    remaining = [x for x in items if x.get("id") != item_id]
+    if len(remaining) == len(items):
+        return False
+    _save_catalog(path, remaining)
+    return True
+
+
+def list_pixels() -> List[Dict[str, Any]]:
+    return _load_catalog(PIXELS_FILE)
+
+
+def upsert_pixel(item: Dict[str, Any]) -> Dict[str, Any]:
+    return _upsert_catalog(PIXELS_FILE, item)
+
+
+def delete_pixel(item_id: str) -> bool:
+    return _delete_catalog(PIXELS_FILE, item_id)
+
+
+def list_events() -> List[Dict[str, Any]]:
+    return _load_catalog(EVENTS_FILE)
+
+
+def upsert_event(item: Dict[str, Any]) -> Dict[str, Any]:
+    return _upsert_catalog(EVENTS_FILE, item)
+
+
+def delete_event(item_id: str) -> bool:
+    return _delete_catalog(EVENTS_FILE, item_id)
+
+
+def list_offers() -> List[Dict[str, Any]]:
+    return _load_catalog(OFFERS_FILE)
+
+
+def upsert_offer(item: Dict[str, Any]) -> Dict[str, Any]:
+    return _upsert_catalog(OFFERS_FILE, item)
+
+
+def delete_offer(item_id: str) -> bool:
+    return _delete_catalog(OFFERS_FILE, item_id)
 
 
 def list_token_user_ids() -> List[str]:

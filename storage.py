@@ -7,10 +7,27 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-STORAGE_ROOT = os.environ.get(
-    "NEWSBREAK_STORAGE_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage"),
-)
+_LOCAL_STORAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage")
+
+
+def _resolve_storage_root() -> str:
+    """Prefer $NEWSBREAK_STORAGE_DIR if writable, else fall back to local ./storage."""
+    configured = os.environ.get("NEWSBREAK_STORAGE_DIR", "").strip()
+    if configured:
+        try:
+            os.makedirs(configured, exist_ok=True)
+            # Probe writability
+            probe = os.path.join(configured, ".write_probe")
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("")
+            os.remove(probe)
+            return configured
+        except OSError:
+            pass
+    return _LOCAL_STORAGE
+
+
+STORAGE_ROOT = _resolve_storage_root()
 TOKENS_DIR = os.path.join(STORAGE_ROOT, "tokens")
 RULES_DIR = os.path.join(STORAGE_ROOT, "rules")
 AUDIT_DIR = os.path.join(STORAGE_ROOT, "audit")

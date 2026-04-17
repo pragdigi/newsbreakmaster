@@ -215,8 +215,10 @@
         <span><strong>Restrict to NewsBreak-only inventory</strong> (NewsBreak app + web, no partner networks)</span>
       </label>
       <div class="nb-hint" style="margin-top:6px;">
-        Sends <code>trafficPlatforms: ["APP", "WEB"]</code> on <code>/ad-set/create</code> — the values from NewsBreak's
-        <a href="https://advertising-api.newsbreak.com/hc/en-us/articles/40566604502797-Targeting-Structure" target="_blank" rel="noopener">public Targeting Structure docs</a>.
+        Sends <code>trafficPlatforms: ["APP", "WEB"]</code> and <code>placements: ["IN_FEED"]</code>
+        (from NewsBreak's <a href="https://advertising-api.newsbreak.com/hc/en-us/articles/40566604502797-Targeting-Structure" target="_blank" rel="noopener">Targeting Structure docs example</a>)
+        on both <code>/ad-set/create</code> and <code>/ad-set/update</code>. Our <code>create</code> call's 200 OK does not
+        confirm these fields were applied — open the ad set in Ad Manager after launch and verify <strong>Inventory → NewsBreak</strong>.
         Uncheck to launch with Unlimited inventory (NewsBreak + partner networks).
       </div>
     </div>

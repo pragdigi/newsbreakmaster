@@ -216,6 +216,29 @@ def bulk_launch(
             result["errors"].append(f"create_ad_set: {e}")
             continue
 
+        # Inventory scope (trafficPlatforms / placements) is an undocumented
+        # area of the public API. The /ad-set/create endpoint accepts both
+        # fields with HTTP 200 but silently strips them from the stored
+        # entity (verified via Render logs 2026-04-17). Retry via UPDATE
+        # with just those fields — the update endpoint may be more
+        # permissive. Log payload + response so we can verify.
+        inventory_fields = {
+            k: ad_set_payload[k]
+            for k in ("trafficPlatforms", "placements")
+            if k in ad_set_payload
+        }
+        if inventory_fields and ad_set_id:
+            _log_json("update_ad_set.inventory.request", {"ad_set_id": ad_set_id, **inventory_fields})
+            try:
+                upd = client.update_ad_set(str(ad_set_id), inventory_fields)
+                _log_json("update_ad_set.inventory.response", upd)
+            except Exception as upd_err:
+                logger.warning("update_ad_set.inventory.error %s", upd_err)
+                result.setdefault("warnings", []).append(
+                    f"Inventory (NewsBreak-only) could not be applied via UPDATE: {upd_err}. "
+                    f"Open ad set {ad_set_id} in Ad Manager and set Inventory → NewsBreak manually."
+                )
+
         ads_out = []
         for i, row in enumerate(uploaded):
             creative = {

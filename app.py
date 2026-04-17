@@ -394,14 +394,21 @@ def launch():
     ad_set_base["_brand_name"] = (request.form.get("brand_name") or "Advertiser").strip() or "Advertiser"
     ad_set_base["_cta"] = (request.form.get("cta") or "Learn More").strip() or "Learn More"
 
-    # Inventory (NewsBreak-only vs Unlimited). Public API field is
-    # `trafficPlatforms` with enum values ["APP", "WEB"] per the Ad Set
-    # targeting structure docs. (The Nova Ad Manager UI internally uses
-    # ["NEWSBREAK", "NBWEB"] which the public API silently drops as
-    # unknown enum values — do not use those here.)
+    # Inventory (NewsBreak-only vs Unlimited). Two undocumented-but-shown-in-
+    # examples fields control this:
+    #   - trafficPlatforms: ["APP", "WEB"]  (device: mobile app + web)
+    #   - placements:       ["IN_FEED"]     (placement: in-feed native, excludes partner networks)
+    # Source: NewsBreak's Targeting-Structure docs example payload
+    # (/hc/en-us/articles/40566604502797).
+    # The public /ad-set/create endpoint accepts both with HTTP 200 but
+    # silently strips them from the stored entity (verified via Render
+    # logs 2026-04-17 — same payload, same response, inventory still
+    # "Unlimited"). bulk_launcher retries via /ad-set/update after create
+    # in case the update endpoint is more permissive.
     nb_only = (request.form.get("nb_only_inventory") or "").strip().lower() in {"1", "on", "true", "yes"}
     if nb_only:
         ad_set_base["trafficPlatforms"] = ["APP", "WEB"]
+        ad_set_base["placements"] = ["IN_FEED"]
 
     ad_set_base = {k: v for k, v in ad_set_base.items() if v is not None}
 

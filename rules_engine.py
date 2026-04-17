@@ -197,12 +197,29 @@ def normalize_report_rows(raw: Any) -> List[Dict[str, Any]]:
             except (TypeError, ValueError):
                 return None
 
-        spend_f = _f(spend)
-        # Some APIs return cost in micro-units — heuristic: if huge, divide
-        if spend_f is not None and spend_f > 1_000_000:
-            spend_f = spend_f / 1_000_000.0
+        def _money(raw_val: Any) -> Optional[float]:
+            """NewsBreak reports money in cents (matches bidRate/bidAmount units).
+            Convert to dollars. If a raw field already looks fractional (e.g. "35.12"),
+            assume it's already dollars and return as-is. Guard against microdollars too.
+            """
+            f = _f(raw_val)
+            if f is None:
+                return None
+            if f > 1_000_000:
+                return f / 1_000_000.0
+            is_fractional = False
+            if isinstance(raw_val, float) and not raw_val.is_integer():
+                is_fractional = True
+            elif isinstance(raw_val, str) and "." in raw_val:
+                is_fractional = True
+            if is_fractional:
+                return f
+            return f / 100.0
 
-        value_f = _f(value)
+        spend_f = _money(spend)
+        value_f = _money(value)
+        cpa_f = _money(cpa)
+
         conv_f = _f(conv) or 0.0
         computed_roas = None
         if spend_f and spend_f > 0 and value_f is not None:
@@ -214,7 +231,7 @@ def normalize_report_rows(raw: Any) -> List[Dict[str, Any]]:
                 "conversions": conv_f,
                 "conversionValue": value_f,
                 "value": value_f,
-                "cpa": _f(cpa),
+                "cpa": cpa_f,
                 "roas": _f(roas) if _f(roas) is not None else computed_roas,
                 "ad_id": r.get("adId") or r.get("ad_id") or r.get("id"),
                 "ad_set_id": r.get("adSetId") or r.get("ad_set_id"),

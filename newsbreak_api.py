@@ -51,8 +51,9 @@ class NewsBreakClient:
         if headers:
             req_headers.update(headers)
         if files is not None:
-            # multipart: drop JSON Content-Type so requests sets boundary
-            req_headers.pop("Content-Type", None)
+            # multipart: set Content-Type to None so requests suppresses the session's
+            # application/json default and populates multipart boundary itself.
+            req_headers["Content-Type"] = None
 
         last_err: Optional[Exception] = None
         for attempt in range(retries + 1):

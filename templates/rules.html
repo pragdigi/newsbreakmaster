@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Automation rules — NewsBreak{% endblock %}
+{% block content %}
+<h1>Automation rules</h1>
+
+<div class="nb-toolbar">
+  <label>Ad account
+    <select id="account-select" class="nb-input">
+      <option value="">—</option>
+      {% for id, name in accounts.items() %}
+      <option value="{{ id }}" {% if account_id == id %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="button" class="nb-btn" id="btn-load-account">Load</button>
+</div>
+
+<div id="rules-panel" {% if not account_id %}style="display:none"{% endif %}>
+  <h2>Saved rules</h2>
+  <table class="nb-table">
+    <thead><tr><th>Name</th><th>Enabled</th><th>Dry run</th><th></th></tr></thead>
+    <tbody id="rules-tbody">
+      {% for r in rules %}
+      <tr data-rule-id="{{ r.id }}">
+        <td>{{ r.name }}</td>
+        <td><input type="checkbox" class="rule-enabled" {% if r.enabled %}checked{% endif %}></td>
+        <td><input type="checkbox" class="rule-dry" {% if r.get('dry_run', True) %}checked{% endif %}></td>
+        <td><button type="button" class="nb-btn nb-btn-small btn-save-rule">Save</button>
+            <button type="button" class="nb-btn nb-btn-small btn-del-rule">Delete</button></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h3>Add from template</h3>
+  <div class="nb-card">
+    <select id="tpl-select" class="nb-input">
+      {% for tid, t in templates.items() %}
+      <option value="{{ tid }}">{{ t.name }} — {{ t.description }}</option>
+      {% endfor %}
+    </select>
+    <button type="button" class="nb-btn nb-btn-primary" id="btn-add-template">Add</button>
+  </div>
+
+  <h3>Run</h3>
+  <button type="button" class="nb-btn" id="btn-run-now">Run rules now</button>
+  <button type="button" class="nb-btn" id="btn-run-scheduler">Run scheduler (all accounts)</button>
+
+  <h3>Recent audit</h3>
+  <pre class="nb-pre" id="audit-pre">{% for line in audit[-50:] %}{{ line | tojson }}
+{% endfor %}</pre>
+</div>
+
+<script>
+(function() {
+  const accountSelect = document.getElementById('account-select');
+  const panel = document.getElementById('rules-panel');
+
+  function currentAccount() { return accountSelect.value; }
+
+  document.getElementById('btn-load-account').addEventListener('click', function() {
+    const id = currentAccount();
+    if (!id) return;
+    window.location = '/rules?account_id=' + encodeURIComponent(id);
+  });
+
+  document.getElementById('btn-add-template').addEventListener('click', async function() {
+    const id = currentAccount();
+    const tid = document.getElementById('tpl-select').value;
+    if (!id) return;
+    const res = await fetch('/api/rules/from_template', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ account_id: id, template_id: tid })
+    });
+    if (res.ok) window.location.reload();
+    else alert((await res.json()).error || 'Error');
+  });
+
+  document.getElementById('btn-run-now').addEventListener('click', async function() {
+    const id = currentAccount();
+    if (!id) return;
+    const res = await fetch('/api/rules/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ account_id: id })
+    });
+    const data = await res.json();
+    document.getElementById('audit-pre').textContent = JSON.stringify(data, null, 2);
+  });
+
+  document.getElementById('btn-run-scheduler').addEventListener('click', async function() {
+    const res = await fetch('/api/scheduler/run', { method: 'POST' });
+    alert(JSON.stringify(await res.json()));
+  });
+
+  document.querySelectorAll('.btn-save-rule').forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      const tr = btn.closest('tr');
+      const ruleId = tr.getAttribute('data-rule-id');
+      const id = currentAccount();
+      const enabled = tr.querySelector('.rule-enabled').checked;
+      const dry = tr.querySelector('.rule-dry').checked;
+      await fetch('/api/rules/patch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          account_id: id,
+          rule_id: ruleId,
+          enabled: enabled,
+          dry_run: dry
+        })
+      });
+      alert('Saved');
+    });
+  });
+
+  document.querySelectorAll('.btn-del-rule').forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      const tr = btn.closest('tr');
+      const ruleId = tr.getAttribute('data-rule-id');
+      const id = currentAccount();
+      await fetch('/api/rules/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ account_id: id, rule_id: ruleId })
+      });
+      tr.remove();
+    });
+  });
+
+  if (document.getElementById('account-select').value) panel.style.display = 'block';
+})();
+</script>
+{% endblock %}

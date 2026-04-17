@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Scaling — NewsBreak{% endblock %}
+{% block content %}
+<h1>Scaling & performance</h1>
+<div class="nb-toolbar">
+  <label>Ad account
+    <select id="account-select" class="nb-input">
+      <option value="">—</option>
+      {% for id, name in accounts.items() %}
+      <option value="{{ id }}" {% if request.args.get('account_id') == id %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Level
+    <select id="level-select" class="nb-input">
+      <option value="ad">Ad</option>
+      <option value="ad_set">Ad set</option>
+      <option value="campaign">Campaign</option>
+    </select>
+  </label>
+  <label>Days
+    <input type="number" id="days-input" class="nb-input" value="7" min="1" max="90">
+  </label>
+  <button type="button" class="nb-btn nb-btn-primary" id="btn-load">Load report</button>
+</div>
+
+<div id="report-error" class="nb-error" style="display:none;"></div>
+<table class="nb-table" id="report-table">
+  <thead id="report-head"></thead>
+  <tbody id="report-body"></tbody>
+</table>
+
+<script>
+(function() {
+  const accountSelect = document.getElementById('account-select');
+  const levelSelect = document.getElementById('level-select');
+  const daysInput = document.getElementById('days-input');
+  const errEl = document.getElementById('report-error');
+  const head = document.getElementById('report-head');
+  const body = document.getElementById('report-body');
+
+  async function loadReport() {
+    errEl.style.display = 'none';
+    const aid = accountSelect.value;
+    if (!aid) { errEl.textContent = 'Select account'; errEl.style.display = 'block'; return; }
+    const q = new URLSearchParams({
+      ad_account_id: aid,
+      level: levelSelect.value,
+      days: daysInput.value || '7'
+    });
+    const res = await fetch('/api/report?' + q.toString());
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.error || 'Error';
+      errEl.style.display = 'block';
+      return;
+    }
+    const rows = data.rows || [];
+    if (!rows.length) {
+      head.innerHTML = '';
+      body.innerHTML = '<tr><td colspan="10">No rows (check date range / API field names).</td></tr>';
+      return;
+    }
+    const keys = Object.keys(rows[0]);
+    head.innerHTML = '<tr>' + keys.map(function(k) {
+      return '<th>' + k + '</th>';
+    }).join('') + '<th>Actions</th></tr>';
+    body.innerHTML = rows.map(function(row, idx) {
+      const adId = row.ad_id || row.adId || row.id;
+      const adSetId = row.ad_set_id || row.adSetId;
+      const budget = row.budget || row.dailyBudget || 0;
+      let actions = '';
+      if (levelSelect.value === 'ad' && adId) {
+        actions = '<button type="button" class="nb-btn nb-btn-small" data-pause-ad="' + adId + '">Pause</button> ' +
+          '<button type="button" class="nb-btn nb-btn-small" data-enable-ad="' + adId + '">Enable</button>';
+      }
+      if (levelSelect.value === 'ad_set' && adSetId) {
+        actions = '<button type="button" class="nb-btn nb-btn-small" data-budget-pct="' + adSetId + '" data-pct="20" data-cents="' + budget + '">+20%</button> ' +
+          '<button type="button" class="nb-btn nb-btn-small" data-budget-pct="' + adSetId + '" data-pct="-20" data-cents="' + budget + '">-20%</button>';
+      }
+      return '<tr>' + keys.map(function(k) {
+        return '<td>' + (row[k] != null ? row[k] : '') + '</td>';
+      }).join('') + '<td>' + actions + '</td></tr>';
+    }).join('');
+
+    body.querySelectorAll('[data-pause-ad]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        const id = btn.getAttribute('data-pause-ad');
+        await fetch('/api/ad/pause', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ad_id: id}) });
+        loadReport();
+      });
+    });
+    body.querySelectorAll('[data-enable-ad]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        const id = btn.getAttribute('data-enable-ad');
+        await fetch('/api/ad/enable', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ad_id: id}) });
+        loadReport();
+      });
+    });
+    body.querySelectorAll('[data-budget-pct]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        const id = btn.getAttribute('data-budget-pct');
+        const pct = parseFloat(btn.getAttribute('data-pct'));
+        const cents = parseFloat(btn.getAttribute('data-cents')) || 0;
+        await fetch('/api/adset/budget_delta', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ ad_set_id: id, percent: pct, current_budget_cents: cents, budget_type: 'DAILY' })
+        });
+        loadReport();
+      });
+    });
+  }
+
+  document.getElementById('btn-load').addEventListener('click', loadReport);
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — NewsBreak{% endblock %}
+{% block content %}
+<h1>Ad accounts</h1>
+{% if error %}
+<div class="nb-error">{{ error }}</div>
+{% endif %}
+{% if accounts %}
+<table class="nb-table">
+  <thead>
+    <tr><th>Name</th><th>Account ID</th><th>Actions</th></tr>
+  </thead>
+  <tbody>
+    {% for a in accounts %}
+    <tr>
+      <td>{{ a.get('name', '—') }}</td>
+      <td><code>{{ a.get('id') }}</code></td>
+      <td>
+        <a class="nb-btn nb-btn-small" href="{{ url_for('launch') }}?account={{ a.get('id') }}">Bulk launch</a>
+        <a class="nb-btn nb-btn-small" href="{{ url_for('scaling') }}?account_id={{ a.get('id') }}">Scaling</a>
+        <a class="nb-btn nb-btn-small" href="{{ url_for('rules_page', account_id=a.get('id')) }}">Rules</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="nb-muted">No accounts returned. Check org IDs and token permissions.</p>
+{% endif %}
+{% endblock %}

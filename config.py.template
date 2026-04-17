@@ -1,0 +1,6 @@
+"""Copy to config.py or use environment variables."""
+import os
+
+FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-change-me")
+# Comma-separated NewsBreak organization IDs (from Ad Manager URL or support)
+NEWSBREAK_DEFAULT_ORG_IDS = os.environ.get("NEWSBREAK_DEFAULT_ORG_IDS", "")

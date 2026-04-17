@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — NewsBreak Ads Launcher</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="nb-login-body">
+  <div class="nb-card nb-login-card">
+    <h1>NewsBreak Ads Launcher</h1>
+    <p class="nb-muted">Paste your API <strong>Access-Token</strong> from Ad Manager → Resources → API Access Tokens.</p>
+    <p class="nb-muted">Enter one or more <strong>Organization IDs</strong> (comma-separated). Required for <code>getGroupsByOrgIds</code>.</p>
+    {% if error %}
+    <div class="nb-error">{{ error }}</div>
+    {% endif %}
+    <form method="post" class="nb-form">
+      <label class="nb-label">Access-Token</label>
+      <textarea name="access_token" class="nb-input nb-textarea" rows="4" placeholder="Access-Token" required></textarea>
+      <label class="nb-label">Organization IDs</label>
+      <input type="text" name="org_ids" class="nb-input" placeholder="e.g. 12345, 67890" value="{{ default_org_ids }}">
+      <button type="submit" class="nb-btn nb-btn-primary">Continue</button>
+    </form>
+  </div>
+</body>
+</html>

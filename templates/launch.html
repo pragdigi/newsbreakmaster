@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Bulk launch — NewsBreak{% endblock %}
+{% block content %}
+<h1>Bulk launch</h1>
+{% if result %}
+<div class="nb-card nb-result">
+  <h3>Result</h3>
+  <pre class="nb-pre">{{ result | tojson(indent=2) }}</pre>
+</div>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="launch-form">
+  <div class="nb-field">
+    <label class="nb-label">Ad account</label>
+    <select name="ad_account_id" id="ad_account_id" class="nb-input" required>
+      <option value="">— Select —</option>
+      {% for id, name in accounts.items() %}
+      <option value="{{ id }}" {% if request.args.get('account') == id %}selected{% endif %}>{{ name }} ({{ id }})</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="nb-field">
+    <label class="nb-label">Campaign</label>
+    <label><input type="radio" name="campaign_mode" value="existing" checked> Existing</label>
+    <label><input type="radio" name="campaign_mode" value="new"> New</label>
+  </div>
+  <div id="existing-campaign" class="nb-field">
+    <label class="nb-label">Campaign ID</label>
+    <select name="campaign_id" id="campaign_id" class="nb-input"></select>
+    <button type="button" class="nb-btn nb-btn-small" id="btn-load-campaigns">Load campaigns</button>
+  </div>
+  <div id="new-campaign" class="nb-field" style="display:none;">
+    <label class="nb-label">New campaign name</label>
+    <input type="text" name="campaign_name" class="nb-input" value="API Campaign">
+    <label class="nb-label">Objective</label>
+    <input type="text" name="objective" class="nb-input" value="TRAFFIC" placeholder="TRAFFIC / CONVERSIONS / …">
+  </div>
+
+  <h2>Ad set</h2>
+  <div class="nb-grid">
+    <div class="nb-field">
+      <label class="nb-label">Ad set name</label>
+      <input type="text" name="ad_set_name" class="nb-input" value="Bulk ad set">
+    </div>
+    <div class="nb-field">
+      <label class="nb-label">Budget ($ daily or total — check NB UI)</label>
+      <input type="number" step="0.01" name="budget_dollars" class="nb-input" value="50">
+    </div>
+    <div class="nb-field">
+      <label class="nb-label">Budget type</label>
+      <select name="budget_type" class="nb-input"><option>DAILY</option><option>TOTAL</option></select>
+    </div>
+    <div class="nb-field">
+      <label class="nb-label">Bid type</label>
+      <select name="bid_type" class="nb-input">
+        <option>CPC</option><option>CPM</option><option>TARGET_CPA</option><option>TARGET_ROAS</option>
+      </select>
+    </div>
+    <div class="nb-field">
+      <label class="nb-label">Bid ($)</label>
+      <input type="number" step="0.01" name="bid_dollars" class="nb-input" value="1">
+    </div>
+  </div>
+
+  <h2>Grouping</h2>
+  <select name="grouping" class="nb-input">
+    <option value="all_in_one">All ads in one ad set</option>
+    <option value="isolate">One ad set per creative</option>
+    <option value="groups_of_n" selected>Groups of N</option>
+  </select>
+  <input type="number" name="group_size" class="nb-input" value="5" min="1" title="Group size">
+
+  <h2>Creatives</h2>
+  <p class="nb-muted">Add rows: image/video file, headline, body, landing URL.</p>
+  <div id="creative-rows"></div>
+  <button type="button" class="nb-btn nb-btn-small" id="add-row">+ Add creative</button>
+
+  <button type="submit" class="nb-btn nb-btn-primary">Launch</button>
+</form>
+
+<script>
+(function() {
+  const rows = document.getElementById('creative-rows');
+  function addRow() {
+    const div = document.createElement('div');
+    div.className = 'nb-creative-row nb-card';
+    div.innerHTML = `
+      <input type="file" name="creatives" accept="image/*,video/*" required>
+      <input type="text" name="headline" placeholder="Headline" class="nb-input">
+      <input type="text" name="body" placeholder="Body" class="nb-input">
+      <input type="url" name="landing_url" placeholder="https://..." class="nb-input" required>
+    `;
+    rows.appendChild(div);
+  }
+  document.getElementById('add-row').addEventListener('click', addRow);
+  addRow();
+
+  document.querySelectorAll('input[name=campaign_mode]').forEach(function(r) {
+    r.addEventListener('change', function() {
+      document.getElementById('existing-campaign').style.display = r.value === 'existing' ? 'block' : 'none';
+      document.getElementById('new-campaign').style.display = r.value === 'new' ? 'block' : 'none';
+    });
+  });
+
+  document.getElementById('btn-load-campaigns').addEventListener('click', async function() {
+    const aid = document.getElementById('ad_account_id').value;
+    if (!aid) { alert('Select ad account'); return; }
+    const res = await fetch('/api/campaigns?ad_account_id=' + encodeURIComponent(aid));
+    const data = await res.json();
+    const sel = document.getElementById('campaign_id');
+    sel.innerHTML = '';
+    (data.campaigns || []).forEach(function(c) {
+      const id = c.id || c.campaignId;
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = (c.name || id) + ' (' + id + ')';
+      sel.appendChild(opt);
+    });
+  });
+})();
+</script>
+{% endblock %}

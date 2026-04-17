@@ -394,23 +394,29 @@ def launch():
     ad_set_base["_brand_name"] = (request.form.get("brand_name") or "Advertiser").strip() or "Advertiser"
     ad_set_base["_cta"] = (request.form.get("cta") or "Learn More").strip() or "Learn More"
 
-    # Inventory (NewsBreak-only vs Unlimited). DevTools capture of the
-    # Nova Ad Manager UI's save-payload (2026-04-17, with only the
-    # NewsBreak publisher checkbox ticked) always sends these TWO fields
-    # together:
-    #   placements:        ["NATIVE_UNLIMITED"]     (format/surface axis)
-    #   trafficPlatforms:  ["NBWEB", "NEWSBREAK"]   (publisher axis)
-    # Previous attempts sending trafficPlatforms alone were silently
-    # dropped by /ad-set/create — hypothesis: the API treats them as a
-    # bound pair and ignores trafficPlatforms when placements is not
-    # also provided. bulk_launcher retries via /ad-set/update after
-    # create in case that endpoint behaves differently.
-    nb_only = (request.form.get("nb_only_inventory") or "").strip().lower() in {"1", "on", "true", "yes"}
-    if nb_only:
-        ad_set_base["placements"] = ["NATIVE_UNLIMITED"]
-        ad_set_base["trafficPlatforms"] = ["NBWEB", "NEWSBREAK"]
+    # Inventory scope (NewsBreak-only vs partner networks) is not exposed
+    # on the public advertising-api.newsbreak.com endpoints — verified
+    # 2026-04-17 via Render logs: both /ad-set/create and /ad-set/update
+    # silently strip `placements` and `trafficPlatforms` from the request
+    # (unknown-field whitelist). All ad sets launched via the public API
+    # run with "Unlimited" inventory until NewsBreak adds these fields,
+    # or until we wire up a Nova-cookie relay against the internal
+    # nova.newsbreak.com host.
 
     ad_set_base = {k: v for k, v in ad_set_base.items() if v is not None}
+
+    normalized_grouping = (
+        "all_in_one" if grouping == "all_in_one"
+        else ("isolate" if grouping == "isolate" else "groups_of_n")
+    )
+    app.logger.info(
+        "bulk_launch.params grouping_raw=%r grouping=%r group_size_raw=%r group_size=%d creatives=%d",
+        grouping,
+        normalized_grouping,
+        request.form.get("group_size"),
+        group_size,
+        len(creatives),
+    )
 
     result = bulk_launch(
         cl,
@@ -420,7 +426,7 @@ def launch():
         campaign_payload=campaign_payload,
         ad_set_base=ad_set_base,
         creatives=creatives,
-        grouping="all_in_one" if grouping == "all_in_one" else ("isolate" if grouping == "isolate" else "groups_of_n"),
+        grouping=normalized_grouping,
         group_size=group_size,
     )
 

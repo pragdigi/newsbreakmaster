@@ -209,17 +209,11 @@
       </div>
     </div>
 
-    <div style="margin-top:12px;padding:12px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.35);border-radius:8px;">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0;">
-        <input type="checkbox" name="nb_only_inventory" id="nb_only_inventory" value="1" checked>
-        <span><strong>Restrict to NewsBreak-only inventory</strong> (NewsBreak app + web, no partner networks)</span>
-      </label>
-      <div class="nb-hint" style="margin-top:6px;">
-        Sends <code>placements: ["NATIVE_UNLIMITED"]</code> + <code>trafficPlatforms: ["NBWEB", "NEWSBREAK"]</code>
-        together (the exact pair the Ad Manager UI emits when only the <em>NewsBreak</em> publisher is ticked,
-        captured via DevTools). Restricts delivery to NewsBreak's own app + web — excludes Scoopz and Premium Partners.
-        <br>Uncheck to launch with Unlimited inventory (all partner networks included).
-      </div>
+    <div class="nb-alert nb-alert-info" style="margin-top:12px;">
+      <strong>Inventory:</strong> ad sets launch with <em>Unlimited</em> inventory (NewsBreak + Scoopz + Premium Partners).
+      NewsBreak's public API doesn't expose the publisher-restriction field
+      (verified via /ad-set/create + /ad-set/update — both silently strip <code>trafficPlatforms</code> and <code>placements</code>).
+      To restrict to NewsBreak only, open the ad set in Ad Manager → <em>Placements</em> → tick <strong>NewsBreak</strong>.
     </div>
   </div>
 
@@ -279,13 +273,16 @@
         <select name="grouping" id="grouping" class="nb-select">
           <option value="all_in_one">All ads in one ad set</option>
           <option value="isolate">One ad set per creative</option>
-          <option value="groups_of_n" selected>Groups of N</option>
+          <option value="groups_of_n" selected>Chunk into groups of N ads each</option>
         </select>
       </div>
       <div id="group-size-wrap">
-        <label class="nb-label">Group size</label>
-        <input type="number" name="group_size" class="nb-input" value="5" min="1">
+        <label class="nb-label">Ads per ad set (N)</label>
+        <input type="number" name="group_size" id="group_size" class="nb-input" value="5" min="1">
       </div>
+    </div>
+    <div id="grouping-preview" class="nb-hint" style="margin-top:8px;">
+      Drop creatives below to see how they will be split into ad sets.
     </div>
   </div>
 
@@ -380,6 +377,7 @@
     const n = items.length;
     countText.textContent = n === 0 ? 'No creatives yet' : (n + ' creative' + (n === 1 ? '' : 's') + ' ready');
     btnClear.style.display = n > 0 ? 'inline-block' : 'none';
+    if (typeof refreshGroupPreview === 'function') refreshGroupPreview();
   }
 
   function fmtSize(b) {
@@ -541,11 +539,39 @@
   noEndChk.addEventListener('change', refreshEndDate);
   refreshEndDate();
 
-  // Grouping toggle
+  // Grouping toggle + live preview
   const groupSel = document.getElementById('grouping');
   const gWrap = document.getElementById('group-size-wrap');
-  function refreshGroup() { gWrap.style.display = groupSel.value === 'groups_of_n' ? 'block' : 'none'; }
+  const groupSize = document.getElementById('group_size');
+  const groupPreview = document.getElementById('grouping-preview');
+  function refreshGroup() {
+    gWrap.style.display = groupSel.value === 'groups_of_n' ? 'block' : 'none';
+    refreshGroupPreview();
+  }
+  function refreshGroupPreview() {
+    const n = items.length;
+    if (n === 0) {
+      groupPreview.textContent = 'Drop creatives below to see how they will be split into ad sets.';
+      return;
+    }
+    const strat = groupSel.value;
+    if (strat === 'all_in_one') {
+      groupPreview.innerHTML = `<strong>${n}</strong> creative${n === 1 ? '' : 's'} → <strong>1 ad set</strong> with ${n} ad${n === 1 ? '' : 's'}.`;
+    } else if (strat === 'isolate') {
+      groupPreview.innerHTML = `<strong>${n}</strong> creative${n === 1 ? '' : 's'} → <strong>${n} ad set${n === 1 ? '' : 's'}</strong>, 1 ad each.`;
+    } else {
+      const size = Math.max(1, parseInt(groupSize.value, 10) || 5);
+      const fullSets = Math.floor(n / size);
+      const remainder = n % size;
+      const totalSets = fullSets + (remainder ? 1 : 0);
+      const sizes = [];
+      for (let i = 0; i < fullSets; i++) sizes.push(size);
+      if (remainder) sizes.push(remainder);
+      groupPreview.innerHTML = `<strong>${n}</strong> creative${n === 1 ? '' : 's'} ÷ ${size} per ad set → <strong>${totalSets} ad set${totalSets === 1 ? '' : 's'}</strong> (${sizes.join(' + ')}).`;
+    }
+  }
   groupSel.addEventListener('change', refreshGroup);
+  groupSize.addEventListener('input', refreshGroupPreview);
   refreshGroup();
 
   // Event manual toggle

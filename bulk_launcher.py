@@ -126,6 +126,14 @@ def bulk_launch(
     result["campaign_id"] = cid
 
     groups = group_creatives(creatives, grouping, group_size)
+    logger.info(
+        "bulk_launch.groups grouping=%s group_size=%s creatives=%d groups=%d sizes=%s",
+        grouping,
+        group_size,
+        len(creatives),
+        len(groups),
+        [len(g) for g in groups],
+    )
     if not groups:
         result["success"] = False
         result["errors"].append(
@@ -215,28 +223,6 @@ def bulk_launch(
             logger.warning("create_ad_set.error %s", e)
             result["errors"].append(f"create_ad_set: {e}")
             continue
-
-        # Publisher/surface scope (trafficPlatforms + placements) are
-        # undocumented fields on the public API. /ad-set/create may silently
-        # strip them from the stored entity. Retry via /ad-set/update which
-        # sometimes honours fields create ignores. Log payload + response
-        # so we can verify conclusively from Render logs.
-        inventory_fields = {
-            k: ad_set_payload[k]
-            for k in ("trafficPlatforms", "placements")
-            if k in ad_set_payload
-        }
-        if inventory_fields and ad_set_id:
-            _log_json("update_ad_set.inventory.request", {"ad_set_id": ad_set_id, **inventory_fields})
-            try:
-                upd = client.update_ad_set(str(ad_set_id), inventory_fields)
-                _log_json("update_ad_set.inventory.response", upd)
-            except Exception as upd_err:
-                logger.warning("update_ad_set.inventory.error %s", upd_err)
-                result.setdefault("warnings", []).append(
-                    f"Inventory (NewsBreak-only) could not be applied via UPDATE: {upd_err}. "
-                    f"Open ad set {ad_set_id} in Ad Manager and set Inventory → NewsBreak manually."
-                )
 
         ads_out = []
         for i, row in enumerate(uploaded):

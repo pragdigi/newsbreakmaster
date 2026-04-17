@@ -311,14 +311,17 @@ def bulk_launch(
         if not uploaded:
             continue
 
-        # Derive a human-readable ad-set name. If the user supplied a prefix,
-        # keep the old numbered behaviour; otherwise use the first creative's
-        # filename as the ad-set name so it has meaning on the dashboard.
-        first_name = _name_from_filename(group[0].get("filename", ""), fallback="Ad set")
+        # Derive a human-readable ad-set name:
+        #   - user-supplied prefix wins (numbered when >1 group)
+        #   - single-creative groups use the creative's filename
+        #   - multi-creative groups use "Ad set N" since the first
+        #     filename is no longer representative of the whole group
         if base_name:
             ad_set_name = f"{base_name} {gi + 1}" if len(groups) > 1 else base_name
+        elif len(group) == 1:
+            ad_set_name = _name_from_filename(group[0].get("filename", ""), fallback=f"Ad set {gi + 1}")
         else:
-            ad_set_name = first_name if len(groups) == 1 or len(group) == 1 else f"{first_name} +{len(group) - 1}"
+            ad_set_name = f"Ad set {gi + 1}"
 
         ad_set_payload = {
             **{k: v for k, v in ad_set_base.items() if not k.startswith("_") and k != "name_prefix"},

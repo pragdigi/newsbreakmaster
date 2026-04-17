@@ -215,11 +215,11 @@
         <span><strong>Restrict to NewsBreak-only inventory</strong> (NewsBreak app + web, no partner networks)</span>
       </label>
       <div class="nb-hint" style="margin-top:6px;">
-        Sends <code>trafficPlatforms: ["APP", "WEB"]</code> and <code>placements: ["IN_FEED"]</code>
-        (from NewsBreak's <a href="https://advertising-api.newsbreak.com/hc/en-us/articles/40566604502797-Targeting-Structure" target="_blank" rel="noopener">Targeting Structure docs example</a>)
-        on both <code>/ad-set/create</code> and <code>/ad-set/update</code>. Our <code>create</code> call's 200 OK does not
-        confirm these fields were applied — open the ad set in Ad Manager after launch and verify <strong>Inventory → NewsBreak</strong>.
-        Uncheck to launch with Unlimited inventory (NewsBreak + partner networks).
+        Sends <code>trafficPlatforms: ["NBWEB", "NEWSBREAK"]</code> on both <code>/ad-set/create</code> and
+        <code>/ad-set/update</code> — the values the Ad Manager UI emits when only the <em>NewsBreak</em>
+        publisher checkbox is ticked (captured via DevTools). Restricts delivery to NewsBreak's own
+        app + web, excluding Scoopz and Premium Partners.
+        <br>Uncheck to launch with Unlimited inventory (all partner networks included).
       </div>
     </div>
   </div>

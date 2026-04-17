@@ -394,13 +394,14 @@ def launch():
     ad_set_base["_brand_name"] = (request.form.get("brand_name") or "Advertiser").strip() or "Advertiser"
     ad_set_base["_cta"] = (request.form.get("cta") or "Learn More").strip() or "Learn More"
 
-    # Inventory (NewsBreak-only vs Unlimited). Internal Ad Manager API uses
-    # `trafficPlatforms: ["NEWSBREAK", "NBWEB"]` for NewsBreak-only. We send
-    # it on the public API too; if rejected, bulk_launcher strips it and
-    # retries transparently.
+    # Inventory (NewsBreak-only vs Unlimited). Public API field is
+    # `trafficPlatforms` with enum values ["APP", "WEB"] per the Ad Set
+    # targeting structure docs. (The Nova Ad Manager UI internally uses
+    # ["NEWSBREAK", "NBWEB"] which the public API silently drops as
+    # unknown enum values — do not use those here.)
     nb_only = (request.form.get("nb_only_inventory") or "").strip().lower() in {"1", "on", "true", "yes"}
     if nb_only:
-        ad_set_base["trafficPlatforms"] = ["NEWSBREAK", "NBWEB"]
+        ad_set_base["trafficPlatforms"] = ["APP", "WEB"]
 
     ad_set_base = {k: v for k, v in ad_set_base.items() if v is not None}
 

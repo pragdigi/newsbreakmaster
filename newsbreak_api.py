@@ -232,6 +232,13 @@ class NewsBreakClient:
         """POST /reports/getIntegratedReport — synchronous report."""
         return self._request("POST", "/reports/getIntegratedReport", json_body=payload)
 
+    # --- Events / pixels ---
+    def get_events(self, ad_account_id: str) -> Any:
+        """GET /event/getList/{adAccountId} — returns tracking events configured in Ad Manager."""
+        if not ad_account_id:
+            raise NewsBreakAPIError("ad_account_id required")
+        return self._request("GET", f"/event/getList/{ad_account_id}")
+
 
 def unwrap_list_response(data: Any, keys: tuple = ("data", "list", "records", "items")) -> List[Dict[str, Any]]:
     """Normalize various API response shapes to a list of dicts."""

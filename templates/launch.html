@@ -180,17 +180,22 @@
       <div>
         <label class="nb-label">Tracking event <span class="nb-muted" style="font-weight:400;">(required for conversion bidding)</span></label>
         <select name="event_ref" id="event_ref" class="nb-select">
-          <option value="">— Select saved event —</option>
-          {% for e in events %}
-          <option value="{{ e.id }}">{{ e.name }} · ID: {{ e.tracking_id or e.event_type }}</option>
-          {% endfor %}
+          <option value="">— Select event —</option>
+          <optgroup id="event_group_newsbreak" label="From NewsBreak (live)"></optgroup>
+          {% if events %}
+          <optgroup id="event_group_saved" label="Saved in Offers catalog">
+            {% for e in events %}
+            <option value="{{ e.id }}">{{ e.name }} · ID: {{ e.tracking_id or e.event_type }}</option>
+            {% endfor %}
+          </optgroup>
+          {% endif %}
           <option value="__manual__">Enter tracking ID manually…</option>
         </select>
         <div id="event-manual-wrap" style="margin-top:8px;display:none;">
           <input type="text" name="conversion_event" id="conversion_event_manual" class="nb-input" placeholder="Tracking ID from NewsBreak Ad Manager → Event Management">
           <input type="hidden" name="custom_event_name" id="custom_event_name_manual" value="">
         </div>
-        <div class="nb-hint">This is the <code>trackingId</code> NewsBreak assigns to each conversion event you create. Find it in Ad Manager → Event Management.</div>
+        <div id="event-live-status" class="nb-hint" style="margin-top:6px;">Pick an ad account above — events will auto-load from NewsBreak.</div>
       </div>
     </div>
 
@@ -486,6 +491,43 @@
   }
   eventSel.addEventListener('change', refreshEvent);
   refreshEvent();
+
+  // Auto-load events from NewsBreak on ad account change
+  const accountSel = document.getElementById('ad_account_id');
+  const liveGroup = document.getElementById('event_group_newsbreak');
+  const liveStatus = document.getElementById('event-live-status');
+  let liveEventCache = {};
+  async function loadLiveEvents(accountId) {
+    while (liveGroup.firstChild) liveGroup.removeChild(liveGroup.firstChild);
+    if (!accountId) {
+      liveStatus.textContent = 'Pick an ad account above — events will auto-load from NewsBreak.';
+      return;
+    }
+    liveStatus.textContent = 'Loading events from NewsBreak…';
+    try {
+      const r = await fetch(`/api/newsbreak/events?ad_account_id=${encodeURIComponent(accountId)}`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'fetch failed');
+      const events = data.events || [];
+      liveEventCache[accountId] = events;
+      if (events.length === 0) {
+        liveStatus.innerHTML = 'No events found for this account. Create one in <a href="https://business.newsbreak.com" target="_blank" rel="noopener">NewsBreak Ad Manager → Tools → Event Management</a>, then reload.';
+        return;
+      }
+      for (const ev of events) {
+        const opt = document.createElement('option');
+        opt.value = 'nb:' + ev.tracking_id;
+        const typeLabel = ev.event_type ? ` · ${ev.event_type}` : '';
+        opt.textContent = `${ev.name}${typeLabel} · ID: ${ev.tracking_id}`;
+        liveGroup.appendChild(opt);
+      }
+      liveStatus.textContent = `${events.length} event(s) loaded from NewsBreak. Select one above.`;
+    } catch (e) {
+      liveStatus.textContent = `Could not load events: ${e.message}. You can still pick a saved event or enter a tracking ID manually.`;
+    }
+  }
+  accountSel.addEventListener('change', () => loadLiveEvents(accountSel.value));
+  if (accountSel.value) loadLiveEvents(accountSel.value);
 
   // Offer prefill
   const OFFERS = {{ offers|tojson }};

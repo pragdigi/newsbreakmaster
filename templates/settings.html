@@ -28,9 +28,13 @@
   <div class="nb-card">
     <div class="nb-card-head">
       <h2>Conversion events</h2>
-      <button type="button" class="nb-btn nb-btn-sm" data-new="event">Add event</button>
+      <div style="display:flex;gap:8px;">
+        <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Pull events from every ad account on your token">Sync from NewsBreak</button>
+        <button type="button" class="nb-btn nb-btn-sm" data-new="event">Add event</button>
+      </div>
     </div>
-    <p class="nb-muted nb-small">Grab the <strong>tracking ID</strong> for each conversion event from NewsBreak Ad Manager → Tools → Event Management. That ID is what NewsBreak optimizes against.</p>
+    <p class="nb-muted nb-small">Grab the <strong>tracking ID</strong> for each conversion event from NewsBreak Ad Manager → Tools → Event Management. Or click <strong>Sync from NewsBreak</strong> to auto-import all events from every ad account on your token.</p>
+    <div id="sync-status" class="nb-hint" style="display:none;margin-bottom:8px;"></div>
     <table class="nb-table" id="events-table">
       <thead>
         <tr><th>Name</th><th>Tracking ID</th><th>Type</th><th></th></tr>
@@ -260,6 +264,40 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('[data-close]')) closeModal();
 });
 document.getElementById('nb-modal-save').addEventListener('click', saveModal);
+
+document.getElementById('btn-sync-events').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-sync-events');
+  const status = document.getElementById('sync-status');
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = 'Syncing…';
+  status.style.display = 'block';
+  status.textContent = 'Fetching events from every ad account on your token…';
+  try {
+    const r = await fetch('/api/newsbreak/sync-events', { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'sync failed');
+    const accSummary = (data.accounts || []).map(a => `${a.name}: ${a.imported}`).join(' · ') || 'no accounts returned events';
+    let msg = `Imported ${data.added} new event(s), updated ${data.updated}, plus ${data.pixels_added || 0} new pixel(s). (${accSummary})`;
+    if (data.errors && data.errors.length) {
+      msg += ` · Errors: ${data.errors.map(e => e.ad_account_id + ' → ' + e.error).join('; ')}`;
+    }
+    status.textContent = msg;
+    const [freshEvents, freshPixels] = await Promise.all([
+      fetch('/api/events').then(r => r.json()),
+      fetch('/api/pixels').then(r => r.json()),
+    ]);
+    state.events = freshEvents.events || [];
+    state.pixels = freshPixels.pixels || [];
+    renderEvents();
+    renderPixels();
+  } catch (e) {
+    status.textContent = 'Sync failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+});
 
 renderPixels(); renderEvents(); renderOffers();
 </script>

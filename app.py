@@ -94,6 +94,23 @@ def _client() -> NewsBreakClient | None:
     return NewsBreakClient(tok["access_token"])
 
 
+def _ad_accounts_for_current_token() -> dict:
+    """Return {ad_account_id: name} for the current session's token. Empty dict on failure."""
+    cl = _client()
+    tok = _effective_token()
+    if not cl or not tok:
+        return {}
+    try:
+        raw = cl.get_ad_accounts(tok.get("org_ids") or [])
+    except Exception:
+        return {}
+    return {
+        str(a.get("id")): a.get("name", a.get("id"))
+        for a in _flatten_ad_accounts(raw)
+        if a.get("id")
+    }
+
+
 def _flatten_ad_accounts(api_response) -> list[dict]:
     rows: list[dict] = []
     if not isinstance(api_response, dict):
@@ -280,7 +297,9 @@ def launch():
     tracking_id = ""
     custom_event_name = (request.form.get("custom_event_name") or "").strip()
     manual_event = (request.form.get("conversion_event") or "").strip().upper()
-    if event_ref and event_ref != "__manual__":
+    if event_ref.startswith("nb:"):
+        tracking_id = event_ref[3:].strip()
+    elif event_ref and event_ref != "__manual__":
         for e in storage.list_events():
             if e.get("id") == event_ref:
                 tracking_id = (e.get("tracking_id") or e.get("event_type") or "").strip()
@@ -448,6 +467,135 @@ def api_report():
         return jsonify({"rows": rows, "raw": raw})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+def _normalize_newsbreak_events(raw: Any, ad_account_id: str) -> list:
+    """Flatten the /event/getList response into a predictable list of dicts."""
+    rows = unwrap_list_response(raw)
+    if not rows and isinstance(raw, dict):
+        data = raw.get("data")
+        if isinstance(data, dict):
+            inner = data.get("list") or data.get("rows") or data.get("events") or data.get("records")
+            if isinstance(inner, list):
+                rows = [x for x in inner if isinstance(x, dict)]
+            elif not rows and any(k in data for k in ("id", "name", "eventType")):
+                rows = [data]
+    out = []
+    for r in rows:
+        tid = (
+            r.get("id")
+            or r.get("eventId")
+            or r.get("trackingId")
+            or r.get("tracking_id")
+        )
+        if tid is None:
+            continue
+        out.append(
+            {
+                "tracking_id": str(tid),
+                "name": r.get("name") or r.get("eventName") or f"Event {tid}",
+                "event_type": r.get("eventType") or r.get("event_type") or "",
+                "pixel_id": str(r.get("pixelId") or r.get("pixel_id") or "") or None,
+                "tracking_type": r.get("trackingType") or r.get("tracking_type") or "",
+                "status": r.get("status") or "",
+                "ad_account_id": ad_account_id,
+                "source": "newsbreak",
+                "raw": r,
+            }
+        )
+    return out
+
+
+@app.route("/api/newsbreak/events")
+def api_newsbreak_events():
+    cl = _client()
+    if not cl:
+        return jsonify({"error": "unauthorized"}), 401
+    aid = request.args.get("ad_account_id", "").strip()
+    if not aid:
+        return jsonify({"error": "ad_account_id required"}), 400
+    try:
+        raw = cl.get_events(aid)
+        return jsonify({"events": _normalize_newsbreak_events(raw, aid), "raw": raw})
+    except Exception as e:
+        return jsonify({"error": str(e), "events": []}), 400
+
+
+@app.route("/api/newsbreak/sync-events", methods=["POST"])
+def api_newsbreak_sync_events():
+    """Pull events from every ad account we know about and upsert them into the local catalog."""
+    cl = _client()
+    if not cl:
+        return jsonify({"error": "unauthorized"}), 401
+    accounts = _ad_accounts_for_current_token()
+    if not accounts:
+        return jsonify({"error": "no ad accounts available"}), 400
+
+    existing = {e.get("tracking_id"): e for e in storage.list_events() if e.get("tracking_id")}
+    existing_pixels = {p.get("pixel_id"): p for p in storage.list_pixels() if p.get("pixel_id")}
+    added = 0
+    updated = 0
+    pixels_added = 0
+    per_account: list = []
+    errors: list = []
+
+    for acc_id, acc_name in accounts.items():
+        try:
+            raw = cl.get_events(acc_id)
+            items = _normalize_newsbreak_events(raw, acc_id)
+        except Exception as e:
+            errors.append({"ad_account_id": acc_id, "error": str(e)})
+            continue
+        imported = 0
+        for ev in items:
+            tid = ev["tracking_id"]
+            prior = existing.get(tid)
+            merged = {
+                "name": ev["name"],
+                "tracking_id": tid,
+                "event_type": ev.get("event_type") or (prior.get("event_type") if prior else ""),
+                "pixel_id": ev.get("pixel_id") or (prior.get("pixel_id") if prior else None),
+                "tracking_type": ev.get("tracking_type"),
+                "ad_account_id": acc_id,
+                "ad_account_name": acc_name,
+                "source": "newsbreak",
+                "is_custom": False,
+            }
+            if prior:
+                merged["id"] = prior["id"]
+                storage.upsert_event(merged)
+                updated += 1
+            else:
+                storage.upsert_event(merged)
+                added += 1
+            imported += 1
+            existing[tid] = {**(prior or {}), **merged}
+
+            pid = ev.get("pixel_id")
+            if pid and pid not in existing_pixels:
+                storage.upsert_pixel(
+                    {
+                        "name": f"{acc_name} pixel {pid}",
+                        "pixel_id": pid,
+                        "ad_account_id": acc_id,
+                        "ad_account_name": acc_name,
+                        "source": "newsbreak",
+                    }
+                )
+                existing_pixels[pid] = {"pixel_id": pid}
+                pixels_added += 1
+        per_account.append({"ad_account_id": acc_id, "name": acc_name, "imported": imported})
+
+    return jsonify(
+        {
+            "ok": True,
+            "added": added,
+            "updated": updated,
+            "pixels_added": pixels_added,
+            "accounts": per_account,
+            "errors": errors,
+        }
+    )
 
 
 @app.route("/api/adsets")

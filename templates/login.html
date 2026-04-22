@@ -12,16 +12,34 @@
     <div style="text-align:center;margin-bottom:16px;">
       <img src="{{ url_for('static', filename='logo.svg') }}" alt="NewsBreak Launcher" height="56">
     </div>
+    {% if active_platform == 'smartnews' %}
+    <p class="nb-muted">
+      Paste your <strong>Developer App</strong> Client&nbsp;ID (numeric) and Client&nbsp;Secret from
+      <a href="https://ads.smartnews.com/developers" target="_blank" rel="noopener">SmartNews → Developers</a>.
+      The app uses OAuth <code>client_credentials</code> to obtain a short-lived access token.
+    </p>
+    <p class="nb-muted">Enter one or more <strong>Ad Account IDs</strong> (comma-separated) — or leave blank to auto-discover every account this developer app can manage.</p>
+    {% else %}
     <p class="nb-muted">Paste your API <strong>Access-Token</strong> from Ad Manager → Resources → API Access Tokens.</p>
     <p class="nb-muted">Enter one or more <strong>Organization IDs</strong> (comma-separated). Required for <code>getGroupsByOrgIds</code>.</p>
+    {% endif %}
     {% if error %}
     <div class="nb-error">{{ error }}</div>
     {% endif %}
     <form method="post" class="nb-form">
+      {% if active_platform == 'smartnews' %}
+      <label class="nb-label">Client ID</label>
+      <input type="text" name="client_id" class="nb-input" placeholder="e.g. 96155440" required>
+      <label class="nb-label">Client Secret</label>
+      <textarea name="client_secret" class="nb-input nb-textarea" rows="3" placeholder="Developer app client secret" required></textarea>
+      <label class="nb-label">Ad Account IDs <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+      <input type="text" name="org_ids" class="nb-input" placeholder="e.g. 105421139" value="{{ default_org_ids }}">
+      {% else %}
       <label class="nb-label">Access-Token</label>
       <textarea name="access_token" class="nb-input nb-textarea" rows="4" placeholder="Access-Token" required></textarea>
       <label class="nb-label">Organization IDs</label>
       <input type="text" name="org_ids" class="nb-input" placeholder="e.g. 12345, 67890" value="{{ default_org_ids }}">
+      {% endif %}
       <button type="submit" class="nb-btn nb-btn-primary">Continue</button>
     </form>
   </div>

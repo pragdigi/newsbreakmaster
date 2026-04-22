@@ -101,8 +101,18 @@ def _env_org_ids() -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
-def _env_smartnews_key() -> str:
-    return (_cfg_val("SMARTNEWS_API_KEY", "") or "").strip()
+def _env_smartnews_client_id() -> str:
+    return (_cfg_val("SMARTNEWS_CLIENT_ID", "") or "").strip()
+
+
+def _env_smartnews_client_secret() -> str:
+    # Accept the legacy SMARTNEWS_API_KEY name as a fallback — the old v1 key
+    # doubled as the new client_secret for many developer apps.
+    return (
+        _cfg_val("SMARTNEWS_CLIENT_SECRET", "")
+        or _cfg_val("SMARTNEWS_API_KEY", "")
+        or ""
+    ).strip()
 
 
 def _env_smartnews_account_ids() -> list[str]:
@@ -110,10 +120,16 @@ def _env_smartnews_account_ids() -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
+def _env_smartnews_configured() -> bool:
+    return bool(_env_smartnews_client_id() and _env_smartnews_client_secret())
+
+
 def _effective_token(platform: str | None = None) -> dict | None:
     """Prefer env-configured credentials so Render redeploys don't force re-login.
 
-    Returns {access_token, org_ids, platform} or None.
+    Returns a platform-shaped dict or None:
+      NewsBreak: {"access_token", "org_ids", "platform"}
+      SmartNews: {"client_id", "client_secret", "org_ids", "platform"}
     """
     p = normalize_platform(platform or _active_platform())
     if p == "newsbreak":
@@ -122,14 +138,17 @@ def _effective_token(platform: str | None = None) -> dict | None:
             return {"access_token": env_tok, "org_ids": _env_org_ids(), "platform": p}
         return storage.load_token(_user_id(), platform=p)
     if p == "smartnews":
-        env_key = _env_smartnews_key()
-        if env_key:
+        if _env_smartnews_configured():
             return {
-                "access_token": env_key,
+                "client_id": _env_smartnews_client_id(),
+                "client_secret": _env_smartnews_client_secret(),
                 "org_ids": _env_smartnews_account_ids(),
                 "platform": p,
             }
-        return storage.load_token(_user_id(), platform=p)
+        saved = storage.load_token(_user_id(), platform=p)
+        if saved and saved.get("client_id") and saved.get("client_secret"):
+            return saved
+        return None
     return None
 
 
@@ -152,11 +171,19 @@ def _adapter(platform: str | None = None):
     tok = _effective_token(p)
     if not tok:
         return None
-    credentials: dict = {"access_token": tok["access_token"]}
     if p == "newsbreak":
-        credentials["org_ids"] = tok.get("org_ids") or []
+        credentials: dict = {
+            "access_token": tok["access_token"],
+            "org_ids": tok.get("org_ids") or [],
+        }
+    elif p == "smartnews":
+        credentials = {
+            "client_id": tok.get("client_id"),
+            "client_secret": tok.get("client_secret"),
+            "account_ids": tok.get("org_ids") or tok.get("account_ids") or [],
+        }
     else:
-        credentials["account_ids"] = tok.get("org_ids") or []
+        return None
     try:
         return get_adapter(p, **credentials)
     except Exception as e:
@@ -250,7 +277,7 @@ def _inject_platform():
         "active_platform": p,
         "active_platform_label": PLATFORM_LABELS.get(p, p.title()),
         "active_platform_currency": PLATFORM_CURRENCIES.get(p, "USD"),
-        "supports_ad_set_scope": p == "newsbreak",
+        "supports_ad_set_scope": True,
         "available_platforms": [
             {"id": pid, "label": PLATFORM_LABELS.get(pid, pid.title())}
             for pid in PLATFORMS
@@ -278,32 +305,58 @@ def login():
     platform = _active_platform()
     # If env-configured credentials exist for this platform, skip login.
     if (platform == "newsbreak" and _env_access_token()) or (
-        platform == "smartnews" and _env_smartnews_key()
+        platform == "smartnews" and _env_smartnews_configured()
     ):
         return redirect(url_for("dashboard"))
     err = None
     if request.method == "POST":
-        token = (request.form.get("access_token") or "").strip()
         org_ids = _org_ids_from_form()
-        if not token:
-            err = "Access token is required."
-        elif platform == "newsbreak" and not org_ids:
-            err = "At least one Organization ID is required (comma-separated). Find it in NewsBreak Ad Manager or API docs."
-        else:
-            try:
-                credentials: dict = {"access_token": token}
-                if platform == "newsbreak":
-                    credentials["org_ids"] = org_ids
+        try:
+            if platform == "newsbreak":
+                token = (request.form.get("access_token") or "").strip()
+                if not token:
+                    err = "Access token is required."
+                elif not org_ids:
+                    err = (
+                        "At least one Organization ID is required "
+                        "(comma-separated). Find it in NewsBreak Ad Manager "
+                        "or API docs."
+                    )
                 else:
-                    credentials["account_ids"] = org_ids
-                adapter = get_adapter(platform, **credentials)
-                adapter.verify()
-                storage.save_token(_user_id(), token, org_ids, platform=platform)
-                return redirect(url_for("dashboard"))
-            except NewsBreakAPIError as e:
-                err = str(e)
-            except Exception as e:
-                err = f"Login failed: {e}"
+                    credentials = {"access_token": token, "org_ids": org_ids}
+                    adapter = get_adapter(platform, **credentials)
+                    adapter.verify()
+                    storage.save_token(_user_id(), token, org_ids, platform=platform)
+                    return redirect(url_for("dashboard"))
+            else:  # smartnews
+                client_id = (
+                    request.form.get("client_id") or request.form.get("access_token") or ""
+                ).strip()
+                client_secret = (request.form.get("client_secret") or "").strip()
+                if not client_id or not client_secret:
+                    err = (
+                        "SmartNews v3 requires both Developer App Client ID and "
+                        "Client Secret (OAuth client_credentials)."
+                    )
+                else:
+                    credentials = {
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "account_ids": org_ids,
+                    }
+                    adapter = get_adapter(platform, **credentials)
+                    adapter.verify()
+                    storage.save_token(
+                        _user_id(),
+                        {"client_id": client_id, "client_secret": client_secret},
+                        org_ids,
+                        platform=platform,
+                    )
+                    return redirect(url_for("dashboard"))
+        except NewsBreakAPIError as e:
+            err = str(e)
+        except Exception as e:
+            err = f"Login failed: {e}"
     default_org = (
         _cfg_val("NEWSBREAK_DEFAULT_ORG_IDS", "")
         if platform == "newsbreak"
@@ -353,7 +406,7 @@ def launch():
     # SmartNews launches go through a dedicated handler.
     if platform == "smartnews":
         from bulk_launcher_smartnews import (
-            creative_triplet_from_uploads,
+            creative_pair_from_square,
             smartnews_bulk_launch,
         )
 
@@ -366,12 +419,12 @@ def launch():
                 events=storage.list_events(platform=platform),
                 offers=storage.list_offers(platform=platform),
             )
-        # POST: delegate to SmartNews launcher
+        # POST: delegate to SmartNews launcher (v3 API).
         result = smartnews_bulk_launch(
             adapter,
             form=request.form,
             files=request.files,
-            triplet_builder=creative_triplet_from_uploads,
+            pair_builder=creative_pair_from_square,
         )
         return render_template(
             "launch.html",

@@ -26,11 +26,23 @@ def _env_credentials_for(platform: str) -> List[Dict[str, Any]]:
             return [{"uid": "env", "access_token": tok, "org_ids": org_ids}]
         return []
     if platform == "smartnews":
-        key = (os.environ.get("SMARTNEWS_API_KEY") or "").strip()
+        client_id = (os.environ.get("SMARTNEWS_CLIENT_ID") or "").strip()
+        client_secret = (
+            os.environ.get("SMARTNEWS_CLIENT_SECRET")
+            or os.environ.get("SMARTNEWS_API_KEY")  # legacy fallback
+            or ""
+        ).strip()
         raw = os.environ.get("SMARTNEWS_DEFAULT_ACCOUNT_IDS", "")
         account_ids = [x.strip() for x in raw.split(",") if x.strip()]
-        if key:
-            return [{"uid": "env", "api_key": key, "account_ids": account_ids}]
+        if client_id and client_secret:
+            return [
+                {
+                    "uid": "env",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "account_ids": account_ids,
+                }
+            ]
         return []
     return []
 
@@ -46,8 +58,11 @@ def _file_credentials_for(platform: str) -> List[Dict[str, Any]]:
             entry["access_token"] = tok.get("access_token")
             entry["org_ids"] = tok.get("org_ids") or []
         else:  # smartnews
-            entry["api_key"] = tok.get("access_token") or tok.get("api_key")
+            entry["client_id"] = tok.get("client_id")
+            entry["client_secret"] = tok.get("client_secret") or tok.get("access_token")
             entry["account_ids"] = tok.get("account_ids") or tok.get("org_ids") or []
+            if not entry["client_id"] or not entry["client_secret"]:
+                continue
         out.append(entry)
     return out
 
@@ -80,7 +95,8 @@ def _run_for_platform(platform: str) -> None:
             elif platform == "smartnews":
                 adapter = get_adapter(
                     "smartnews",
-                    api_key=cred.get("api_key"),
+                    client_id=cred.get("client_id"),
+                    client_secret=cred.get("client_secret"),
                     account_ids=cred.get("account_ids") or [],
                 )
             else:

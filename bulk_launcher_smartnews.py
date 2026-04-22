@@ -1,16 +1,34 @@
 """
-SmartNews bulk launcher.
+SmartNews v3 bulk launcher.
 
-SmartNews AMv1 hierarchy: Account -> Campaign -> Creative. Each creative needs
-an image **triplet** (300x300 "a", 600x500 "b", 1280x720 "c"). The launcher
-collects the three uploaded image files per ad, resizes/reformats them into
-the required dimensions, uploads each to SmartNews, creates a campaign,
-creates one creative per uploaded triplet, then calls ``submit_review`` so
-the creatives enter the approval queue.
+v3 hierarchy: Account → Campaign → Ad Group → Ad. Each ad references media
+files by id (``media_file_ids``). The launcher:
 
-This module intentionally mirrors the public shape of the NewsBreak launcher
-(``bulk_launcher.py``): it is called from ``app.py``'s ``/launch`` route with
-``form`` and ``files`` from Flask and a ``triplet_builder`` factory.
+  1. Uploads one 1:1 square image per ad (required).
+  2. Auto-generates a 1.91:1 landscape variant from the same square.
+     (This is currently a local Pillow center-crop with letterboxed blur fill;
+      the `ai-creatives` "Let's rip" flow can replace it at ``ai_expand_square_to_landscape``.)
+  3. Creates one Campaign, one Ad Group under it, then N Ads.
+
+Budgets on the form are passed in as **cents** (integer, smallest currency
+unit). The adapter converts to SmartNews ``_micro`` units per account
+currency.
+
+Expected form fields (see ``templates/launch_smartnews.html``):
+
+    account_id        required
+    campaign_name     required
+    objective         default TRAFFIC          (campaign-level)
+    daily_budget_cents required                (campaign or ad-group)
+    start_time / end_time  ISO 8601 (optional)
+    ad_group_name     required                 (one ad group per launch)
+    landing_page_url  required for each ad when objective is WEB
+    sponsored_name    required
+    headline_<n>      required per ad
+    description_<n>   required per ad
+    ad_name_<n>       default "Ad <n>"
+    cta_label_<n>     default BOOK_NOW
+    creative_<n>      file field, 1:1 square image (required)
 """
 from __future__ import annotations
 
@@ -19,24 +37,126 @@ import json
 import logging
 import os
 import re
-import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-_IMAGE_SPECS = {
-    "a": (300, 300),
-    "b": (600, 500),
-    "c": (1280, 720),
-}
-
-_SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".gif"}
-_CONVERT_EXTS = {".webp", ".heic", ".heif", ".avif", ".bmp", ".tif", ".tiff"}
-_MAX_IMAGE_BYTES = 500 * 1024  # SmartNews /images/upload limit
+# ----------------------------------------------------------------------
+# Image pipeline
+# ----------------------------------------------------------------------
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # v3 allows 5 MiB
 
 
+def _load_image(file_bytes: bytes):
+    try:
+        from PIL import Image, ImageFilter
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("Pillow is required for SmartNews image preparation") from exc
+    return Image, ImageFilter, Image.open(io.BytesIO(file_bytes))
+
+
+def _encode_jpeg(im, *, max_bytes: int = _MAX_IMAGE_BYTES) -> bytes:
+    """Encode a PIL image as JPEG, shrinking quality until it fits."""
+    if im.mode != "RGB":
+        im = im.convert("RGB")
+    quality = 90
+    while True:
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=quality, optimize=True)
+        out = buf.getvalue()
+        if len(out) <= max_bytes or quality <= 40:
+            return out
+        quality -= 8
+
+
+def _resize_cover(file_bytes: bytes, target_w: int, target_h: int) -> bytes:
+    """Cover-crop resize to (target_w, target_h) and re-encode as JPEG."""
+    Image, _ImageFilter, im = _load_image(file_bytes)
+    with im:
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+        sw, sh = im.size
+        tr, sr = target_w / target_h, sw / sh
+        if sr > tr:
+            new_h = sh
+            new_w = int(sh * tr)
+            left = (sw - new_w) // 2
+            box = (left, 0, left + new_w, sh)
+        else:
+            new_w = sw
+            new_h = int(sw / tr)
+            top = (sh - new_h) // 2
+            box = (0, top, sw, top + new_h)
+        out = im.crop(box).resize((target_w, target_h), Image.LANCZOS)
+        return _encode_jpeg(out)
+
+
+def ai_expand_square_to_landscape(square_bytes: bytes, *, target: Tuple[int, int] = (1200, 628)) -> bytes:
+    """Expand a 1:1 image into a 1.91:1 landscape.
+
+    This is the hook point for the ``ai-creatives`` "Let's rip" flow. The
+    current implementation is a local Pillow fallback: it places the square
+    centered on a blurred, upscaled copy of the same image so we always have a
+    valid 1.91:1 asset ready to submit. Once the ai-creatives service is
+    reachable from this process, replace the body of this function with a
+    call to it.
+    """
+    Image, ImageFilter, im = _load_image(square_bytes)
+    with im:
+        tw, th = target
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+
+        # Blurred background: cover-crop to landscape and heavily blur.
+        bg_src = im.copy()
+        sw, sh = bg_src.size
+        tr, sr = tw / th, sw / sh
+        if sr > tr:
+            new_h = sh
+            new_w = int(sh * tr)
+            left = (sw - new_w) // 2
+            bg = bg_src.crop((left, 0, left + new_w, sh))
+        else:
+            new_w = sw
+            new_h = int(sw / tr)
+            top = (sh - new_h) // 2
+            bg = bg_src.crop((0, top, sw, top + new_h))
+        bg = bg.resize((tw, th), Image.LANCZOS).filter(ImageFilter.GaussianBlur(radius=18))
+
+        # Foreground: contain-fit the original square inside the landscape.
+        fg_w = min(th, im.size[0])
+        fg_h = fg_w  # square
+        fg = im.resize((fg_w, fg_h), Image.LANCZOS)
+        x = (tw - fg_w) // 2
+        y = (th - fg_h) // 2
+
+        canvas = bg.copy()
+        canvas.paste(fg, (x, y))
+        return _encode_jpeg(canvas)
+
+
+def creative_pair_from_square(square_file: Any) -> Dict[str, Tuple[bytes, str]]:
+    """Return (1:1, 1.91:1) image pair from a single uploaded square file.
+
+    Returns a dict ``{"square": (bytes, filename), "landscape": (bytes, filename)}``.
+    """
+    data = square_file.read()
+    filename = getattr(square_file, "filename", None) or "creative.jpg"
+    base = os.path.splitext(os.path.basename(filename))[0]
+
+    square_bytes = _resize_cover(data, 1080, 1080)
+    landscape_bytes = ai_expand_square_to_landscape(square_bytes, target=(1200, 628))
+    return {
+        "square": (square_bytes, f"{base}_1080x1080.jpg"),
+        "landscape": (landscape_bytes, f"{base}_1200x628.jpg"),
+    }
+
+
+# ----------------------------------------------------------------------
+# Form parsing helpers
+# ----------------------------------------------------------------------
 def _log_json(label: str, obj: Any) -> None:
     try:
         logger.info("%s %s", label, json.dumps(obj, default=str)[:4000])
@@ -44,78 +164,6 @@ def _log_json(label: str, obj: Any) -> None:
         logger.info("%s %r", label, obj)
 
 
-def _load_image(file_bytes: bytes):
-    try:
-        from PIL import Image
-    except Exception as exc:  # pragma: no cover - pillow always installed here
-        raise RuntimeError("Pillow is required for SmartNews image preparation") from exc
-    return Image, Image.open(io.BytesIO(file_bytes))
-
-
-def _resize_to(file_bytes: bytes, target_w: int, target_h: int) -> bytes:
-    """Resize (cover+crop) an image to exactly (target_w, target_h) and
-    encode as JPEG <= 500KB."""
-    Image, im = _load_image(file_bytes)
-    with im:
-        if im.mode not in ("RGB", "RGBA"):
-            im = im.convert("RGB")
-        src_w, src_h = im.size
-        target_ratio = target_w / target_h
-        src_ratio = src_w / src_h
-        if src_ratio > target_ratio:
-            new_h = src_h
-            new_w = int(src_h * target_ratio)
-            left = (src_w - new_w) // 2
-            box = (left, 0, left + new_w, src_h)
-        else:
-            new_w = src_w
-            new_h = int(src_w / target_ratio)
-            top = (src_h - new_h) // 2
-            box = (0, top, src_w, top + new_h)
-        cropped = im.crop(box).resize((target_w, target_h), Image.LANCZOS)
-        if cropped.mode != "RGB":
-            cropped = cropped.convert("RGB")
-        quality = 88
-        while True:
-            buf = io.BytesIO()
-            cropped.save(buf, format="JPEG", quality=quality, optimize=True)
-            out = buf.getvalue()
-            if len(out) <= _MAX_IMAGE_BYTES or quality <= 40:
-                return out
-            quality -= 8
-
-
-def _read_upload(f: Any) -> Tuple[bytes, str]:
-    data = f.read()
-    name = getattr(f, "filename", None) or "image.jpg"
-    return data, name
-
-
-def creative_triplet_from_uploads(
-    file_a: Any,
-    file_b: Optional[Any] = None,
-    file_c: Optional[Any] = None,
-) -> Dict[str, Tuple[bytes, str]]:
-    """Return three (bytes, filename) pairs, one per required SmartNews image
-    size. If only ``file_a`` is provided it will be resized three times."""
-    raw_a, fn_a = _read_upload(file_a)
-    raw_b, fn_b = (_read_upload(file_b) if file_b else (raw_a, fn_a))
-    raw_c, fn_c = (_read_upload(file_c) if file_c else (raw_a, fn_a))
-    out: Dict[str, Tuple[bytes, str]] = {}
-    for key, (w, h), (data, name) in (
-        ("a", _IMAGE_SPECS["a"], (raw_a, fn_a)),
-        ("b", _IMAGE_SPECS["b"], (raw_b, fn_b)),
-        ("c", _IMAGE_SPECS["c"], (raw_c, fn_c)),
-    ):
-        resized = _resize_to(data, w, h)
-        base = os.path.splitext(os.path.basename(name or "image"))[0]
-        out[key] = (resized, f"{base}_{w}x{h}.jpg")
-    return out
-
-
-# ----------------------------------------------------------------------
-# Launch flow
-# ----------------------------------------------------------------------
 def _form_list(form: Mapping[str, Any], key: str) -> List[str]:
     if hasattr(form, "getlist"):
         return [v for v in form.getlist(key) if v]
@@ -128,55 +176,19 @@ def _form_list(form: Mapping[str, Any], key: str) -> List[str]:
 
 
 def _files_for_prefix(files: Mapping[str, Any], prefix: str) -> List[Tuple[str, Any]]:
-    """Return list of (ad_index_or_name, file_storage) pairs for a given prefix.
-
-    Accepted keys:
-      <prefix>_<n>, <prefix>_<n>_a, <prefix>_<n>_b, <prefix>_<n>_c
-    """
-    keys = sorted(files.keys())
-    pat = re.compile(rf"^{re.escape(prefix)}_(\d+)(?:_([abc]))?$")
-    bucket: Dict[str, Dict[str, Any]] = {}
-    for k in keys:
+    """Return [(ad_index, file)] for every ``<prefix>_<n>`` upload with a filename."""
+    pat = re.compile(rf"^{re.escape(prefix)}_(\d+)$")
+    pairs: List[Tuple[int, Any]] = []
+    for k in sorted(files.keys()):
         m = pat.match(k)
         if not m:
             continue
-        idx, sub = m.group(1), m.group(2) or "a"
         f = files.get(k)
         if not f or not getattr(f, "filename", None):
             continue
-        bucket.setdefault(idx, {})[sub] = f
-    out: List[Tuple[str, Any]] = []
-    for idx in sorted(bucket.keys(), key=lambda s: int(s)):
-        entry = bucket[idx]
-        out.append((idx, entry))
-    return out
-
-
-def _parse_schedule(form: Mapping[str, Any]) -> Tuple[str, str]:
-    now = datetime.now(timezone.utc)
-    start_raw = (form.get("start_time") or "").strip()
-    end_raw = (form.get("end_time") or "").strip()
-    start = _parse_iso(start_raw) or now
-    end = _parse_iso(end_raw) or (start + timedelta(days=30))
-    return _iso(start), _iso(end)
-
-
-def _parse_iso(s: str) -> Optional[datetime]:
-    if not s:
-        return None
-    s = s.strip()
-    try:
-        if s.endswith("Z"):
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return datetime.fromisoformat(s)
-    except ValueError:
-        return None
-
-
-def _iso(dt: datetime) -> str:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        pairs.append((int(m.group(1)), f))
+    pairs.sort(key=lambda t: t[0])
+    return [(str(i), f) for i, f in pairs]
 
 
 def _int_or_none(v: Any) -> Optional[int]:
@@ -195,205 +207,263 @@ def _int_req(v: Any, *, field: str) -> int:
     return got
 
 
+def _iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_iso(s: str) -> Optional[datetime]:
+    if not s:
+        return None
+    s = s.strip()
+    try:
+        if s.endswith("Z"):
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _parse_schedule(form: Mapping[str, Any]) -> Tuple[str, str]:
+    now = datetime.now(timezone.utc)
+    start = _parse_iso((form.get("start_time") or "").strip()) or now
+    end = _parse_iso((form.get("end_time") or "").strip()) or (start + timedelta(days=30))
+    return _iso(start), _iso(end)
+
+
+# ----------------------------------------------------------------------
+# Launch flow
+# ----------------------------------------------------------------------
 def smartnews_bulk_launch(
     adapter: Any,
     *,
     form: Mapping[str, Any],
     files: Mapping[str, Any],
-    triplet_builder=creative_triplet_from_uploads,
+    pair_builder=creative_pair_from_square,
 ) -> Dict[str, Any]:
-    """Create a SmartNews campaign + creatives from form data.
-
-    Expected form fields (all values are JPY integers):
-      account_id        (required)
-      campaign_name     (required)
-      sponsored_name    (required)
-      action_type       (APP_INSTALL | WEBSITE_CONVERSION, default WEBSITE_CONVERSION)
-      bid_amount        (required)
-      daily_budget      (required)
-      total_budget      (required)
-      target_cpa        (optional)
-      ad_category_id    (required; e.g. "3")
-      start_time        (ISO 8601, optional)
-      end_time          (ISO 8601, optional)
-      link_url          (required for each ad when actionType=WEBSITE_CONVERSION)
-      tracking_url      (optional, per-ad)
-      ad_title_<n>, ad_text_<n>, ad_name_<n>
-      creative_<n>_(a|b|c)  (uploaded files — a is mandatory)
-
-    Returns a summary dict with ``campaign_id``, ``creatives`` (list of
-    {name, creative_id, images}), and any errors encountered.
-    """
     errors: List[Dict[str, Any]] = []
     account_id = (form.get("account_id") or "").strip()
     if not account_id:
         return {"ok": False, "error": "account_id is required"}
 
-    creatives_meta = _files_for_prefix(files, "creative")
-    if not creatives_meta:
-        return {"ok": False, "error": "at least one creative image (creative_0 / creative_0_a) is required"}
+    ads = _files_for_prefix(files, "creative")
+    if not ads:
+        return {"ok": False, "error": "at least one 1:1 creative image is required (creative_0)"}
 
+    # -------- Campaign --------
     try:
         campaign_payload = _build_campaign_payload(form)
     except ValueError as e:
         return {"ok": False, "error": str(e)}
 
     try:
-        created = adapter.create_campaign(account_id, campaign_payload)
+        created_campaign = adapter.create_campaign(account_id, campaign_payload)
     except Exception as e:
         _log_json("sn_create_campaign_failed", {"error": str(e), "payload": campaign_payload})
         return {"ok": False, "error": f"create_campaign failed: {e}"}
 
-    campaign_id = str(created.get("campaignId") or created.get("id") or "")
+    campaign_id = str(
+        created_campaign.get("campaign_id") or created_campaign.get("id") or ""
+    )
     if not campaign_id:
-        return {"ok": False, "error": f"campaign create returned no id: {created}"}
+        return {"ok": False, "error": f"campaign create returned no id: {created_campaign}"}
 
-    creative_results: List[Dict[str, Any]] = []
-    action_type = (form.get("action_type") or "WEBSITE_CONVERSION").upper()
-    default_link = (form.get("link_url") or "").strip()
-    default_tracking = (form.get("tracking_url") or "").strip()
+    # -------- Ad Group --------
+    try:
+        ad_group_payload = _build_ad_group_payload(form)
+    except ValueError as e:
+        errors.append({"stage": "build_ad_group", "error": str(e)})
+        return {
+            "ok": False,
+            "platform": "smartnews",
+            "campaign_id": campaign_id,
+            "errors": errors,
+        }
+    try:
+        created_group = adapter.create_ad_group(account_id, campaign_id, ad_group_payload)
+    except Exception as e:
+        _log_json("sn_create_ad_group_failed", {"error": str(e), "payload": ad_group_payload})
+        errors.append({"stage": "create_ad_group", "error": str(e)})
+        return {
+            "ok": False,
+            "platform": "smartnews",
+            "campaign_id": campaign_id,
+            "errors": errors,
+        }
+    ad_group_id = str(created_group.get("ad_group_id") or created_group.get("id") or "")
 
-    for idx, bucket in creatives_meta:
+    # -------- Ads --------
+    ad_results: List[Dict[str, Any]] = []
+    default_landing = (form.get("landing_page_url") or "").strip()
+    default_cta = (form.get("cta_label") or "BOOK_NOW").strip().upper()
+    default_sponsored = (form.get("sponsored_name") or "").strip()
+
+    for idx, square_file in ads:
         try:
-            triplet = triplet_builder(
-                bucket.get("a"),
-                bucket.get("b"),
-                bucket.get("c"),
-            )
+            pair = pair_builder(square_file)
         except Exception as e:
             errors.append({"ad": idx, "stage": "image_prep", "error": str(e)})
             continue
 
-        uploaded: Dict[str, Dict[str, Any]] = {}
+        uploaded_media_ids: List[int] = []
         try:
-            for slot, (data, fname) in triplet.items():
-                resp = adapter.upload_asset(account_id, data, fname)
-                uploaded[slot] = resp
+            for slot in ("square", "landscape"):
+                data, fname = pair[slot]
+                resp = adapter.upload_asset(account_id, data, fname, media_type="IMAGE")
+                mid = (
+                    resp.get("media_file_id")
+                    or resp.get("mediaFileId")
+                    or resp.get("id")
+                )
+                if mid is not None:
+                    uploaded_media_ids.append(int(mid))
         except Exception as e:
             errors.append({"ad": idx, "stage": "image_upload", "error": str(e)})
             continue
+        if not uploaded_media_ids:
+            errors.append({"ad": idx, "stage": "image_upload", "error": "no media_file_id returned"})
+            continue
 
-        title = (form.get(f"ad_title_{idx}") or form.get("ad_title") or "").strip()
-        text = (form.get(f"ad_text_{idx}") or form.get("ad_text") or "").strip()
+        headline = (form.get(f"headline_{idx}") or form.get("headline") or "").strip()
+        description = (form.get(f"description_{idx}") or form.get("description") or "").strip()
         ad_name = (form.get(f"ad_name_{idx}") or f"Ad {idx}").strip()
-        link_url = (form.get(f"link_url_{idx}") or default_link).strip()
-        tracking_url = (form.get(f"tracking_url_{idx}") or default_tracking).strip()
+        landing = (form.get(f"landing_page_url_{idx}") or default_landing).strip()
+        cta = (form.get(f"cta_label_{idx}") or default_cta).strip().upper() or "BOOK_NOW"
+        sponsored = (form.get(f"sponsored_name_{idx}") or default_sponsored).strip()
 
-        creative_payload: Dict[str, Any] = {
-            "name": ad_name,
-            "title": title,
-            "text": text,
-            "imageset": {
-                slot: {"imageId": str(uploaded[slot].get("imageId") or uploaded[slot].get("id"))}
-                for slot in ("a", "b", "c")
-                if slot in uploaded
-            },
-        }
-        if action_type == "APP_INSTALL" or not link_url:
-            pass
-        if link_url:
-            creative_payload["linkUrl"] = link_url
-        if tracking_url:
-            creative_payload["trackingUrl"] = tracking_url
-
-        try:
-            cr = adapter.create_creative(campaign_id, creative_payload)
-        except Exception as e:
+        if not headline or not description:
             errors.append(
-                {"ad": idx, "stage": "create_creative", "error": str(e), "payload": creative_payload}
+                {"ad": idx, "stage": "validate", "error": "headline and description required"}
             )
             continue
 
-        creative_results.append(
+        ad_payload: Dict[str, Any] = {
+            "name": ad_name,
+            "landing_page_url": landing,
+            "cta_label": cta,
+            "configured_status": "ACTIVE",
+            "creative": {
+                "format": "IMAGE",
+                "image_creative_info": {
+                    "headline": headline,
+                    "description": description,
+                    "sponsored_name": sponsored,
+                    "media_file_ids": uploaded_media_ids,
+                },
+            },
+        }
+
+        try:
+            created_ad = adapter.create_ad(account_id, ad_group_id, ad_payload)
+        except Exception as e:
+            errors.append({"ad": idx, "stage": "create_ad", "error": str(e), "payload": ad_payload})
+            continue
+
+        ad_results.append(
             {
                 "ad": idx,
                 "name": ad_name,
-                "creative_id": str(cr.get("creativeId") or cr.get("id") or ""),
-                "images": {k: v.get("imageId") for k, v in uploaded.items()},
+                "ad_id": str(created_ad.get("ad_id") or created_ad.get("id") or ""),
+                "media_file_ids": uploaded_media_ids,
             }
         )
 
-    # Submit the whole campaign for review if any creatives were created.
-    submission: Any = None
-    if creative_results:
-        try:
-            submission = adapter.submit_review(campaign_id)
-        except Exception as e:
-            errors.append({"stage": "submit_review", "error": str(e)})
-
     return {
-        "ok": not errors or bool(creative_results),
+        "ok": not errors or bool(ad_results),
         "platform": "smartnews",
         "campaign_id": campaign_id,
-        "creatives": creative_results,
-        "submit_review": submission,
+        "ad_group_id": ad_group_id,
+        "ads": ad_results,
         "errors": errors,
     }
 
 
+# ----------------------------------------------------------------------
+# Payload builders
+# ----------------------------------------------------------------------
 def _build_campaign_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
     name = (form.get("campaign_name") or "").strip()
     if not name:
         raise ValueError("campaign_name is required")
-    sponsored = (form.get("sponsored_name") or "").strip()
-    if not sponsored:
-        raise ValueError("sponsored_name is required")
-    action_type = (form.get("action_type") or "WEBSITE_CONVERSION").strip().upper()
-    bid_amount = _int_req(form.get("bid_amount"), field="bid_amount")
-    daily_budget = _int_req(form.get("daily_budget"), field="daily_budget")
-    total_budget = _int_req(form.get("total_budget"), field="total_budget")
-    ad_category_id = (form.get("ad_category_id") or "").strip()
-    if not ad_category_id:
-        raise ValueError("ad_category_id is required")
-    start_time, end_time = _parse_schedule(form)
+    objective = (form.get("objective") or "TRAFFIC").strip().upper()
+    daily_budget_cents = _int_or_none(form.get("daily_budget_cents"))
+    if daily_budget_cents is None:
+        daily_budget_cents = _int_or_none(form.get("daily_budget"))
+    spending_limit_cents = _int_or_none(form.get("spending_limit_cents"))
+
+    start, end = _parse_schedule(form)
 
     payload: Dict[str, Any] = {
-        "actionType": action_type,
         "name": name,
-        "sponsoredName": sponsored,
-        "bidAmount": bid_amount,
-        "dailyBudget": daily_budget,
-        "totalBudget": total_budget,
-        "startTime": start_time,
-        "endTime": end_time,
-        "adCategoryId": ad_category_id,
+        "objective": objective,
+        "start_date_time": start,
+        "end_date_time": end,
+        "configured_status": "ACTIVE",
+        "billing_event": (form.get("billing_event") or "CLICK").strip().upper(),
+        "optimization_goal": (form.get("optimization_goal") or "CLICKS").strip().upper(),
+        "bid_strategy": (form.get("bid_strategy") or "MANUAL").strip().upper(),
+        "click_destination_type": (form.get("click_destination_type") or "WEB_VIEW").strip().upper(),
     }
-    target_cpa = _int_or_none(form.get("target_cpa"))
-    if target_cpa is not None:
-        payload["targetCpa"] = target_cpa
+    if daily_budget_cents is not None:
+        payload["daily_budget_cents"] = daily_budget_cents  # adapter converts to micros
+    if spending_limit_cents is not None:
+        payload["spending_limit_cents"] = spending_limit_cents
 
-    publishers = _form_list(form, "publishers")
-    devices = _form_list(form, "devices")
+    opt_event = (form.get("optimization_event") or "").strip().upper()
+    if opt_event:
+        payload["optimization_event"] = opt_event
+
+    tracking_tag = (form.get("website_tracking_tag") or "").strip()
+    if tracking_tag:
+        payload["website_tracking_tag"] = tracking_tag
+
+    return payload
+
+
+def _build_ad_group_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
+    name = (form.get("ad_group_name") or "").strip()
+    if not name:
+        raise ValueError("ad_group_name is required")
+
+    payload: Dict[str, Any] = {
+        "name": name,
+        "configured_status": "ACTIVE",
+    }
+
+    # Budget may live on the ad group instead of the campaign.
+    daily_budget_cents = _int_or_none(form.get("ad_group_daily_budget_cents"))
+    if daily_budget_cents is not None:
+        payload["daily_budget_cents"] = daily_budget_cents
+
+    bid_amount_cents = _int_or_none(form.get("bid_amount_cents"))
+    if bid_amount_cents is not None:
+        payload["bid_amount_cents"] = bid_amount_cents
+
+    # Audience: very minimal for now — just ages/genders/locations if provided.
+    audience: Dict[str, Any] = {}
+    ages = _form_list(form, "ages")
+    if ages:
+        audience["ages"] = ages
     genders = _form_list(form, "genders")
-    city_keys = _form_list(form, "cities")
-    targeting: Dict[str, Any] = {}
-    if publishers:
-        targeting["publishers"] = publishers
-    if devices:
-        targeting["devices"] = devices
     if genders:
-        targeting["genders"] = genders
-    if city_keys:
-        targeting["cities"] = [{"key": k} for k in city_keys]
-    if targeting:
-        payload["targeting"] = targeting
-
-    if action_type == "APP_INSTALL":
-        application = (form.get("app_application") or "").strip()
-        if application:
-            app_spec: Dict[str, Any] = {"application": application}
-            urlscheme = (form.get("app_urlscheme") or "").strip()
-            if urlscheme:
-                app_spec["urlscheme"] = urlscheme
-            payload["appSpec"] = app_spec
-        tracking_type = (form.get("tracking_type") or "").strip()
-        if tracking_type:
-            payload["trackingSpec"] = {"trackingType": tracking_type}
+        audience["genders"] = genders
+    location_ids = [
+        int(v) for v in _form_list(form, "locations") if str(v).strip().isdigit()
+    ]
+    if location_ids:
+        audience["locations"] = location_ids
+    os_type = (form.get("os_type") or "").strip().upper()
+    if os_type in ("IOS", "ANDROID"):
+        audience["operating_system"] = {"type": os_type}
+    if audience:
+        payload["audience"] = audience
 
     return payload
 
 
 __all__ = [
-    "creative_triplet_from_uploads",
+    "creative_pair_from_square",
+    "ai_expand_square_to_landscape",
     "smartnews_bulk_launch",
 ]

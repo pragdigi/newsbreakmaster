@@ -6,7 +6,7 @@
     <h1>Bulk launch — {{ active_platform_label }}</h1>
     <p class="nb-muted">
       {% if active_platform == 'smartnews' %}
-        SmartNews campaigns. Upload a creative (300×300, 600×500, 1280×720), set budget, submit for review.
+        SmartNews campaigns (Marketing API v3). Upload one 1:1 square per ad — the 1.91:1 landscape is auto-generated.
       {% else %}
         Conversion campaigns. Drag &amp; drop creatives, pick a bid strategy, ship in one click.
       {% endif %}
@@ -22,7 +22,8 @@
   <div class="nb-kpi-grid" style="margin-bottom:12px;">
     <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#34d399' if ok else '#f87171' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
     <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}</div></div>
-    <div class="nb-kpi"><div class="nb-kpi-label">Creatives</div><div class="nb-kpi-value">{{ result.get('creatives', [])|length }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Ad group ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('ad_group_id') or '—' }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Ads</div><div class="nb-kpi-value">{{ result.get('ads', [])|length }}</div></div>
     <div class="nb-kpi"><div class="nb-kpi-label">Errors</div><div class="nb-kpi-value" style="color:{{ '#f87171' if result.get('errors') else 'var(--text)' }};">{{ result.get('errors', [])|length }}</div></div>
   </div>
   {% if result.get('errors') %}
@@ -59,42 +60,58 @@
         <input type="text" name="campaign_name" class="nb-input" required>
       </div>
       <div>
-        <label class="nb-label">Sponsored name <span class="nb-muted" style="font-weight:400;">(shown on creative)</span></label>
-        <input type="text" name="sponsored_name" class="nb-input" required>
-      </div>
-    </div>
-    <div class="nb-row-2" style="margin-top:12px;">
-      <div>
-        <label class="nb-label">Action type</label>
-        <select name="action_type" class="nb-select">
-          <option value="WEBSITE_CONVERSION" selected>Website conversion</option>
+        <label class="nb-label">Objective</label>
+        <select name="objective" class="nb-select">
+          <option value="TRAFFIC" selected>Traffic</option>
+          <option value="WEB_CONVERSION">Web conversion</option>
           <option value="APP_INSTALL">App install</option>
+          <option value="APP_EVENT">App event</option>
+          <option value="REACH">Reach</option>
+          <option value="VIDEO_VIEW">Video view</option>
+          <option value="BRAND_AWARENESS">Brand awareness</option>
         </select>
-      </div>
-      <div>
-        <label class="nb-label">Ad category ID</label>
-        <input type="text" name="ad_category_id" class="nb-input" value="3" required>
-        <div class="nb-hint">Numeric ID from <code>GET /v1.0/adcategories</code> (e.g. <code>3</code> for Entertainment).</div>
       </div>
     </div>
     <div class="nb-row-3" style="margin-top:12px;">
       <div>
-        <label class="nb-label">Daily budget (JPY)</label>
-        <input type="number" name="daily_budget" class="nb-input" min="1000000" step="1000" value="1000000" required>
+        <label class="nb-label">Daily budget <span class="nb-muted" style="font-weight:400;">(smallest currency unit — JPY: whole yen; USD: cents)</span></label>
+        <input type="number" name="daily_budget_cents" class="nb-input" min="1" step="1" value="1000000" required>
       </div>
       <div>
-        <label class="nb-label">Total budget (JPY)</label>
-        <input type="number" name="total_budget" class="nb-input" min="1000000" step="1000" value="5000000" required>
+        <label class="nb-label">Spending limit <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+        <input type="number" name="spending_limit_cents" class="nb-input" min="0" step="1" placeholder="0 for none">
       </div>
       <div>
-        <label class="nb-label">Bid amount (JPY)</label>
-        <input type="number" name="bid_amount" class="nb-input" min="1" step="1" value="30" required>
+        <label class="nb-label">Optimization goal</label>
+        <select name="optimization_goal" class="nb-select">
+          <option value="CLICKS" selected>Clicks</option>
+          <option value="CONVERSIONS">Conversions</option>
+          <option value="IMPRESSIONS">Impressions</option>
+          <option value="REACH">Reach</option>
+          <option value="VIDEO_VIEWS">Video views</option>
+        </select>
       </div>
     </div>
-    <div class="nb-row-2" style="margin-top:12px;">
+    <div class="nb-row-3" style="margin-top:12px;">
       <div>
-        <label class="nb-label">Target CPA (JPY, optional)</label>
-        <input type="number" name="target_cpa" class="nb-input" min="0" step="100">
+        <label class="nb-label">Optimization event <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+        <select name="optimization_event" class="nb-select">
+          <option value="">— none —</option>
+          <option value="PURCHASE">Purchase</option>
+          <option value="ADD_TO_CART">Add to cart</option>
+          <option value="INITIATE_CHECKOUT">Initiate checkout</option>
+          <option value="LEAD">Lead</option>
+          <option value="COMPLETE_REGISTRATION">Complete registration</option>
+          <option value="SIGN_UP">Sign up</option>
+          <option value="VIEW_CONTENT">View content</option>
+        </select>
+      </div>
+      <div>
+        <label class="nb-label">Bid strategy</label>
+        <select name="bid_strategy" class="nb-select">
+          <option value="MANUAL" selected>Manual</option>
+          <option value="AUTO">Auto</option>
+        </select>
       </div>
       <div>
         <label class="nb-label">Schedule (UTC)</label>
@@ -104,52 +121,99 @@
         </div>
       </div>
     </div>
+    <div style="margin-top:12px;">
+      <label class="nb-label">Website tracking pixel ID <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+      <input type="text" name="website_tracking_tag" class="nb-input" placeholder="e.g. 89d2b4523c7245ee9ec773a8">
+    </div>
   </div>
 
   <div class="nb-field-group">
-    <h3>3 · Creative (image triplet)</h3>
-    <p class="nb-muted" style="margin-top:0;">
-      SmartNews requires 3 image sizes per creative: <strong>A 300×300</strong>, <strong>B 600×500</strong>, <strong>C 1280×720</strong>.
-      Upload one master image and we'll resize into all three slots, or upload them individually.
-    </p>
+    <h3>3 · Ad Group</h3>
     <div class="nb-row-3">
       <div>
-        <label class="nb-label">Ad name</label>
-        <input type="text" name="ad_name_0" class="nb-input" placeholder="Creative #1" value="Creative 1">
+        <label class="nb-label">Ad group name</label>
+        <input type="text" name="ad_group_name" class="nb-input" required>
       </div>
       <div>
-        <label class="nb-label">Title (10–25 chars)</label>
-        <input type="text" name="ad_title_0" class="nb-input" minlength="10" maxlength="25" required>
+        <label class="nb-label">Bid amount <span class="nb-muted" style="font-weight:400;">(optional, smallest currency unit)</span></label>
+        <input type="number" name="bid_amount_cents" class="nb-input" min="0" step="1" placeholder="inherited from campaign if blank">
       </div>
       <div>
-        <label class="nb-label">Text (10–90 chars)</label>
-        <input type="text" name="ad_text_0" class="nb-input" minlength="10" maxlength="90" required>
+        <label class="nb-label">OS <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+        <select name="os_type" class="nb-select">
+          <option value="" selected>Any</option>
+          <option value="IOS">iOS</option>
+          <option value="ANDROID">Android</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="nb-field-group">
+    <h3>4 · Ads</h3>
+    <p class="nb-muted" style="margin-top:0;">
+      Upload <strong>one 1:1 square image</strong> per ad (minimum 1080×1080). The required 1.91:1
+      landscape variant is generated automatically. Sponsored name applies to every ad in this launch.
+    </p>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Sponsored name <span class="nb-muted" style="font-weight:400;">(shown on every ad)</span></label>
+        <input type="text" name="sponsored_name" class="nb-input" required>
+      </div>
+      <div>
+        <label class="nb-label">Landing page URL</label>
+        <input type="url" name="landing_page_url" class="nb-input" placeholder="https://..." required>
       </div>
     </div>
     <div class="nb-row-2" style="margin-top:12px;">
       <div>
-        <label class="nb-label">Link URL</label>
-        <input type="url" name="link_url" class="nb-input" placeholder="https://..." required>
+        <label class="nb-label">CTA label</label>
+        <select name="cta_label" class="nb-select">
+          <option value="BOOK_NOW" selected>Book now</option>
+          <option value="LEARN_MORE">Learn more</option>
+          <option value="SHOP_NOW">Shop now</option>
+          <option value="SIGN_UP">Sign up</option>
+          <option value="DOWNLOAD">Download</option>
+          <option value="GET_QUOTE">Get quote</option>
+          <option value="CONTACT_US">Contact us</option>
+          <option value="APPLY_NOW">Apply now</option>
+          <option value="SUBSCRIBE">Subscribe</option>
+        </select>
       </div>
       <div>
-        <label class="nb-label">Tracking URL <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
-        <input type="url" name="tracking_url" class="nb-input" placeholder="https://...">
+        <label class="nb-label">Click destination</label>
+        <select name="click_destination_type" class="nb-select">
+          <option value="WEB_VIEW" selected>Web view</option>
+          <option value="EXTERNAL_BROWSER">External browser</option>
+        </select>
       </div>
     </div>
-    <div class="nb-row-3" style="margin-top:12px;">
-      <div>
-        <label class="nb-label">Image A (300×300)</label>
-        <input type="file" name="creative_0_a" accept="image/*" required>
-      </div>
-      <div>
-        <label class="nb-label">Image B (600×500) <span class="nb-muted" style="font-weight:400;">— optional, auto-cropped from A</span></label>
-        <input type="file" name="creative_0_b" accept="image/*">
-      </div>
-      <div>
-        <label class="nb-label">Image C (1280×720) <span class="nb-muted" style="font-weight:400;">— optional, auto-cropped from A</span></label>
-        <input type="file" name="creative_0_c" accept="image/*">
+
+    <div id="sn-ads" class="nb-stack" style="margin-top:16px;">
+      <div class="nb-ad-row" data-idx="0">
+        <h4 style="margin:0 0 8px 0;">Ad 1</h4>
+        <div class="nb-row-3">
+          <div>
+            <label class="nb-label">Ad name</label>
+            <input type="text" name="ad_name_0" class="nb-input" placeholder="Ad 1" value="Ad 1">
+          </div>
+          <div>
+            <label class="nb-label">Headline (10–25 chars)</label>
+            <input type="text" name="headline_0" class="nb-input" minlength="10" maxlength="25" required>
+          </div>
+          <div>
+            <label class="nb-label">Description (10–90 chars)</label>
+            <input type="text" name="description_0" class="nb-input" minlength="10" maxlength="90" required>
+          </div>
+        </div>
+        <div style="margin-top:12px;">
+          <label class="nb-label">Creative (1:1, min 1080×1080)</label>
+          <input type="file" name="creative_0" accept="image/*" required>
+          <div class="nb-hint">Upload one square image — 1.91:1 landscape will be generated automatically.</div>
+        </div>
       </div>
     </div>
+    <button type="button" class="nb-btn" id="sn-add-ad" style="margin-top:10px;">+ Add another ad</button>
   </div>
 
   <div class="nb-submit-bar">
@@ -157,6 +221,38 @@
     <a href="{{ url_for('dashboard') }}" class="nb-btn">Cancel</a>
   </div>
 </form>
+<script>
+  (function(){
+    var btn = document.getElementById('sn-add-ad');
+    var host = document.getElementById('sn-ads');
+    if (!btn || !host) return;
+    var counter = 1;
+    btn.addEventListener('click', function(){
+      var idx = counter++;
+      var div = document.createElement('div');
+      div.className = 'nb-ad-row';
+      div.dataset.idx = idx;
+      div.style.marginTop = '16px';
+      div.style.paddingTop = '16px';
+      div.style.borderTop = '1px solid var(--border, #2a2f3a)';
+      div.innerHTML =
+        '<h4 style="margin:0 0 8px 0;">Ad ' + (idx + 1) + '</h4>' +
+        '<div class="nb-row-3">' +
+        '  <div><label class="nb-label">Ad name</label>' +
+        '    <input type="text" name="ad_name_' + idx + '" class="nb-input" placeholder="Ad ' + (idx + 1) + '" value="Ad ' + (idx + 1) + '"></div>' +
+        '  <div><label class="nb-label">Headline (10–25 chars)</label>' +
+        '    <input type="text" name="headline_' + idx + '" class="nb-input" minlength="10" maxlength="25" required></div>' +
+        '  <div><label class="nb-label">Description (10–90 chars)</label>' +
+        '    <input type="text" name="description_' + idx + '" class="nb-input" minlength="10" maxlength="90" required></div>' +
+        '</div>' +
+        '<div style="margin-top:12px;">' +
+        '  <label class="nb-label">Creative (1:1, min 1080×1080)</label>' +
+        '  <input type="file" name="creative_' + idx + '" accept="image/*" required>' +
+        '</div>';
+      host.appendChild(div);
+    });
+  })();
+</script>
 {% else %}
 
 {% if result %}

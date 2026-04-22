@@ -164,25 +164,42 @@ def _write_json(path: str, data: Any) -> None:
 
 
 # --- Tokens (per session user id, per platform) ---
-def save_token(user_id: str, access_token: str, org_ids: List[str], *, platform: str = DEFAULT_PLATFORM) -> None:
+def save_token(
+    user_id: str,
+    access_token: Any,
+    org_ids: List[str],
+    *,
+    platform: str = DEFAULT_PLATFORM,
+) -> None:
+    """Persist credentials for a user/platform combo.
+
+    ``access_token`` may be:
+      - a string (legacy NewsBreak-style bearer token), or
+      - a dict with platform-specific keys (e.g. SmartNews v3 OAuth
+        ``{"client_id", "client_secret"}``).
+    """
     path = os.path.join(_tokens_dir(platform), f"{user_id}.json")
-    _write_json(
-        path,
-        {
-            "access_token": access_token,
-            "org_ids": org_ids,
-            "platform": _norm_platform(platform),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        },
-    )
+    payload: Dict[str, Any] = {
+        "org_ids": org_ids,
+        "platform": _norm_platform(platform),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if isinstance(access_token, dict):
+        payload.update(access_token)
+    else:
+        payload["access_token"] = access_token
+    _write_json(path, payload)
 
 
 def load_token(user_id: str, *, platform: str = DEFAULT_PLATFORM) -> Optional[Dict[str, Any]]:
     path = os.path.join(_tokens_dir(platform), f"{user_id}.json")
     data = _read_json(path, None)
-    if not data or not data.get("access_token"):
+    if not data:
         return None
-    return data
+    has_creds = bool(
+        data.get("access_token") or (data.get("client_id") and data.get("client_secret"))
+    )
+    return data if has_creds else None
 
 
 def delete_token(user_id: str, *, platform: str = DEFAULT_PLATFORM) -> None:

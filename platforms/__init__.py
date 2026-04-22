@@ -36,7 +36,10 @@ def get_adapter(platform: str, **credentials: Any) -> AdPlatformAdapter:
 
     Kwargs depend on the platform:
       - newsbreak: access_token (str, required), org_ids (list[str], optional)
-      - smartnews: api_key (str, required), account_ids (list[str], optional)
+      - smartnews: client_id (int/str, required), client_secret (str, required),
+                   account_ids (list[str], optional). ``api_key`` is no longer
+                   accepted — SmartNews Marketing API v3 uses OAuth
+                   client_credentials, not a shared key.
     """
     p = normalize_platform(platform)
     if p == "newsbreak":
@@ -55,10 +58,14 @@ def get_adapter(platform: str, **credentials: Any) -> AdPlatformAdapter:
 
         from .smartnews import SmartNewsAdapter
 
-        key = credentials.get("api_key") or credentials.get("access_token")
-        if not key:
-            raise ValueError("smartnews adapter requires api_key")
-        client = SmartNewsClient(key)
+        client_id = credentials.get("client_id")
+        client_secret = credentials.get("client_secret")
+        if not client_id or not client_secret:
+            raise ValueError(
+                "smartnews adapter requires client_id + client_secret "
+                "(OAuth client_credentials)"
+            )
+        client = SmartNewsClient(client_id, client_secret)
         return SmartNewsAdapter(client, credentials.get("account_ids") or [])
 
     raise ValueError(f"Unknown platform {platform}")

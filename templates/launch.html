@@ -1,12 +1,163 @@
 {% extends "base.html" %}
-{% block title %}Bulk launch — NewsBreak{% endblock %}
+{% block title %}Bulk launch — {{ active_platform_label }}{% endblock %}
 {% block content %}
 <div class="nb-dash-header">
   <div>
-    <h1>Bulk launch</h1>
-    <p class="nb-muted">Conversion campaigns. Drag & drop creatives, pick a bid strategy, ship in one click.</p>
+    <h1>Bulk launch — {{ active_platform_label }}</h1>
+    <p class="nb-muted">
+      {% if active_platform == 'smartnews' %}
+        SmartNews campaigns. Upload a creative (300×300, 600×500, 1280×720), set budget, submit for review.
+      {% else %}
+        Conversion campaigns. Drag &amp; drop creatives, pick a bid strategy, ship in one click.
+      {% endif %}
+    </p>
   </div>
 </div>
+
+{% if active_platform == 'smartnews' %}
+{% if result %}
+<div class="nb-card" style="margin-bottom:16px;">
+  {% set ok = result.get('ok') %}
+  <h3 style="margin:0 0 8px 0;">{% if ok %}Campaign submitted{% else %}Launch failed{% endif %}</h3>
+  <div class="nb-kpi-grid" style="margin-bottom:12px;">
+    <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#34d399' if ok else '#f87171' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Creatives</div><div class="nb-kpi-value">{{ result.get('creatives', [])|length }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Errors</div><div class="nb-kpi-value" style="color:{{ '#f87171' if result.get('errors') else 'var(--text)' }};">{{ result.get('errors', [])|length }}</div></div>
+  </div>
+  {% if result.get('errors') %}
+  <div class="nb-alert nb-alert-danger">
+    <strong>Errors:</strong>
+    <ul style="margin:6px 0 0 18px;">
+      {% for e in result.errors %}<li style="margin:4px 0;">{{ e | tojson }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;color:#6b7280;">Raw response</summary>
+    <pre class="nb-pre" style="max-height:240px;overflow:auto;">{{ result | tojson(indent=2) }}</pre>
+  </details>
+</div>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="sn-launch-form">
+  <div class="nb-field-group">
+    <h3>1 · Ad account</h3>
+    <select name="account_id" id="sn-account-id" class="nb-select" required>
+      <option value="">— Select —</option>
+      {% for id, name in accounts.items() %}
+      <option value="{{ id }}">{{ name }} ({{ id }})</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="nb-field-group">
+    <h3>2 · Campaign</h3>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Campaign name</label>
+        <input type="text" name="campaign_name" class="nb-input" required>
+      </div>
+      <div>
+        <label class="nb-label">Sponsored name <span class="nb-muted" style="font-weight:400;">(shown on creative)</span></label>
+        <input type="text" name="sponsored_name" class="nb-input" required>
+      </div>
+    </div>
+    <div class="nb-row-2" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Action type</label>
+        <select name="action_type" class="nb-select">
+          <option value="WEBSITE_CONVERSION" selected>Website conversion</option>
+          <option value="APP_INSTALL">App install</option>
+        </select>
+      </div>
+      <div>
+        <label class="nb-label">Ad category ID</label>
+        <input type="text" name="ad_category_id" class="nb-input" value="3" required>
+        <div class="nb-hint">Numeric ID from <code>GET /v1.0/adcategories</code> (e.g. <code>3</code> for Entertainment).</div>
+      </div>
+    </div>
+    <div class="nb-row-3" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Daily budget (JPY)</label>
+        <input type="number" name="daily_budget" class="nb-input" min="1000000" step="1000" value="1000000" required>
+      </div>
+      <div>
+        <label class="nb-label">Total budget (JPY)</label>
+        <input type="number" name="total_budget" class="nb-input" min="1000000" step="1000" value="5000000" required>
+      </div>
+      <div>
+        <label class="nb-label">Bid amount (JPY)</label>
+        <input type="number" name="bid_amount" class="nb-input" min="1" step="1" value="30" required>
+      </div>
+    </div>
+    <div class="nb-row-2" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Target CPA (JPY, optional)</label>
+        <input type="number" name="target_cpa" class="nb-input" min="0" step="100">
+      </div>
+      <div>
+        <label class="nb-label">Schedule (UTC)</label>
+        <div style="display:flex;gap:8px;">
+          <input type="datetime-local" name="start_time" class="nb-input" style="flex:1;">
+          <input type="datetime-local" name="end_time" class="nb-input" style="flex:1;">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="nb-field-group">
+    <h3>3 · Creative (image triplet)</h3>
+    <p class="nb-muted" style="margin-top:0;">
+      SmartNews requires 3 image sizes per creative: <strong>A 300×300</strong>, <strong>B 600×500</strong>, <strong>C 1280×720</strong>.
+      Upload one master image and we'll resize into all three slots, or upload them individually.
+    </p>
+    <div class="nb-row-3">
+      <div>
+        <label class="nb-label">Ad name</label>
+        <input type="text" name="ad_name_0" class="nb-input" placeholder="Creative #1" value="Creative 1">
+      </div>
+      <div>
+        <label class="nb-label">Title (10–25 chars)</label>
+        <input type="text" name="ad_title_0" class="nb-input" minlength="10" maxlength="25" required>
+      </div>
+      <div>
+        <label class="nb-label">Text (10–90 chars)</label>
+        <input type="text" name="ad_text_0" class="nb-input" minlength="10" maxlength="90" required>
+      </div>
+    </div>
+    <div class="nb-row-2" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Link URL</label>
+        <input type="url" name="link_url" class="nb-input" placeholder="https://..." required>
+      </div>
+      <div>
+        <label class="nb-label">Tracking URL <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+        <input type="url" name="tracking_url" class="nb-input" placeholder="https://...">
+      </div>
+    </div>
+    <div class="nb-row-3" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Image A (300×300)</label>
+        <input type="file" name="creative_0_a" accept="image/*" required>
+      </div>
+      <div>
+        <label class="nb-label">Image B (600×500) <span class="nb-muted" style="font-weight:400;">— optional, auto-cropped from A</span></label>
+        <input type="file" name="creative_0_b" accept="image/*">
+      </div>
+      <div>
+        <label class="nb-label">Image C (1280×720) <span class="nb-muted" style="font-weight:400;">— optional, auto-cropped from A</span></label>
+        <input type="file" name="creative_0_c" accept="image/*">
+      </div>
+    </div>
+  </div>
+
+  <div class="nb-submit-bar">
+    <button type="submit" class="nb-btn nb-btn-primary">Launch SmartNews campaign</button>
+    <a href="{{ url_for('dashboard') }}" class="nb-btn">Cancel</a>
+  </div>
+</form>
+{% else %}
 
 {% if result %}
 <div id="result-modal" class="nb-modal">
@@ -750,4 +901,5 @@
   loadCampaigns();
 })();
 </script>
+{% endif %}
 {% endblock %}

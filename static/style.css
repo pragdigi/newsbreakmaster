@@ -42,6 +42,33 @@ body {
 }
 .nb-nav a:hover { color: var(--accent); }
 
+.nb-platform-switcher {
+  margin-left: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  border: 1px solid #2d3a4d;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.08);
+}
+.nb-platform-active {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.nb-platform-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+.nb-platform-link:hover { color: var(--accent); }
+
 .nb-main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 
 .nb-login-body {

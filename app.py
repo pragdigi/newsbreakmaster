@@ -35,6 +35,14 @@ load_dotenv()
 import storage
 from bulk_launcher import bulk_launch, creative_from_upload
 from newsbreak_api import NewsBreakAPIError, NewsBreakClient, unwrap_list_response
+from platforms import (
+    DEFAULT_PLATFORM,
+    PLATFORM_CURRENCIES,
+    PLATFORM_LABELS,
+    PLATFORMS,
+    get_adapter,
+    normalize_platform,
+)
 from rules_engine import (
     RULE_TEMPLATES,
     build_report_payload,
@@ -69,6 +77,11 @@ def _user_id() -> str:
     return session["uid"]
 
 
+def _active_platform() -> str:
+    """Currently selected platform for this session (``newsbreak`` by default)."""
+    return normalize_platform(session.get("platform") or DEFAULT_PLATFORM)
+
+
 def _org_ids_from_form() -> list[str]:
     raw = (request.form.get("org_ids") or "").strip()
     if raw:
@@ -88,19 +101,67 @@ def _env_org_ids() -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
-def _effective_token() -> dict | None:
-    """Prefer env-configured token so Render redeploys don't force re-login."""
-    env_tok = _env_access_token()
-    if env_tok:
-        return {"access_token": env_tok, "org_ids": _env_org_ids()}
-    return storage.load_token(_user_id())
+def _env_smartnews_key() -> str:
+    return (_cfg_val("SMARTNEWS_API_KEY", "") or "").strip()
+
+
+def _env_smartnews_account_ids() -> list[str]:
+    raw = _cfg_val("SMARTNEWS_DEFAULT_ACCOUNT_IDS", "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _effective_token(platform: str | None = None) -> dict | None:
+    """Prefer env-configured credentials so Render redeploys don't force re-login.
+
+    Returns {access_token, org_ids, platform} or None.
+    """
+    p = normalize_platform(platform or _active_platform())
+    if p == "newsbreak":
+        env_tok = _env_access_token()
+        if env_tok:
+            return {"access_token": env_tok, "org_ids": _env_org_ids(), "platform": p}
+        return storage.load_token(_user_id(), platform=p)
+    if p == "smartnews":
+        env_key = _env_smartnews_key()
+        if env_key:
+            return {
+                "access_token": env_key,
+                "org_ids": _env_smartnews_account_ids(),
+                "platform": p,
+            }
+        return storage.load_token(_user_id(), platform=p)
+    return None
 
 
 def _client() -> NewsBreakClient | None:
-    tok = _effective_token()
+    """Legacy accessor — returns a raw NewsBreakClient when NB platform is active.
+
+    Prefer ``_adapter()`` for platform-agnostic logic.
+    """
+    if _active_platform() != "newsbreak":
+        return None
+    tok = _effective_token("newsbreak")
     if not tok:
         return None
     return NewsBreakClient(tok["access_token"])
+
+
+def _adapter(platform: str | None = None):
+    """Return the configured adapter for the named (or active) platform."""
+    p = normalize_platform(platform or _active_platform())
+    tok = _effective_token(p)
+    if not tok:
+        return None
+    credentials: dict = {"access_token": tok["access_token"]}
+    if p == "newsbreak":
+        credentials["org_ids"] = tok.get("org_ids") or []
+    else:
+        credentials["account_ids"] = tok.get("org_ids") or []
+    try:
+        return get_adapter(p, **credentials)
+    except Exception as e:
+        app.logger.warning("adapter init failed platform=%s err=%s", p, e)
+        return None
 
 
 def _ad_accounts_for_current_token() -> dict:
@@ -182,6 +243,29 @@ def _start_jobs():
         app.config["_scheduler_started"] = True
 
 
+@app.context_processor
+def _inject_platform():
+    p = _active_platform()
+    return {
+        "active_platform": p,
+        "active_platform_label": PLATFORM_LABELS.get(p, p.title()),
+        "active_platform_currency": PLATFORM_CURRENCIES.get(p, "USD"),
+        "supports_ad_set_scope": p == "newsbreak",
+        "available_platforms": [
+            {"id": pid, "label": PLATFORM_LABELS.get(pid, pid.title())}
+            for pid in PLATFORMS
+        ],
+    }
+
+
+@app.route("/platform/switch", methods=["POST"])
+def platform_switch():
+    target = normalize_platform(request.form.get("platform") or request.args.get("platform"))
+    session["platform"] = target
+    nxt = request.form.get("next") or request.referrer or url_for("dashboard")
+    return redirect(nxt)
+
+
 @app.route("/")
 def index():
     if _effective_token():
@@ -191,7 +275,11 @@ def index():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if _env_access_token():
+    platform = _active_platform()
+    # If env-configured credentials exist for this platform, skip login.
+    if (platform == "newsbreak" and _env_access_token()) or (
+        platform == "smartnews" and _env_smartnews_key()
+    ):
         return redirect(url_for("dashboard"))
     err = None
     if request.method == "POST":
@@ -199,39 +287,52 @@ def login():
         org_ids = _org_ids_from_form()
         if not token:
             err = "Access token is required."
-        elif not org_ids:
+        elif platform == "newsbreak" and not org_ids:
             err = "At least one Organization ID is required (comma-separated). Find it in NewsBreak Ad Manager or API docs."
         else:
             try:
-                client = NewsBreakClient(token)
-                client.get_ad_accounts(org_ids)
-                storage.save_token(_user_id(), token, org_ids)
+                credentials: dict = {"access_token": token}
+                if platform == "newsbreak":
+                    credentials["org_ids"] = org_ids
+                else:
+                    credentials["account_ids"] = org_ids
+                adapter = get_adapter(platform, **credentials)
+                adapter.verify()
+                storage.save_token(_user_id(), token, org_ids, platform=platform)
                 return redirect(url_for("dashboard"))
             except NewsBreakAPIError as e:
                 err = str(e)
             except Exception as e:
                 err = f"Login failed: {e}"
-    return render_template("login.html", error=err, default_org_ids=_cfg_val("NEWSBREAK_DEFAULT_ORG_IDS", ""))
+    default_org = (
+        _cfg_val("NEWSBREAK_DEFAULT_ORG_IDS", "")
+        if platform == "newsbreak"
+        else _cfg_val("SMARTNEWS_DEFAULT_ACCOUNT_IDS", "")
+    )
+    return render_template(
+        "login.html",
+        error=err,
+        default_org_ids=default_org,
+    )
 
 
 @app.route("/logout")
 def logout():
-    storage.delete_token(_user_id())
+    storage.delete_token(_user_id(), platform=_active_platform())
+    session.pop("platform", None)
     session.clear()
     return redirect(url_for("login"))
 
 
 @app.route("/dashboard")
 def dashboard():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return redirect(url_for("login"))
     err = None
     accounts: list[dict] = []
     try:
-        tok = _effective_token() or {}
-        raw = cl.get_ad_accounts(tok.get("org_ids") or [])
-        accounts = _flatten_ad_accounts(raw)
+        accounts = adapter.get_accounts()
     except Exception as e:
         err = str(e)
     return render_template("dashboard.html", accounts=accounts, error=err)
@@ -239,21 +340,62 @@ def dashboard():
 
 @app.route("/launch", methods=["GET", "POST"])
 def launch():
+    adapter = _adapter()
+    if not adapter:
+        return redirect(url_for("login"))
+    platform = adapter.platform
+    try:
+        accounts = adapter.get_accounts()
+    except Exception:
+        accounts = []
+    account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
+
+    # SmartNews launches go through a dedicated handler.
+    if platform == "smartnews":
+        from bulk_launcher_smartnews import (
+            creative_triplet_from_uploads,
+            smartnews_bulk_launch,
+        )
+
+        if request.method == "GET":
+            return render_template(
+                "launch.html",
+                accounts=account_options,
+                campaigns=[],
+                pixels=storage.list_pixels(platform=platform),
+                events=storage.list_events(platform=platform),
+                offers=storage.list_offers(platform=platform),
+            )
+        # POST: delegate to SmartNews launcher
+        result = smartnews_bulk_launch(
+            adapter,
+            form=request.form,
+            files=request.files,
+            triplet_builder=creative_triplet_from_uploads,
+        )
+        return render_template(
+            "launch.html",
+            accounts=account_options,
+            campaigns=[],
+            pixels=storage.list_pixels(platform=platform),
+            events=storage.list_events(platform=platform),
+            offers=storage.list_offers(platform=platform),
+            result=result,
+        )
+
+    # NewsBreak path uses the legacy NewsBreakClient directly.
     cl = _client()
     if not cl:
         return redirect(url_for("login"))
-    tok = _effective_token() or {}
-    accounts = _flatten_ad_accounts(cl.get_ad_accounts(tok.get("org_ids") or []))
-    account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
 
     if request.method == "GET":
         return render_template(
             "launch.html",
             accounts=account_options,
             campaigns=[],
-            pixels=storage.list_pixels(),
-            events=storage.list_events(),
-            offers=storage.list_offers(),
+            pixels=storage.list_pixels(platform=platform),
+            events=storage.list_events(platform=platform),
+            offers=storage.list_offers(platform=platform),
         )
 
     # POST
@@ -446,42 +588,56 @@ def launch():
         "launch.html",
         accounts=account_options,
         campaigns=[],
-        pixels=storage.list_pixels(),
-        events=storage.list_events(),
-        offers=storage.list_offers(),
+        pixels=storage.list_pixels(platform=platform),
+        events=storage.list_events(platform=platform),
+        offers=storage.list_offers(platform=platform),
         result=result,
     )
 
 
 @app.route("/scaling")
 def scaling():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return redirect(url_for("login"))
-    tok = _effective_token() or {}
-    accounts = _flatten_ad_accounts(cl.get_ad_accounts(tok.get("org_ids") or []))
+    try:
+        accounts = adapter.get_accounts()
+    except Exception:
+        accounts = []
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
-    return render_template("scaling.html", accounts=account_options)
+    return render_template(
+        "scaling.html",
+        accounts=account_options,
+        supports_ad_set=adapter.supports_ad_set_scope,
+    )
 
 
 @app.route("/rules")
 def rules_page():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return redirect(url_for("login"))
-    tok = _effective_token() or {}
-    accounts = _flatten_ad_accounts(cl.get_ad_accounts(tok.get("org_ids") or []))
+    try:
+        accounts = adapter.get_accounts()
+    except Exception:
+        accounts = []
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
     account_id = request.args.get("account_id", "")
-    rules = storage.load_rules(account_id) if account_id else []
-    audit = storage.read_audit_tail(account_id) if account_id else []
+    platform = _active_platform()
+    rules = storage.load_rules(account_id, platform=platform) if account_id else []
+    audit = storage.read_audit_tail(account_id, platform=platform) if account_id else []
+    visible_templates = {
+        tid: t
+        for tid, t in RULE_TEMPLATES.items()
+        if platform in (t.get("supported_platforms") or ["newsbreak"])
+    }
     return render_template(
         "rules.html",
         accounts=account_options,
         account_id=account_id,
         rules=rules,
         audit=audit,
-        templates=RULE_TEMPLATES,
+        templates=visible_templates,
     )
 
 
@@ -490,82 +646,97 @@ def rules_page():
 
 @app.route("/api/accounts")
 def api_accounts():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
-    tok = _effective_token() or {}
     try:
-        raw = cl.get_ad_accounts(tok.get("org_ids") or [])
-        return jsonify({"accounts": _flatten_ad_accounts(raw)})
+        return jsonify({"accounts": adapter.get_accounts(), "platform": adapter.platform})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
 @app.route("/api/campaigns")
 def api_campaigns():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     aid = request.args.get("ad_account_id", "")
     if not aid:
         return jsonify({"error": "ad_account_id required"}), 400
     try:
-        raw = cl.get_campaigns(aid)
-        return jsonify({"campaigns": unwrap_list_response(raw)})
+        return jsonify({"campaigns": adapter.get_campaigns(aid)})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
 @app.route("/api/report/batch")
 def api_report_batch():
-    """Fetch spend/conversions/value for every ad account on the current token in ONE call."""
-    cl = _client()
-    if not cl:
+    """Fetch spend/conversions/value for every ad account on the current token."""
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
-    accounts = _ad_accounts_for_current_token()
+    try:
+        raw_accounts = adapter.get_accounts()
+    except Exception:
+        raw_accounts = []
+    accounts = {str(a.get("id")): a.get("name", a.get("id")) for a in raw_accounts if a.get("id")}
     if not accounts:
         return jsonify({"accounts": [], "totals": {"spend": 0, "conversions": 0, "value": 0}})
     days = int(request.args.get("days", "7"))
     end = date.today()
     start = end - timedelta(days=max(1, days))
-    try:
-        ids: list = []
+
+    by_account: dict = {}
+    if adapter.platform == "newsbreak":
+        cl = _client()
+        try:
+            ids: list = []
+            for aid in accounts.keys():
+                try:
+                    ids.append(int(aid))
+                except (TypeError, ValueError):
+                    ids.append(aid)
+            payload = {
+                "name": f"dashboard_batch_{start.isoformat()}_{end.isoformat()}",
+                "timezone": "UTC",
+                "dateRange": "FIXED",
+                "startDate": start.isoformat(),
+                "endDate": end.isoformat(),
+                "filter": "AD_ACCOUNT",
+                "filterIds": ids,
+                "dimensions": ["AD_ACCOUNT"],
+                "metrics": ["COST", "IMPRESSION", "CLICK", "CONVERSION", "VALUE"],
+            }
+            raw = cl.get_integrated_report(payload)
+        except Exception as e:
+            return jsonify({"error": str(e), "accounts": [], "totals": {"spend": 0, "conversions": 0, "value": 0}}), 400
+        rows = normalize_report_rows(raw)
+        for r in rows:
+            aid = str(
+                r.get("adAccountId")
+                or r.get("ad_account_id")
+                or r.get("accountId")
+                or r.get("AD_ACCOUNT")
+                or ""
+            )
+            if not aid:
+                continue
+            bucket = by_account.setdefault(aid, {"spend": 0.0, "conversions": 0.0, "value": 0.0})
+            bucket["spend"] += float(r.get("spend") or 0)
+            bucket["conversions"] += float(r.get("conversions") or 0)
+            bucket["value"] += float(r.get("value") or r.get("conversionValue") or 0)
+    else:
+        # Fallback: iterate per-account via adapter
         for aid in accounts.keys():
             try:
-                ids.append(int(aid))
-            except (TypeError, ValueError):
-                ids.append(aid)
-        payload = {
-            "name": f"dashboard_batch_{start.isoformat()}_{end.isoformat()}",
-            "timezone": "UTC",
-            "dateRange": "FIXED",
-            "startDate": start.isoformat(),
-            "endDate": end.isoformat(),
-            "filter": "AD_ACCOUNT",
-            "filterIds": ids,
-            "dimensions": ["AD_ACCOUNT"],
-            "metrics": ["COST", "IMPRESSION", "CLICK", "CONVERSION", "VALUE"],
-        }
-        raw = cl.get_integrated_report(payload)
-    except Exception as e:
-        return jsonify({"error": str(e), "accounts": [], "totals": {"spend": 0, "conversions": 0, "value": 0}}), 400
-
-    rows = normalize_report_rows(raw)
-    by_account: dict = {}
-    for r in rows:
-        aid = str(
-            r.get("adAccountId")
-            or r.get("ad_account_id")
-            or r.get("accountId")
-            or r.get("AD_ACCOUNT")
-            or ""
-        )
-        if not aid:
-            continue
-        bucket = by_account.setdefault(aid, {"spend": 0.0, "conversions": 0.0, "value": 0.0})
-        bucket["spend"] += float(r.get("spend") or 0)
-        bucket["conversions"] += float(r.get("conversions") or 0)
-        bucket["value"] += float(r.get("value") or r.get("conversionValue") or 0)
+                rows = adapter.fetch_report_rows(aid, "campaign", start, end)
+            except Exception:
+                rows = []
+            bucket = by_account.setdefault(str(aid), {"spend": 0.0, "conversions": 0.0, "value": 0.0})
+            for r in rows:
+                bucket["spend"] += float(r.get("spend") or 0)
+                bucket["conversions"] += float(r.get("conversions") or 0)
+                bucket["value"] += float(r.get("value") or 0)
 
     out: list = []
     totals = {"spend": 0.0, "conversions": 0.0, "value": 0.0}
@@ -605,27 +776,40 @@ def api_report_batch():
 
 @app.route("/api/report")
 def api_report():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     aid = request.args.get("ad_account_id", "")
     level = request.args.get("level", "ad").lower()
     days = int(request.args.get("days", "7"))
     if not aid:
         return jsonify({"error": "ad_account_id required"}), 400
-    dim = "AD"
-    if level == "ad_set":
-        dim = "AD_SET"
-    elif level == "campaign":
-        dim = "CAMPAIGN"
+
+    # SmartNews AMv1 collapses ad_set to campaign
+    if level == "ad_set" and not adapter.supports_ad_set_scope:
+        level = "campaign"
+
     end = date.today()
     start = end - timedelta(days=max(1, days))
 
-    payload = build_report_payload(aid, start, end, dim)
+    if adapter.platform == "newsbreak":
+        cl = _client()
+        dim = "AD"
+        if level == "ad_set":
+            dim = "AD_SET"
+        elif level == "campaign":
+            dim = "CAMPAIGN"
+        payload = build_report_payload(aid, start, end, dim)
+        try:
+            raw = cl.get_integrated_report(payload)
+            rows = normalize_report_rows(raw)
+            return jsonify({"rows": rows, "raw": raw, "platform": adapter.platform})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+
     try:
-        raw = cl.get_integrated_report(payload)
-        rows = normalize_report_rows(raw)
-        return jsonify({"rows": rows, "raw": raw})
+        rows = adapter.fetch_report_rows(aid, level, start, end)
+        return jsonify({"rows": rows, "platform": adapter.platform})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -685,6 +869,8 @@ def api_newsbreak_events():
 @app.route("/api/newsbreak/sync-events", methods=["POST"])
 def api_newsbreak_sync_events():
     """Pull events from every ad account we know about and upsert them into the local catalog."""
+    if _active_platform() != "newsbreak":
+        return jsonify({"error": "Switch to NewsBreak to sync events"}), 400
     cl = _client()
     if not cl:
         return jsonify({"error": "unauthorized"}), 401
@@ -692,8 +878,8 @@ def api_newsbreak_sync_events():
     if not accounts:
         return jsonify({"error": "no ad accounts available"}), 400
 
-    existing = {e.get("tracking_id"): e for e in storage.list_events() if e.get("tracking_id")}
-    existing_pixels = {p.get("pixel_id"): p for p in storage.list_pixels() if p.get("pixel_id")}
+    existing = {e.get("tracking_id"): e for e in storage.list_events(platform="newsbreak") if e.get("tracking_id")}
+    existing_pixels = {p.get("pixel_id"): p for p in storage.list_pixels(platform="newsbreak") if p.get("pixel_id")}
     added = 0
     updated = 0
     pixels_added = 0
@@ -724,10 +910,10 @@ def api_newsbreak_sync_events():
             }
             if prior:
                 merged["id"] = prior["id"]
-                storage.upsert_event(merged)
+                storage.upsert_event(merged, platform="newsbreak")
                 updated += 1
             else:
-                storage.upsert_event(merged)
+                storage.upsert_event(merged, platform="newsbreak")
                 added += 1
             imported += 1
             existing[tid] = {**(prior or {}), **merged}
@@ -741,7 +927,8 @@ def api_newsbreak_sync_events():
                         "ad_account_id": acc_id,
                         "ad_account_name": acc_name,
                         "source": "newsbreak",
-                    }
+                    },
+                    platform="newsbreak",
                 )
                 existing_pixels[pid] = {"pixel_id": pid}
                 pixels_added += 1
@@ -759,47 +946,100 @@ def api_newsbreak_sync_events():
     )
 
 
+@app.route("/api/smartnews/sync-events", methods=["POST"])
+def api_smartnews_sync_events():
+    """Seed the SmartNews built-in conversion event keys into the local catalog."""
+    if _active_platform() != "smartnews":
+        return jsonify({"error": "Switch to SmartNews to seed built-in events"}), 400
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "unauthorized"}), 401
+
+    existing = {e.get("tracking_id"): e for e in storage.list_events(platform="smartnews") if e.get("tracking_id")}
+    added = 0
+    updated = 0
+
+    events = adapter.list_events("")
+    for ev in events:
+        tid = ev.get("tracking_id") or ev.get("event_type")
+        if not tid:
+            continue
+        prior = existing.get(tid)
+        merged = {
+            "name": ev.get("name") or tid,
+            "tracking_id": tid,
+            "event_type": ev.get("event_type") or tid,
+            "pixel_id": None,
+            "tracking_type": ev.get("tracking_type") or "builtin",
+            "ad_account_id": "",
+            "ad_account_name": "SmartNews built-in",
+            "source": "smartnews",
+            "is_custom": False,
+        }
+        if prior:
+            merged["id"] = prior["id"]
+            storage.upsert_event(merged, platform="smartnews")
+            updated += 1
+        else:
+            storage.upsert_event(merged, platform="smartnews")
+            added += 1
+        existing[tid] = {**(prior or {}), **merged}
+
+    return jsonify({"ok": True, "added": added, "updated": updated, "errors": []})
+
+
 @app.route("/api/adsets")
 def api_adsets():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     cid = request.args.get("campaign_id", "")
+    account_id = request.args.get("ad_account_id", "")
     if not cid:
         return jsonify({"error": "campaign_id required"}), 400
     try:
-        raw = cl.get_ad_sets(cid)
-        return jsonify({"ad_sets": unwrap_list_response(raw)})
+        return jsonify({"ad_sets": adapter.get_ad_groups(account_id, cid)})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
 @app.route("/api/ads")
 def api_ads():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
-    asid = request.args.get("ad_set_id", "")
-    if not asid:
-        return jsonify({"error": "ad_set_id required"}), 400
+    parent_id = request.args.get("ad_set_id") or request.args.get("campaign_id") or ""
+    account_id = request.args.get("ad_account_id", "")
+    if not parent_id:
+        return jsonify({"error": "ad_set_id (or campaign_id) required"}), 400
     try:
-        raw = cl.get_ads(asid)
-        return jsonify({"ads": unwrap_list_response(raw)})
+        return jsonify({"ads": adapter.get_ads(account_id, parent_id)})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
+def _resolve_status_target(data):
+    """Return (level, entity_id) from request payload, supporting campaign/ad_set/ad."""
+    level = (data.get("level") or "").strip().lower()
+    if level == "campaign" or data.get("campaign_id") and not data.get("ad_id") and not data.get("ad_set_id"):
+        return "campaign", data.get("campaign_id") or data.get("ad_id")
+    if level == "ad_set" or data.get("ad_set_id") and not data.get("ad_id"):
+        return "ad_set", data.get("ad_set_id") or data.get("ad_id")
+    return "ad", data.get("ad_id")
+
+
 @app.route("/api/ad/pause", methods=["POST"])
 def api_ad_pause():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
-    ad_id = data.get("ad_id")
-    if not ad_id:
-        return jsonify({"error": "ad_id required"}), 400
+    level, entity_id = _resolve_status_target(data)
+    account_id = data.get("ad_account_id")
+    if not entity_id:
+        return jsonify({"error": "entity id required"}), 400
     try:
-        cl.update_ad_status(str(ad_id), "OFF")
+        adapter.update_status(level, str(entity_id), enabled=False, account_id=account_id)
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -807,15 +1047,16 @@ def api_ad_pause():
 
 @app.route("/api/ad/enable", methods=["POST"])
 def api_ad_enable():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
-    ad_id = data.get("ad_id")
-    if not ad_id:
-        return jsonify({"error": "ad_id required"}), 400
+    level, entity_id = _resolve_status_target(data)
+    account_id = data.get("ad_account_id")
+    if not entity_id:
+        return jsonify({"error": "entity id required"}), 400
     try:
-        cl.update_ad_status(str(ad_id), "ON")
+        adapter.update_status(level, str(entity_id), enabled=True, account_id=account_id)
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -823,18 +1064,26 @@ def api_ad_enable():
 
 @app.route("/api/adset/budget", methods=["POST"])
 def api_adset_budget():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
-    ad_set_id = data.get("ad_set_id")
+    entity_id = data.get("ad_set_id") or data.get("campaign_id")
     budget_dollars = float(data.get("budget_dollars", 0))
     budget_type = data.get("budget_type", "DAILY")
-    if not ad_set_id:
-        return jsonify({"error": "ad_set_id required"}), 400
+    account_id = data.get("ad_account_id")
+    if not entity_id:
+        return jsonify({"error": "ad_set_id or campaign_id required"}), 400
+    level = "ad_set" if adapter.supports_ad_set_scope else "campaign"
     try:
         cents = int(budget_dollars * 100)
-        cl.update_ad_set(str(ad_set_id), {"budget": cents, "budgetType": budget_type})
+        adapter.update_budget(
+            level,
+            str(entity_id),
+            budget_cents=cents,
+            budget_type=budget_type,
+            account_id=account_id,
+        )
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -842,20 +1091,35 @@ def api_adset_budget():
 
 @app.route("/api/adset/budget_delta", methods=["POST"])
 def api_adset_budget_delta():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
-    ad_set_id = data.get("ad_set_id")
+    requested_level = (data.get("level") or "").strip().lower()
+    if requested_level in ("ad_set", "campaign"):
+        level = requested_level
+    else:
+        level = "ad_set" if adapter.supports_ad_set_scope else "campaign"
+    if level == "campaign":
+        entity_id = data.get("campaign_id") or data.get("ad_set_id")
+    else:
+        entity_id = data.get("ad_set_id") or data.get("campaign_id")
     pct = float(data.get("percent", 0))
     budget_type = data.get("budget_type", "DAILY")
     current_cents = data.get("current_budget_cents")
-    if not ad_set_id or current_cents is None:
-        return jsonify({"error": "ad_set_id and current_budget_cents required"}), 400
+    account_id = data.get("ad_account_id")
+    if not entity_id or current_cents is None:
+        return jsonify({"error": "entity id and current_budget_cents required"}), 400
     try:
         cur = float(current_cents)
         new_cents = max(0, int(cur * (1 + pct / 100.0)))
-        cl.update_ad_set(str(ad_set_id), {"budget": new_cents, "budgetType": budget_type})
+        adapter.update_budget(
+            level,
+            str(entity_id),
+            budget_cents=new_cents,
+            budget_type=budget_type,
+            account_id=account_id,
+        )
         return jsonify({"ok": True, "new_budget_cents": new_cents})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -863,52 +1127,56 @@ def api_adset_budget_delta():
 
 @app.route("/api/rules/save", methods=["POST"])
 def api_rules_save():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     account_id = data.get("account_id")
     rule = data.get("rule")
     if not account_id or not rule:
         return jsonify({"error": "account_id and rule required"}), 400
-    storage.upsert_rule(account_id, rule)
+    rule.setdefault("platform", adapter.platform)
+    storage.upsert_rule(account_id, rule, platform=adapter.platform)
     return jsonify({"ok": True})
 
 
 @app.route("/api/rules/list", methods=["GET"])
 def api_rules_list():
-    if _client() is None:
+    adapter = _adapter()
+    if adapter is None:
         return jsonify({"error": "unauthorized"}), 401
     account_id = request.args.get("account_id", "")
     if not account_id:
         return jsonify({"error": "account_id required"}), 400
-    return jsonify({"rules": storage.load_rules(account_id)})
+    return jsonify({"rules": storage.load_rules(account_id, platform=adapter.platform)})
 
 
 @app.route("/api/rules/patch", methods=["POST"])
 def api_rules_patch():
-    if _client() is None:
+    adapter = _adapter()
+    if adapter is None:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     account_id = data.get("account_id")
     rule_id = data.get("rule_id")
     if not account_id or not rule_id:
         return jsonify({"error": "account_id and rule_id required"}), 400
-    rules = storage.load_rules(account_id)
+    rules = storage.load_rules(account_id, platform=adapter.platform)
     for r in rules:
         if r.get("id") == rule_id:
             if "enabled" in data:
                 r["enabled"] = bool(data["enabled"])
             if "dry_run" in data:
                 r["dry_run"] = bool(data["dry_run"])
-            storage.save_rules(account_id, rules)
+            storage.save_rules(account_id, rules, platform=adapter.platform)
             return jsonify({"ok": True})
     return jsonify({"error": "rule not found"}), 404
 
 
 @app.route("/api/rules/from_template", methods=["POST"])
 def api_rules_from_template():
-    if _client() is None:
+    adapter = _adapter()
+    if adapter is None:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     account_id = data.get("account_id")
@@ -916,9 +1184,9 @@ def api_rules_from_template():
     if not account_id or not template_id:
         return jsonify({"error": "account_id and template_id required"}), 400
     try:
-        rule = instantiate_template(template_id, account_id)
+        rule = instantiate_template(template_id, account_id, platform=adapter.platform)
         rule["id"] = str(uuid.uuid4())
-        storage.upsert_rule(account_id, rule)
+        storage.upsert_rule(account_id, rule, platform=adapter.platform)
         return jsonify({"ok": True, "rule": rule})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -926,34 +1194,34 @@ def api_rules_from_template():
 
 @app.route("/api/rules/delete", methods=["POST"])
 def api_rules_delete():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     account_id = data.get("account_id")
     rule_id = data.get("rule_id")
     if not account_id or not rule_id:
         return jsonify({"error": "account_id and rule_id required"}), 400
-    storage.delete_rule(account_id, rule_id)
+    storage.delete_rule(account_id, rule_id, platform=adapter.platform)
     return jsonify({"ok": True})
 
 
 @app.route("/api/rules/run", methods=["POST"])
 def api_rules_run():
-    cl = _client()
-    if not cl:
+    adapter = _adapter()
+    if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     account_id = data.get("account_id")
     if not account_id:
         return jsonify({"error": "account_id required"}), 400
-    rules = storage.load_rules(account_id)
+    rules = storage.load_rules(account_id, platform=adapter.platform)
 
     def audit(entry):
-        storage.append_audit(account_id, entry)
+        storage.append_audit(account_id, entry, platform=adapter.platform)
 
     try:
-        results = run_rules_for_account(cl, account_id, rules, audit=audit)
+        results = run_rules_for_account(adapter, account_id, rules, audit=audit)
         return jsonify({"results": results})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -962,7 +1230,7 @@ def api_rules_run():
 @app.route("/api/scheduler/run", methods=["POST"])
 def api_scheduler_run():
     """Manual trigger (same as cron)."""
-    if _client() is None:
+    if _adapter() is None:
         return jsonify({"error": "unauthorized"}), 401
     try:
         run_scheduled_rules()
@@ -978,11 +1246,12 @@ def api_scheduler_run():
 def settings_page():
     if not _effective_token():
         return redirect(url_for("login"))
+    platform = _active_platform()
     return render_template(
         "settings.html",
-        pixels=storage.list_pixels(),
-        events=storage.list_events(),
-        offers=storage.list_offers(),
+        pixels=storage.list_pixels(platform=platform),
+        events=storage.list_events(platform=platform),
+        offers=storage.list_offers(platform=platform),
     )
 
 
@@ -994,7 +1263,7 @@ def _auth_required():
 def api_pixels_list():
     if not _auth_required():
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify({"pixels": storage.list_pixels()})
+    return jsonify({"pixels": storage.list_pixels(platform=_active_platform())})
 
 
 @app.route("/api/pixels", methods=["POST"])
@@ -1012,7 +1281,8 @@ def api_pixels_save():
             "name": name,
             "pixel_id": pixel_id,
             "notes": (data.get("notes") or "").strip(),
-        }
+        },
+        platform=_active_platform(),
     )
     return jsonify({"ok": True, "pixel": saved})
 
@@ -1021,7 +1291,7 @@ def api_pixels_save():
 def api_pixels_delete(item_id):
     if not _auth_required():
         return jsonify({"error": "unauthorized"}), 401
-    ok = storage.delete_pixel(item_id)
+    ok = storage.delete_pixel(item_id, platform=_active_platform())
     return jsonify({"ok": ok})
 
 
@@ -1029,7 +1299,7 @@ def api_pixels_delete(item_id):
 def api_events_list():
     if not _auth_required():
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify({"events": storage.list_events()})
+    return jsonify({"events": storage.list_events(platform=_active_platform())})
 
 
 @app.route("/api/events", methods=["POST"])
@@ -1047,7 +1317,8 @@ def api_events_save():
             "name": name,
             "event_type": event_type,
             "is_custom": bool(data.get("is_custom")),
-        }
+        },
+        platform=_active_platform(),
     )
     return jsonify({"ok": True, "event": saved})
 
@@ -1056,7 +1327,7 @@ def api_events_save():
 def api_events_delete(item_id):
     if not _auth_required():
         return jsonify({"error": "unauthorized"}), 401
-    ok = storage.delete_event(item_id)
+    ok = storage.delete_event(item_id, platform=_active_platform())
     return jsonify({"ok": ok})
 
 
@@ -1064,7 +1335,7 @@ def api_events_delete(item_id):
 def api_offers_list():
     if not _auth_required():
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify({"offers": storage.list_offers()})
+    return jsonify({"offers": storage.list_offers(platform=_active_platform())})
 
 
 @app.route("/api/offers", methods=["POST"])
@@ -1102,7 +1373,8 @@ def api_offers_save():
             "target_cpa": target_cpa,
             "utm_parameters": (data.get("utm_parameters") or "").strip(),
             "notes": (data.get("notes") or "").strip(),
-        }
+        },
+        platform=_active_platform(),
     )
     return jsonify({"ok": True, "offer": saved})
 
@@ -1111,7 +1383,7 @@ def api_offers_save():
 def api_offers_delete(item_id):
     if not _auth_required():
         return jsonify({"error": "unauthorized"}), 401
-    ok = storage.delete_offer(item_id)
+    ok = storage.delete_offer(item_id, platform=_active_platform())
     return jsonify({"ok": ok})
 
 

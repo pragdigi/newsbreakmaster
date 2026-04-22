@@ -1,11 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Offers & Tracking · NewsBreak Launcher{% endblock %}
+{% block title %}Offers & Tracking — {{ active_platform_label }}{% endblock %}
 {% block content %}
 <section class="nb-section">
   <div class="nb-section-head">
     <div>
-      <h1>Offers &amp; tracking</h1>
-      <p class="nb-muted">Save your pixels, conversion events, and offer bundles so they show up as dropdowns on the bulk launcher.</p>
+      <h1>Offers &amp; tracking — {{ active_platform_label }}</h1>
+      <p class="nb-muted">
+        {% if active_platform == 'smartnews' %}
+          SmartNews uses built-in conversion event keys (purchase, addToCart, viewContent, …) and doesn't expose a separate pixel list. Use the buttons below to load the built-in events.
+        {% else %}
+          Save your pixels, conversion events, and offer bundles so they show up as dropdowns on the bulk launcher.
+        {% endif %}
+      </p>
     </div>
   </div>
 </section>
@@ -16,7 +22,13 @@
       <h2>Pixels</h2>
       <button type="button" class="nb-btn nb-btn-sm" data-new="pixel">Add pixel</button>
     </div>
-    <p class="nb-muted nb-small">NewsBreak doesn't expose a pixel list API — add them here once and reuse everywhere.</p>
+    <p class="nb-muted nb-small">
+      {% if active_platform == 'smartnews' %}
+        SmartNews has no pixel concept — leave this empty or record internal pixels for your team.
+      {% else %}
+        NewsBreak doesn't expose a pixel list API — add them here once and reuse everywhere.
+      {% endif %}
+    </p>
     <table class="nb-table" id="pixels-table">
       <thead>
         <tr><th>Name</th><th>Pixel ID</th><th>Notes</th><th></th></tr>
@@ -29,11 +41,21 @@
     <div class="nb-card-head">
       <h2>Conversion events</h2>
       <div style="display:flex;gap:8px;">
-        <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Pull events from every ad account on your token">Sync from NewsBreak</button>
+        {% if active_platform == 'smartnews' %}
+          <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Seed the built-in SmartNews conversion event keys">Load SmartNews built-ins</button>
+        {% else %}
+          <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Pull events from every ad account on your token">Sync from NewsBreak</button>
+        {% endif %}
         <button type="button" class="nb-btn nb-btn-sm" data-new="event">Add event</button>
       </div>
     </div>
-    <p class="nb-muted nb-small">Grab the <strong>tracking ID</strong> for each conversion event from NewsBreak Ad Manager → Tools → Event Management. Or click <strong>Sync from NewsBreak</strong> to auto-import all events from every ad account on your token.</p>
+    <p class="nb-muted nb-small">
+      {% if active_platform == 'smartnews' %}
+        SmartNews Insights reports against built-in event keys (e.g. <code>purchase</code>, <code>addToCart</code>, <code>viewContent</code>). Click <strong>Load SmartNews built-ins</strong> to seed them locally so they appear in rules and offer bundles.
+      {% else %}
+        Grab the <strong>tracking ID</strong> for each conversion event from NewsBreak Ad Manager → Tools → Event Management. Or click <strong>Sync from NewsBreak</strong> to auto-import all events from every ad account on your token.
+      {% endif %}
+    </p>
     <div id="sync-status" class="nb-hint" style="display:none;margin-bottom:8px;"></div>
     <table class="nb-table" id="events-table">
       <thead>
@@ -275,17 +297,26 @@ document.getElementById('nb-modal-save').addEventListener('click', saveModal);
 document.getElementById('btn-sync-events').addEventListener('click', async () => {
   const btn = document.getElementById('btn-sync-events');
   const status = document.getElementById('sync-status');
+  const platform = {{ active_platform | tojson }};
+  const endpoint = platform === 'smartnews' ? '/api/smartnews/sync-events' : '/api/newsbreak/sync-events';
   btn.disabled = true;
   const oldText = btn.textContent;
-  btn.textContent = 'Syncing…';
+  btn.textContent = platform === 'smartnews' ? 'Loading…' : 'Syncing…';
   status.style.display = 'block';
-  status.textContent = 'Fetching events from every ad account on your token…';
+  status.textContent = platform === 'smartnews'
+    ? 'Seeding SmartNews built-in conversion events…'
+    : 'Fetching events from every ad account on your token…';
   try {
-    const r = await fetch('/api/newsbreak/sync-events', { method: 'POST' });
+    const r = await fetch(endpoint, { method: 'POST' });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'sync failed');
-    const accSummary = (data.accounts || []).map(a => `${a.name}: ${a.imported}`).join(' · ') || 'no accounts returned events';
-    let msg = `Imported ${data.added} new event(s), updated ${data.updated}, plus ${data.pixels_added || 0} new pixel(s). (${accSummary})`;
+    let msg;
+    if (platform === 'smartnews') {
+      msg = `Seeded ${data.added} built-in event(s), updated ${data.updated}.`;
+    } else {
+      const accSummary = (data.accounts || []).map(a => `${a.name}: ${a.imported}`).join(' · ') || 'no accounts returned events';
+      msg = `Imported ${data.added} new event(s), updated ${data.updated}, plus ${data.pixels_added || 0} new pixel(s). (${accSummary})`;
+    }
     if (data.errors && data.errors.length) {
       msg += ` · Errors: ${data.errors.map(e => e.ad_account_id + ' → ' + e.error).join('; ')}`;
     }

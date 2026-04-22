@@ -1,10 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Scaling — NewsBreak{% endblock %}
+{% block title %}Scaling — {{ active_platform_label }}{% endblock %}
 {% block content %}
 <div class="nb-dash-header">
   <div>
-    <h1>Scaling & performance</h1>
-    <p class="nb-muted">Per-ad / per-ad-set / per-campaign performance with one-click pause &amp; budget tweaks.</p>
+    <h1>Scaling &amp; performance — {{ active_platform_label }}</h1>
+    <p class="nb-muted">
+      {% if active_platform == 'smartnews' %}
+        Per-campaign / per-creative performance with one-click enable/pause &amp; campaign budget tweaks.
+      {% else %}
+        Per-ad / per-ad-set / per-campaign performance with one-click pause &amp; budget tweaks.
+      {% endif %}
+    </p>
   </div>
 </div>
 
@@ -22,8 +28,8 @@
     <label style="width:140px;">
       <span class="nb-label">Level</span>
       <select id="level-select" class="nb-select">
-        <option value="ad">Ad</option>
-        <option value="ad_set">Ad set</option>
+        <option value="ad">{% if active_platform == 'smartnews' %}Creative{% else %}Ad{% endif %}</option>
+        {% if supports_ad_set_scope %}<option value="ad_set">Ad set</option>{% endif %}
         <option value="campaign">Campaign</option>
       </select>
     </label>
@@ -101,8 +107,17 @@
   const card          = document.getElementById('report-card');
   const body          = document.getElementById('report-body');
   const kpiGrid       = document.getElementById('kpi-grid');
+  const ACTIVE_PLATFORM = {{ active_platform | tojson }};
+  const CURRENCY = {{ active_platform_currency | tojson }};
+  const SUPPORTS_ADSET = {{ supports_ad_set_scope | tojson }};
+  const SYMBOLS = { USD: '$', JPY: '¥', EUR: '€', GBP: '£' };
+  const CURRENCY_SYMBOL = SYMBOLS[CURRENCY] || (CURRENCY + ' ');
+  const ZERO_DECIMAL = CURRENCY === 'JPY';
 
-  const fmtMoney = n => '$' + (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+  const fmtMoney = n => CURRENCY_SYMBOL + (Number(n) || 0).toLocaleString(undefined, {
+    maximumFractionDigits: ZERO_DECIMAL ? 0 : 2,
+    minimumFractionDigits: ZERO_DECIMAL ? 0 : 2,
+  });
   const fmtInt   = n => (Number(n) || 0).toLocaleString();
   const fmtPct   = n => (Number(n) || 0).toFixed(2) + '%';
   const fmtNum   = (n, d) => n == null ? '—' : Number(n).toFixed(d == null ? 2 : d);
@@ -194,10 +209,16 @@
         actions =
           `<button type="button" class="nb-btn nb-btn-small" data-pause-ad="${id}">Pause</button>` +
           `<button type="button" class="nb-btn nb-btn-small" data-enable-ad="${id}">Enable</button>`;
-      } else if (level === 'ad_set' && id) {
+      } else if (level === 'ad_set' && id && SUPPORTS_ADSET) {
         actions =
-          `<button type="button" class="nb-btn nb-btn-small" data-budget-pct="${id}" data-pct="20"  data-cents="${budget}">+20%</button>` +
-          `<button type="button" class="nb-btn nb-btn-small" data-budget-pct="${id}" data-pct="-20" data-cents="${budget}">-20%</button>`;
+          `<button type="button" class="nb-btn nb-btn-small" data-budget-pct="${id}" data-pct="20"  data-cents="${budget}" data-level="ad_set">+20%</button>` +
+          `<button type="button" class="nb-btn nb-btn-small" data-budget-pct="${id}" data-pct="-20" data-cents="${budget}" data-level="ad_set">-20%</button>`;
+      } else if (level === 'campaign' && id && !SUPPORTS_ADSET) {
+        actions =
+          `<button type="button" class="nb-btn nb-btn-small" data-pause-campaign="${id}">Pause</button>` +
+          `<button type="button" class="nb-btn nb-btn-small" data-enable-campaign="${id}">Enable</button>` +
+          `<button type="button" class="nb-btn nb-btn-small" data-budget-pct="${id}" data-pct="20"  data-cents="${budget}" data-level="campaign">+20%</button>` +
+          `<button type="button" class="nb-btn nb-btn-small" data-budget-pct="${id}" data-pct="-20" data-cents="${budget}" data-level="campaign">-20%</button>`;
       } else {
         actions = '<span class="nb-muted">—</span>';
       }
@@ -238,14 +259,30 @@
       await fetch('/api/ad/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ad_id: btn.dataset.enableAd }) });
       loadReport();
     }));
+    body.querySelectorAll('[data-pause-campaign]').forEach(btn => btn.addEventListener('click', async () => {
+      await fetch('/api/ad/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign_id: btn.dataset.pauseCampaign, level: 'campaign' }) });
+      loadReport();
+    }));
+    body.querySelectorAll('[data-enable-campaign]').forEach(btn => btn.addEventListener('click', async () => {
+      await fetch('/api/ad/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign_id: btn.dataset.enableCampaign, level: 'campaign' }) });
+      loadReport();
+    }));
     body.querySelectorAll('[data-budget-pct]').forEach(btn => btn.addEventListener('click', async () => {
       const id    = btn.dataset.budgetPct;
       const pct   = parseFloat(btn.dataset.pct);
       const cents = parseFloat(btn.dataset.cents) || 0;
+      const lvl   = btn.dataset.level || (SUPPORTS_ADSET ? 'ad_set' : 'campaign');
       await fetch('/api/adset/budget_delta', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ad_set_id: id, percent: pct, current_budget_cents: cents, budget_type: 'DAILY' }),
+        body: JSON.stringify({
+          ad_set_id: id,
+          campaign_id: id,
+          level: lvl,
+          percent: pct,
+          current_budget_cents: cents,
+          budget_type: 'DAILY',
+        }),
       });
       loadReport();
     }));

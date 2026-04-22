@@ -74,18 +74,19 @@
     </div>
     <div class="nb-row-3" style="margin-top:12px;">
       <div>
-        <label class="nb-label">Daily budget <span class="nb-muted" style="font-weight:400;">(smallest currency unit — JPY: whole yen; USD: cents)</span></label>
-        <input type="number" name="daily_budget_cents" class="nb-input" min="1" step="1" value="1000000" required>
+        <label class="nb-label">Daily budget <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
+        <input type="number" name="daily_budget_usd" id="sn-daily-budget-usd" class="nb-input" min="1" step="0.01" value="50" required>
+        <div class="nb-hint">Converted to micros on submit.</div>
       </div>
       <div>
-        <label class="nb-label">Spending limit <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
-        <input type="number" name="spending_limit_cents" class="nb-input" min="0" step="1" placeholder="0 for none">
+        <label class="nb-label">Spending limit <span class="nb-muted" style="font-weight:400;">(USD, optional)</span></label>
+        <input type="number" name="spending_limit_usd" id="sn-spending-limit-usd" class="nb-input" min="0" step="0.01" placeholder="0 for none">
       </div>
       <div>
         <label class="nb-label">Optimization goal</label>
         <select name="optimization_goal" class="nb-select">
-          <option value="CLICKS" selected>Clicks</option>
-          <option value="CONVERSIONS">Conversions</option>
+          <option value="CONVERSIONS" selected>Conversions</option>
+          <option value="CLICKS">Clicks</option>
           <option value="IMPRESSIONS">Impressions</option>
           <option value="REACH">Reach</option>
           <option value="VIDEO_VIEWS">Video views</option>
@@ -94,16 +95,16 @@
     </div>
     <div class="nb-row-3" style="margin-top:12px;">
       <div>
-        <label class="nb-label">Optimization event <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+        <label class="nb-label">Optimization event</label>
         <select name="optimization_event" class="nb-select">
-          <option value="">— none —</option>
-          <option value="PURCHASE">Purchase</option>
+          <option value="PURCHASE" selected>Purchase</option>
           <option value="ADD_TO_CART">Add to cart</option>
           <option value="INITIATE_CHECKOUT">Initiate checkout</option>
           <option value="LEAD">Lead</option>
           <option value="COMPLETE_REGISTRATION">Complete registration</option>
           <option value="SIGN_UP">Sign up</option>
           <option value="VIEW_CONTENT">View content</option>
+          <option value="">— none —</option>
         </select>
       </div>
       <div>
@@ -122,8 +123,17 @@
       </div>
     </div>
     <div style="margin-top:12px;">
-      <label class="nb-label">Website tracking pixel ID <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
-      <input type="text" name="website_tracking_tag" class="nb-input" placeholder="e.g. 89d2b4523c7245ee9ec773a8">
+      <label class="nb-label">
+        Website tracking pixel
+        <span class="nb-muted" style="font-weight:400;">(pulled live from SmartNews)</span>
+      </label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select name="website_tracking_tag" id="sn-pixel-select" class="nb-select" style="flex:1;">
+          <option value="">— Select an ad account first —</option>
+        </select>
+        <button type="button" class="nb-btn nb-btn-small" id="sn-pixel-refresh" title="Refresh pixels">Refresh</button>
+      </div>
+      <div class="nb-hint" id="sn-pixel-status"></div>
     </div>
   </div>
 
@@ -167,18 +177,33 @@
     </div>
     <div class="nb-row-2" style="margin-top:12px;">
       <div>
-        <label class="nb-label">CTA label</label>
-        <select name="cta_label" class="nb-select">
-          <option value="BOOK_NOW" selected>Book now</option>
-          <option value="LEARN_MORE">Learn more</option>
+        <label class="nb-label" style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" name="show_cta" id="sn-show-cta" value="1" style="width:16px;height:16px;">
+          <span>Show call-to-action button</span>
+        </label>
+        <select name="cta_label" id="sn-cta-label" class="nb-select" disabled>
+          <option value="LEARN_MORE" selected>Learn more</option>
+          <option value="BOOK_NOW">Book now</option>
+          <option value="START_BOOKING">Start booking</option>
           <option value="SHOP_NOW">Shop now</option>
+          <option value="START_ORDER">Start order</option>
+          <option value="SEE_MORE">See more</option>
+          <option value="WATCH_MORE">Watch more</option>
           <option value="SIGN_UP">Sign up</option>
-          <option value="DOWNLOAD">Download</option>
-          <option value="GET_QUOTE">Get quote</option>
-          <option value="CONTACT_US">Contact us</option>
+          <option value="REGISTER">Register</option>
           <option value="APPLY_NOW">Apply now</option>
-          <option value="SUBSCRIBE">Subscribe</option>
+          <option value="DOWNLOAD">Download</option>
+          <option value="INSTALL">Install</option>
+          <option value="LAUNCH_APP">Launch app</option>
+          <option value="USE_APP">Use app</option>
+          <option value="CONTACT_US">Contact us</option>
+          <option value="CALL_US">Call us</option>
+          <option value="REQUEST_CATALOG">Request catalog</option>
+          <option value="RESPOND_TO_SURVEY">Respond to survey</option>
+          <option value="PLAY_GAME">Play game</option>
+          <option value="REPLY">Reply</option>
         </select>
+        <div class="nb-hint">Off by default — matches SmartNews Ads Manager behavior.</div>
       </div>
       <div>
         <label class="nb-label">Click destination</label>
@@ -222,6 +247,97 @@
   </div>
 </form>
 <script>
+  // --- Pixel live-fetch from SmartNews ---
+  (function(){
+    var acct   = document.getElementById('sn-account-id');
+    var sel    = document.getElementById('sn-pixel-select');
+    var btn    = document.getElementById('sn-pixel-refresh');
+    var status = document.getElementById('sn-pixel-status');
+    if (!acct || !sel) return;
+
+    function setStatus(msg, color){ if (status) { status.textContent = msg || ''; status.style.color = color || ''; } }
+
+    function loadPixels(){
+      var id = (acct.value || '').trim();
+      if (!id) {
+        sel.innerHTML = '<option value="">— Select an ad account first —</option>';
+        setStatus('');
+        return;
+      }
+      sel.innerHTML = '<option value="">Loading…</option>';
+      setStatus('Fetching pixels from SmartNews…', '#9ca3af');
+      fetch('/api/smartnews/pixels/' + encodeURIComponent(id), { credentials: 'same-origin' })
+        .then(function(r){ return r.json().then(function(j){ return { ok: r.ok, body: j }; }); })
+        .then(function(res){
+          if (!res.ok) {
+            sel.innerHTML = '<option value="">Error loading pixels</option>';
+            setStatus((res.body && res.body.error) || 'Failed to load pixels', '#f87171');
+            return;
+          }
+          var pixels = (res.body && res.body.pixels) || [];
+          if (!pixels.length) {
+            sel.innerHTML = '<option value="">No pixels found on this account</option>';
+            setStatus('No tracking pixels found on SmartNews.', '#9ca3af');
+            return;
+          }
+          var html = '<option value="">— None —</option>';
+          for (var i = 0; i < pixels.length; i++) {
+            var p = pixels[i];
+            var pid = p.pixel_tag_id || p.pixel_id || p.id || '';
+            var name = p.name || p.pixel_tag_name || pid;
+            html += '<option value="' + String(pid).replace(/"/g,'&quot;') + '">' +
+                    String(name).replace(/</g,'&lt;') + ' (' + pid + ')</option>';
+          }
+          sel.innerHTML = html;
+          setStatus('Loaded ' + pixels.length + ' pixel' + (pixels.length === 1 ? '' : 's') + '.', '#34d399');
+        })
+        .catch(function(err){
+          sel.innerHTML = '<option value="">Error loading pixels</option>';
+          setStatus('Network error: ' + err, '#f87171');
+        });
+    }
+
+    acct.addEventListener('change', loadPixels);
+    if (btn) btn.addEventListener('click', loadPixels);
+    if (acct.value) loadPixels();
+  })();
+
+  // --- CTA toggle: enable dropdown only when checkbox is on ---
+  (function(){
+    var chk = document.getElementById('sn-show-cta');
+    var sel = document.getElementById('sn-cta-label');
+    if (!chk || !sel) return;
+    function sync(){ sel.disabled = !chk.checked; }
+    chk.addEventListener('change', sync);
+    sync();
+  })();
+
+  // --- Budget USD -> cents on submit ---
+  (function(){
+    var form = document.getElementById('sn-launch-form');
+    if (!form) return;
+    form.addEventListener('submit', function(){
+      function cents(id){
+        var el = document.getElementById(id);
+        if (!el) return '';
+        var v = parseFloat(el.value);
+        if (isNaN(v) || v < 0) return '';
+        return Math.round(v * 100).toString();
+      }
+      function inject(name, val){
+        if (val === '' || val == null) return;
+        var hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = name;
+        hidden.value = val;
+        form.appendChild(hidden);
+      }
+      inject('daily_budget_cents',   cents('sn-daily-budget-usd'));
+      inject('spending_limit_cents', cents('sn-spending-limit-usd'));
+    });
+  })();
+
+  // --- Add-another-ad (existing behavior) ---
   (function(){
     var btn = document.getElementById('sn-add-ad');
     var host = document.getElementById('sn-ads');

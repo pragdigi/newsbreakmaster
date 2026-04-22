@@ -207,6 +207,15 @@ def _int_req(v: Any, *, field: str) -> int:
     return got
 
 
+def _form_bool(v: Any) -> bool:
+    """Truthy for HTML form values ('1', 'on', 'true', 'yes', True, 1)."""
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    return str(v).strip().lower() in ("1", "on", "true", "yes", "y")
+
+
 def _iso(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -296,8 +305,9 @@ def smartnews_bulk_launch(
     # -------- Ads --------
     ad_results: List[Dict[str, Any]] = []
     default_landing = (form.get("landing_page_url") or "").strip()
-    default_cta = (form.get("cta_label") or "BOOK_NOW").strip().upper()
+    default_cta = (form.get("cta_label") or "LEARN_MORE").strip().upper()
     default_sponsored = (form.get("sponsored_name") or "").strip()
+    show_cta = _form_bool(form.get("show_cta"))
 
     for idx, square_file in ads:
         try:
@@ -329,7 +339,7 @@ def smartnews_bulk_launch(
         description = (form.get(f"description_{idx}") or form.get("description") or "").strip()
         ad_name = (form.get(f"ad_name_{idx}") or f"Ad {idx}").strip()
         landing = (form.get(f"landing_page_url_{idx}") or default_landing).strip()
-        cta = (form.get(f"cta_label_{idx}") or default_cta).strip().upper() or "BOOK_NOW"
+        cta = (form.get(f"cta_label_{idx}") or default_cta).strip().upper() or "LEARN_MORE"
         sponsored = (form.get(f"sponsored_name_{idx}") or default_sponsored).strip()
 
         if not headline or not description:
@@ -341,7 +351,6 @@ def smartnews_bulk_launch(
         ad_payload: Dict[str, Any] = {
             "name": ad_name,
             "landing_page_url": landing,
-            "cta_label": cta,
             "configured_status": "ACTIVE",
             "creative": {
                 "format": "IMAGE",
@@ -353,6 +362,8 @@ def smartnews_bulk_launch(
                 },
             },
         }
+        if show_cta:
+            ad_payload["cta_label"] = cta
 
         try:
             created_ad = adapter.create_ad(account_id, ad_group_id, ad_payload)

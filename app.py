@@ -1041,6 +1041,22 @@ def api_smartnews_sync_events():
     return jsonify({"ok": True, "added": added, "updated": updated, "errors": []})
 
 
+@app.route("/api/smartnews/pixels/<account_id>")
+def api_smartnews_pixels(account_id: str):
+    """Return the list of tracking pixels for a SmartNews ad account."""
+    if _active_platform() != "smartnews":
+        return jsonify({"error": "Switch to SmartNews to list pixels"}), 400
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        pixels = adapter.list_pixels(account_id) or []
+    except Exception as e:
+        app.logger.warning("smartnews list_pixels failed account=%s err=%s", account_id, e)
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"ok": True, "account_id": account_id, "pixels": pixels})
+
+
 @app.route("/api/adsets")
 def api_adsets():
     adapter = _adapter()

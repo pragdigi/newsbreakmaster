@@ -454,6 +454,51 @@ def smartnews_bulk_launch(
     if not ads:
         return {"ok": False, "error": "at least one 1:1 creative image is required (creative_0)"}
 
+    # -------- Pre-flight validation --------
+    # We validate every ad's copy *before* creating the campaign so a typo
+    # never leaves an empty campaign+ad-group stranded in SmartNews. Image
+    # uploads and API writes only start once every ad's text fields are known
+    # good against SmartNews v3 image-creative limits (headline 10-25,
+    # description 10-90, sponsored_name/landing required).
+    preflight_errors: List[Dict[str, Any]] = []
+    default_landing_pf = (form.get("landing_page_url") or "").strip()
+    default_sponsored_pf = (form.get("sponsored_name") or "").strip()
+    for idx, _ in ads:
+        headline = (form.get(f"headline_{idx}") or form.get("headline") or "").strip()
+        description = (form.get(f"description_{idx}") or form.get("description") or "").strip()
+        landing = (
+            form.get(f"landing_page_url_{idx}")
+            or form.get(f"landing_url_{idx}")
+            or default_landing_pf
+        ).strip()
+        sponsored = (form.get(f"sponsored_name_{idx}") or default_sponsored_pf).strip()
+        pf_errs: List[str] = []
+        if not headline:
+            pf_errs.append("headline required")
+        elif len(headline) < 10:
+            pf_errs.append(f"headline too short ({len(headline)}<10 chars)")
+        elif len(headline) > 25:
+            pf_errs.append(f"headline too long ({len(headline)}>25 chars)")
+        if not description:
+            pf_errs.append("description required")
+        elif len(description) < 10:
+            pf_errs.append(f"description too short ({len(description)}<10 chars)")
+        elif len(description) > 90:
+            pf_errs.append(f"description too long ({len(description)}>90 chars)")
+        if not sponsored:
+            pf_errs.append("sponsored_name required")
+        if not landing:
+            pf_errs.append("landing_page_url required")
+        if pf_errs:
+            preflight_errors.append({"ad": idx, "stage": "validate", "error": "; ".join(pf_errs)})
+    if preflight_errors:
+        return {
+            "ok": False,
+            "platform": "smartnews",
+            "error": "ad copy validation failed — nothing was created in SmartNews",
+            "errors": preflight_errors,
+        }
+
     # -------- Campaign --------
     try:
         campaign_payload = _build_campaign_payload(form)
@@ -540,9 +585,32 @@ def smartnews_bulk_launch(
         cta = (form.get(f"cta_label_{idx}") or default_cta).strip().upper() or "LEARN_MORE"
         sponsored = (form.get(f"sponsored_name_{idx}") or default_sponsored).strip()
 
-        if not headline or not description:
+        # SmartNews v3 image-creative text limits (from the ads schema):
+        #   headline    : 10–25 chars
+        #   description : 10–90 chars
+        # Validate before we burn a POST and upload bytes so the operator
+        # sees a clean "Ad 1 description too short" rather than a
+        # per-field 422 after the image round-trip.
+        field_errors: List[str] = []
+        if not headline:
+            field_errors.append("headline required")
+        elif len(headline) < 10:
+            field_errors.append(f"headline too short ({len(headline)}<10 chars)")
+        elif len(headline) > 25:
+            field_errors.append(f"headline too long ({len(headline)}>25 chars)")
+        if not description:
+            field_errors.append("description required")
+        elif len(description) < 10:
+            field_errors.append(f"description too short ({len(description)}<10 chars)")
+        elif len(description) > 90:
+            field_errors.append(f"description too long ({len(description)}>90 chars)")
+        if not sponsored:
+            field_errors.append("sponsored_name required")
+        if not landing:
+            field_errors.append("landing_page_url required")
+        if field_errors:
             errors.append(
-                {"ad": idx, "stage": "validate", "error": "headline and description required"}
+                {"ad": idx, "stage": "validate", "error": "; ".join(field_errors)}
             )
             continue
 

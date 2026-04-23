@@ -245,8 +245,8 @@
     <div class="nb-defaults-panel">
       <div class="nb-defaults-title">Defaults <span class="nb-muted">(changes here propagate to every ad instantly)</span></div>
       <div class="nb-row-3">
-        <input type="text" id="sn-default-headline" class="nb-input" placeholder="Default headline (10–25 chars)" maxlength="25">
-        <input type="text" id="sn-default-description" class="nb-input" placeholder="Default description (10–90 chars)" maxlength="90">
+        <input type="text" id="sn-default-headline" class="nb-input" placeholder="Default headline (10–25 chars)" minlength="10" maxlength="25">
+        <input type="text" id="sn-default-description" class="nb-input" placeholder="Default description (10–90 chars)" minlength="10" maxlength="90">
         <input type="url"  id="sn-default-landing" class="nb-input" placeholder="Default landing URL (overrides the field above)">
       </div>
     </div>
@@ -464,6 +464,29 @@
         e.preventDefault();
         alert('Please add at least one 1:1 image before launching.');
         dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+
+      // SmartNews v3 enforces: headline 10–25 chars, description 10–90 chars.
+      // The per-card inputs carry minlength, but the submit path serializes
+      // from the JS state array into hidden inputs, bypassing native
+      // validation — so we check explicitly here to surface a clean message.
+      var invalid = [];
+      items.forEach(function(it, i){
+        var h = (it.headline || '').trim();
+        var d = (it.description || '').trim();
+        if (!h || h.length < 10 || h.length > 25) {
+          invalid.push('Ad ' + (i + 1) + ': headline must be 10–25 chars (got ' + h.length + ')');
+        }
+        if (!d || d.length < 10 || d.length > 90) {
+          invalid.push('Ad ' + (i + 1) + ': description must be 10–90 chars (got ' + d.length + ')');
+        }
+      });
+      if (invalid.length) {
+        e.preventDefault();
+        alert('Fix the following before launching:\n\n' + invalid.join('\n'));
+        var grid = document.getElementById('sn-creative-grid');
+        if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return;
       }
 

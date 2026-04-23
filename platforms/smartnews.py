@@ -214,6 +214,12 @@ class SmartNewsAdapter:
         inner = unwrap_data(body)
         return inner if isinstance(inner, dict) else {"raw": body}
 
+    def submit_ad_for_review(self, account_id: str, ad_id: str) -> Dict[str, Any]:
+        """Flip ``submission_status`` on an ad from BEFORE_SUBMISSION to SUBMITTED."""
+        body = self.client.submit_ad_for_review(account_id, ad_id)
+        inner = unwrap_data(body)
+        return inner if isinstance(inner, dict) else {"raw": body}
+
     def update_status(
         self,
         level: str,

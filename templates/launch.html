@@ -115,26 +115,35 @@
         <div class="nb-hint">SmartNews v3 currently only accepts TARGET_COST for Sales campaigns.</div>
       </div>
       <div>
-        <label class="nb-label">Schedule (UTC)</label>
+        <label class="nb-label">Schedule <span class="nb-muted" style="font-weight:400;">(UTC — end date optional)</span></label>
         <div style="display:flex;gap:8px;">
           <input type="datetime-local" name="start_time" class="nb-input" style="flex:1;">
-          <input type="datetime-local" name="end_time" class="nb-input" style="flex:1;">
+          <input type="datetime-local" name="end_time" class="nb-input" style="flex:1;" placeholder="(optional — no end date if blank)">
         </div>
+        <div class="nb-hint">Leave end date blank to run evergreen (submitted as 2099-12-31 under the hood).</div>
       </div>
     </div>
-    <div class="nb-row-2" style="margin-top:12px;">
+    <div class="nb-row-3" style="margin-top:12px;">
       <div>
         <label class="nb-label">Target CPA <span class="nb-muted" style="font-weight:400;">(USD, required for Target cost)</span></label>
         <input type="number" name="target_cost_usd" id="sn-target-cost-usd" class="nb-input" min="1" step="0.01" value="30" required>
         <div class="nb-hint">e.g. $30 target cost per purchase.</div>
       </div>
       <div>
+        <label class="nb-label">Delivery pacing</label>
+        <select name="delivery_type" id="sn-delivery-type" class="nb-select">
+          <option value="STANDARD" selected>Standard (even spend)</option>
+          <option value="ACCELERATED">Accelerated (spend ASAP)</option>
+        </select>
+        <div class="nb-hint">US-region ad accounts currently require Accelerated for SALES/TARGET_COST — we'll surface the API error if SmartNews rejects Standard for your account.</div>
+      </div>
+      <div>
         <label class="nb-label">
           Website tracking pixel
-          <span class="nb-muted" style="font-weight:400;">(pulled live from SmartNews)</span>
+          <span class="nb-muted" style="font-weight:400;">(required)</span>
         </label>
         <div style="display:flex;gap:8px;align-items:center;">
-          <select name="website_tracking_tag" id="sn-pixel-select" class="nb-select" style="flex:1;">
+          <select name="website_tracking_tag" id="sn-pixel-select" class="nb-select" style="flex:1;" required>
             <option value="">— Select an ad account first —</option>
           </select>
           <button type="button" class="nb-btn nb-btn-small" id="sn-pixel-refresh" title="Refresh pixels">Refresh</button>
@@ -146,14 +155,10 @@
 
   <div class="nb-field-group">
     <h3>3 · Ad Group</h3>
-    <div class="nb-row-3">
+    <div class="nb-row-2">
       <div>
         <label class="nb-label">Ad group name</label>
         <input type="text" name="ad_group_name" class="nb-input" required>
-      </div>
-      <div>
-        <label class="nb-label">Bid amount <span class="nb-muted" style="font-weight:400;">(USD, optional)</span></label>
-        <input type="number" name="bid_amount_usd" class="nb-input" min="0" step="0.01" placeholder="inherited from campaign if blank">
       </div>
       <div>
         <label class="nb-label">OS <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
@@ -164,6 +169,7 @@
         </select>
       </div>
     </div>
+    <div class="nb-hint" style="margin-top:8px;">Bidding is driven by the campaign-level Target CPA — no ad-group bid needed.</div>
   </div>
 
   <div class="nb-field-group">
@@ -253,9 +259,13 @@
     <div id="sn-creative-grid" class="nb-creative-grid"></div>
   </div>
 
-  <div class="nb-submit-bar">
+  <div class="nb-submit-bar" style="flex-wrap:wrap;gap:16px;align-items:center;">
     <button type="submit" class="nb-btn nb-btn-primary">Launch SmartNews campaign</button>
     <a href="{{ url_for('dashboard') }}" class="nb-btn">Cancel</a>
+    <label style="display:flex;align-items:center;gap:8px;margin-left:auto;font-size:13px;color:#cbd5e1;">
+      <input type="checkbox" name="auto_submit" id="sn-auto-submit" value="1" checked style="width:16px;height:16px;">
+      <span>Auto-submit ads for review after creation</span>
+    </label>
   </div>
 </form>
 <script>

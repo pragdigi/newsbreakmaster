@@ -5,10 +5,13 @@ v3 hierarchy: Account → Campaign → Ad Group → Ad. Each ad references media
 files by id (``media_file_ids``). The launcher:
 
   1. Uploads one 1:1 square image per ad (required).
-  2. Auto-generates a 1.91:1 landscape variant from the same square.
-     (This is currently a local Pillow center-crop with letterboxed blur fill;
-      the `ai-creatives` "Let's rip" flow can replace it at ``ai_expand_square_to_landscape``.)
+  2. Auto-generates a 1.91:1 landscape variant from the same square using
+     Gemini 2.5 Flash Image ("nano banana") outpainting when a Google AI key
+     is configured. Falls back to a local Pillow blur-fill so the pipeline
+     always produces a valid asset even without the AI service.
   3. Creates one Campaign, one Ad Group under it, then N Ads.
+  4. Optionally auto-submits every created ad to SmartNews moderation
+     (``submission_status=SUBMITTED``) — default ON.
 
 Budgets on the form are passed in as **cents** (integer, smallest currency
 unit). The adapter converts to SmartNews ``_micro`` units per account
@@ -32,6 +35,7 @@ Expected form fields (see ``templates/launch_smartnews.html``):
 """
 from __future__ import annotations
 
+import base64
 import io
 import json
 import logging
@@ -41,6 +45,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Far-future sentinel used when the operator wants "no end date". SmartNews
+# v3 always requires ``end_date_time`` on a campaign, but it happily accepts
+# a date far in the future — same trick NewsBreak uses for evergreen runs.
+_NO_END_DATE_SENTINEL = datetime(2099, 12, 31, 23, 59, tzinfo=timezone.utc)
 
 
 # ----------------------------------------------------------------------
@@ -93,15 +102,12 @@ def _resize_cover(file_bytes: bytes, target_w: int, target_h: int) -> bytes:
         return _encode_jpeg(out)
 
 
-def ai_expand_square_to_landscape(square_bytes: bytes, *, target: Tuple[int, int] = (1200, 628)) -> bytes:
-    """Expand a 1:1 image into a 1.91:1 landscape.
+def _local_blur_fill_landscape(square_bytes: bytes, *, target: Tuple[int, int] = (1200, 628)) -> bytes:
+    """Deterministic local fallback: center the square on a blurred background.
 
-    This is the hook point for the ``ai-creatives`` "Let's rip" flow. The
-    current implementation is a local Pillow fallback: it places the square
-    centered on a blurred, upscaled copy of the same image so we always have a
-    valid 1.91:1 asset ready to submit. Once the ai-creatives service is
-    reachable from this process, replace the body of this function with a
-    call to it.
+    Used when no AI service is available so the pipeline still produces a
+    valid 1.91:1 asset. This is NOT visually great for creatives with text —
+    prefer the Gemini outpainting path whenever an API key is configured.
     """
     Image, ImageFilter, im = _load_image(square_bytes)
     with im:
@@ -109,25 +115,21 @@ def ai_expand_square_to_landscape(square_bytes: bytes, *, target: Tuple[int, int
         if im.mode not in ("RGB", "RGBA"):
             im = im.convert("RGB")
 
-        # Blurred background: cover-crop to landscape and heavily blur.
         bg_src = im.copy()
         sw, sh = bg_src.size
         tr, sr = tw / th, sw / sh
         if sr > tr:
-            new_h = sh
             new_w = int(sh * tr)
             left = (sw - new_w) // 2
             bg = bg_src.crop((left, 0, left + new_w, sh))
         else:
-            new_w = sw
             new_h = int(sw / tr)
             top = (sh - new_h) // 2
             bg = bg_src.crop((0, top, sw, top + new_h))
         bg = bg.resize((tw, th), Image.LANCZOS).filter(ImageFilter.GaussianBlur(radius=18))
 
-        # Foreground: contain-fit the original square inside the landscape.
         fg_w = min(th, im.size[0])
-        fg_h = fg_w  # square
+        fg_h = fg_w
         fg = im.resize((fg_w, fg_h), Image.LANCZOS)
         x = (tw - fg_w) // 2
         y = (th - fg_h) // 2
@@ -135,6 +137,160 @@ def ai_expand_square_to_landscape(square_bytes: bytes, *, target: Tuple[int, int
         canvas = bg.copy()
         canvas.paste(fg, (x, y))
         return _encode_jpeg(canvas)
+
+
+# Gemini image-edit model. Nano Banana 2 is what creative_brief_tool calls
+# ``gemini-3.1-flash-image-preview``; we prefer it when present and fall back
+# to the stable 2.5 flash image preview model.
+_GEMINI_IMAGE_MODELS = (
+    "gemini-3.1-flash-image-preview",
+    "gemini-2.5-flash-image-preview",
+    "gemini-2.0-flash-exp-image-generation",
+)
+_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+_GEMINI_TIMEOUT_S = 90
+_OUTPAINT_PROMPT = (
+    "You are an expert creative director. Extend this 1:1 square image "
+    "horizontally into a 1.91:1 landscape (1200x628) advertising creative. "
+    "Naturally continue the scene on the LEFT and RIGHT edges so that the "
+    "original subject, text, and typography stay exactly as-is and fully "
+    "centered. Match the existing lighting, colors, textures, grain, and "
+    "background seamlessly. Do NOT crop, warp, rotate, re-color, re-type, "
+    "or add new text, logos, watermarks, borders, or foreground subjects. "
+    "The final image must read as a single cohesive photograph."
+)
+
+
+def _gemini_api_key() -> Optional[str]:
+    return (
+        os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or os.getenv("GOOGLE_GENAI_API_KEY")
+    )
+
+
+def _extract_image_from_gemini_response(data: Any) -> Optional[bytes]:
+    """Pull the first inline image out of a Gemini generateContent response."""
+    if not isinstance(data, dict):
+        return None
+    for cand in data.get("candidates") or []:
+        content = cand.get("content") if isinstance(cand, dict) else None
+        parts = (content or {}).get("parts") or []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            inline = part.get("inlineData") or part.get("inline_data")
+            if inline and inline.get("data"):
+                try:
+                    return base64.b64decode(inline["data"])
+                except Exception:  # pragma: no cover
+                    continue
+    return None
+
+
+def _gemini_outpaint_to_landscape(
+    square_bytes: bytes,
+    *,
+    target: Tuple[int, int],
+    api_key: str,
+) -> Optional[bytes]:
+    """Call Gemini to outpaint the square into 1.91:1. Returns None on failure."""
+    try:
+        import requests  # local import so the module stays importable offline
+    except Exception as exc:  # pragma: no cover
+        logger.warning("requests unavailable for Gemini outpainting: %s", exc)
+        return None
+
+    b64 = base64.b64encode(square_bytes).decode("ascii")
+    body = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": _OUTPAINT_PROMPT},
+                    {"inlineData": {"mimeType": "image/jpeg", "data": b64}},
+                ],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.4,
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {"aspectRatio": "16:9"},
+        },
+    }
+
+    for model in _GEMINI_IMAGE_MODELS:
+        url = f"{_GEMINI_BASE}/{model}:generateContent?key={api_key}"
+        try:
+            resp = requests.post(url, json=body, timeout=_GEMINI_TIMEOUT_S)
+        except Exception as exc:
+            logger.warning("Gemini outpaint request failed on %s: %s", model, exc)
+            continue
+        if resp.status_code == 404:
+            # Model not available to this project; try the next one.
+            continue
+        if resp.status_code != 200:
+            logger.warning(
+                "Gemini outpaint HTTP %s on %s: %s", resp.status_code, model, resp.text[:500]
+            )
+            continue
+        try:
+            data = resp.json()
+        except Exception:
+            logger.warning("Gemini outpaint returned non-JSON on %s", model)
+            continue
+        img_bytes = _extract_image_from_gemini_response(data)
+        if not img_bytes:
+            logger.warning(
+                "Gemini outpaint returned no image data on %s (response=%s)",
+                model,
+                json.dumps(data)[:600],
+            )
+            continue
+        # Normalize to target resolution & JPEG to stay within the 5 MiB limit.
+        _Image, _ImageFilter, im = _load_image(img_bytes)
+        with im:
+            tw, th = target
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            sw, sh = im.size
+            tr, sr = tw / th, sw / sh
+            if sr > tr:
+                new_w = int(sh * tr)
+                left = (sw - new_w) // 2
+                im = im.crop((left, 0, left + new_w, sh))
+            elif sr < tr:
+                new_h = int(sw / tr)
+                top = (sh - new_h) // 2
+                im = im.crop((0, top, sw, top + new_h))
+            im = im.resize((tw, th), _Image.LANCZOS)
+            return _encode_jpeg(im)
+    return None
+
+
+def ai_expand_square_to_landscape(square_bytes: bytes, *, target: Tuple[int, int] = (1200, 628)) -> bytes:
+    """Expand a 1:1 image into a 1.91:1 landscape.
+
+    Preference order:
+      1. **Gemini outpainting** (``gemini-3.1-flash-image-preview`` →
+         ``gemini-2.5-flash-image-preview``) when ``GEMINI_API_KEY`` /
+         ``GOOGLE_API_KEY`` is configured.
+      2. **Local blur-fill fallback** — centers the square on a blurred
+         enlargement of itself. Always produces a valid asset.
+
+    The fallback is only chosen when the AI path is unavailable OR fails;
+    we never silently ship a blurred letterbox if the AI key is present and
+    produced a valid image.
+    """
+    api_key = _gemini_api_key()
+    if api_key:
+        try:
+            out = _gemini_outpaint_to_landscape(square_bytes, target=target, api_key=api_key)
+            if out:
+                return out
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Gemini outpaint raised; falling back to local blur: %s", exc)
+    return _local_blur_fill_landscape(square_bytes, target=target)
 
 
 def creative_pair_from_square(square_file: Any) -> Dict[str, Tuple[bytes, str]]:
@@ -263,9 +419,19 @@ def _parse_iso(s: str) -> Optional[datetime]:
 
 
 def _parse_schedule(form: Mapping[str, Any]) -> Tuple[str, str]:
+    """Return (start_iso, end_iso) honoring the "no end date" convention.
+
+    If ``end_time`` is blank we ship the far-future ``_NO_END_DATE_SENTINEL``
+    (2099-12-31T23:59Z) — same evergreen trick the NewsBreak launcher uses —
+    so SmartNews happily schedules the campaign forever.
+    """
     now = datetime.now(timezone.utc)
     start = _parse_iso((form.get("start_time") or "").strip()) or now
-    end = _parse_iso((form.get("end_time") or "").strip()) or (start + timedelta(days=30))
+    end_raw = (form.get("end_time") or "").strip()
+    end = _parse_iso(end_raw) if end_raw else _NO_END_DATE_SENTINEL
+    if end <= start:
+        # Protect against operators picking an end date before start.
+        end = max(_NO_END_DATE_SENTINEL, start + timedelta(days=30))
     return _iso(start), _iso(end)
 
 
@@ -412,12 +578,37 @@ def smartnews_bulk_launch(
             }
         )
 
+    # -------- Auto-submit for review --------
+    # Ads are created with submission_status=BEFORE_SUBMISSION. Unless the
+    # operator explicitly opts out, flip each to SUBMITTED so reviewers can
+    # pick them up immediately — that matches the "publish" affordance the
+    # Ads Manager surfaces and the user's expectation when they click Launch.
+    auto_submit_raw = form.get("auto_submit")
+    auto_submit = True if auto_submit_raw is None else _form_bool(auto_submit_raw)
+    submitted_ad_ids: List[str] = []
+    if auto_submit and ad_results and hasattr(adapter, "submit_ad_for_review"):
+        for entry in ad_results:
+            ad_id = entry.get("ad_id")
+            if not ad_id:
+                continue
+            try:
+                adapter.submit_ad_for_review(account_id, ad_id)
+                entry["submission_status"] = "SUBMITTED"
+                submitted_ad_ids.append(ad_id)
+            except Exception as e:
+                entry["submission_status"] = "BEFORE_SUBMISSION"
+                errors.append(
+                    {"ad": entry.get("ad"), "stage": "submit_for_review", "error": str(e)}
+                )
+
     return {
         "ok": not errors or bool(ad_results),
         "platform": "smartnews",
         "campaign_id": campaign_id,
         "ad_group_id": ad_group_id,
         "ads": ad_results,
+        "submitted_ad_ids": submitted_ad_ids,
+        "auto_submit": auto_submit,
         "errors": errors,
     }
 
@@ -441,6 +632,10 @@ def _build_campaign_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
 
     start, end = _parse_schedule(form)
 
+    delivery_type = (form.get("delivery_type") or "STANDARD").strip().upper() or "STANDARD"
+    if delivery_type not in ("STANDARD", "ACCELERATED"):
+        delivery_type = "STANDARD"
+
     payload: Dict[str, Any] = {
         "name": name,
         "objective": objective,
@@ -450,6 +645,7 @@ def _build_campaign_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
         "billing_event": (form.get("billing_event") or "CLICK").strip().upper(),
         "optimization_goal": (form.get("optimization_goal") or "OFFSITE_CONVERSIONS").strip().upper(),
         "bid_strategy": (form.get("bid_strategy") or "LOWEST_COST_WITHOUT_CAP").strip().upper(),
+        "delivery_type": delivery_type,
         "click_destination_type": (form.get("click_destination_type") or "WEB_VIEW").strip().upper(),
     }
     if daily_budget_cents is not None:
@@ -493,11 +689,10 @@ def _build_ad_group_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
     if daily_budget_cents is not None:
         payload["daily_budget_cents"] = daily_budget_cents
 
-    bid_amount_cents = _budget_cents_from_form(
-        form, usd_key="bid_amount_usd", cents_key="bid_amount_cents"
-    )
-    if bid_amount_cents is not None:
-        payload["bid_amount_cents"] = bid_amount_cents
+    # NOTE: ``bid_amount_*`` was removed from the launch form in favor of the
+    # campaign-level Target CPA (``target_cost_usd``). SmartNews v3's
+    # TARGET_COST bid strategy expects ``target_cost_micro`` on the campaign,
+    # so a separate ad-group bid field was redundant and confusing.
 
     # Audience: very minimal for now — just ages/genders/locations if provided.
     audience: Dict[str, Any] = {}

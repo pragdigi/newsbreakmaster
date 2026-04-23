@@ -196,7 +196,13 @@ class SmartNewsClient:
         for attempt in range(self.max_retries + 1):
             headers = {"Authorization": f"Bearer {self._get_token()}"}
             if json_body is not None and not files:
-                headers["Content-Type"] = "application/json"
+                # SmartNews v3 expects merge-patch semantics for PATCH bodies
+                # (RFC 7396). Using plain application/json on PATCH causes
+                # request-body validation errors on some endpoints.
+                if method.upper() == "PATCH":
+                    headers["Content-Type"] = "application/merge-patch+json"
+                else:
+                    headers["Content-Type"] = "application/json"
 
             try:
                 resp = self._session.request(
@@ -490,6 +496,14 @@ class SmartNewsClient:
             f"{MA_BASE}/ad_accounts/{ad_account_id}/ads/{ad_id}",
             json_body=payload,
         )
+
+    def submit_ad_for_review(
+        self,
+        ad_account_id: Union[int, str],
+        ad_id: Union[int, str],
+    ) -> Any:
+        """Submit an ad to SmartNews moderation (``submission_status=SUBMITTED``)."""
+        return self.update_ad(ad_account_id, ad_id, {"submission_status": "SUBMITTED"})
 
     def delete_ad(
         self,

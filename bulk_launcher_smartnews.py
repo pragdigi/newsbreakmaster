@@ -238,9 +238,16 @@ def _form_bool(v: Any) -> bool:
 
 
 def _iso(dt: datetime) -> str:
+    """Format UTC ISO-8601 with minute precision.
+
+    SmartNews v3 rejects timestamps that include sub-minute precision
+    (``"The start date time can't have a unit smaller than a minute."``),
+    so we always floor to ``HH:MM:00Z``.
+    """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    dt = dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_iso(s: str) -> Optional[datetime]:
@@ -422,7 +429,7 @@ def _build_campaign_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
     name = (form.get("campaign_name") or "").strip()
     if not name:
         raise ValueError("campaign_name is required")
-    objective = (form.get("objective") or "TRAFFIC").strip().upper()
+    objective = (form.get("objective") or "SALES").strip().upper()
     daily_budget_cents = _budget_cents_from_form(
         form, usd_key="daily_budget_usd", cents_key="daily_budget_cents"
     )
@@ -441,8 +448,8 @@ def _build_campaign_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
         "end_date_time": end,
         "configured_status": "ACTIVE",
         "billing_event": (form.get("billing_event") or "CLICK").strip().upper(),
-        "optimization_goal": (form.get("optimization_goal") or "CLICKS").strip().upper(),
-        "bid_strategy": (form.get("bid_strategy") or "MANUAL").strip().upper(),
+        "optimization_goal": (form.get("optimization_goal") or "OFFSITE_CONVERSIONS").strip().upper(),
+        "bid_strategy": (form.get("bid_strategy") or "LOWEST_COST_WITHOUT_CAP").strip().upper(),
         "click_destination_type": (form.get("click_destination_type") or "WEB_VIEW").strip().upper(),
     }
     if daily_budget_cents is not None:
@@ -457,6 +464,14 @@ def _build_campaign_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
     tracking_tag = (form.get("website_tracking_tag") or "").strip()
     if tracking_tag:
         payload["website_tracking_tag"] = tracking_tag
+
+    # Target cost (USD) — required when bid_strategy is TARGET_COST; the
+    # adapter converts target_cost_cents → target_cost_micro.
+    target_cost_cents = _budget_cents_from_form(
+        form, usd_key="target_cost_usd", cents_key="target_cost_cents"
+    )
+    if target_cost_cents is not None:
+        payload["target_cost_cents"] = target_cost_cents
 
     return payload
 

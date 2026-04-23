@@ -247,6 +247,21 @@ class SmartNewsClient:
                     or text
                     or resp.reason
                 )
+                # Append per-field reasons (e.g. VALIDATION_ERROR) so the
+                # caller does not have to dig through logs to see exactly
+                # which field SmartNews rejected.
+                if isinstance(err, dict):
+                    field_errs = err.get("error_fields") or err.get("fields") or []
+                    parts: list[str] = []
+                    if isinstance(field_errs, list):
+                        for fe in field_errs:
+                            if not isinstance(fe, dict):
+                                continue
+                            name = fe.get("field_name") or fe.get("field") or "?"
+                            reason = fe.get("reason") or fe.get("message") or ""
+                            parts.append(f"{name}: {reason}".strip(": "))
+                    if parts:
+                        msg = f"{msg} [{'; '.join(parts)}]"
                 raise SmartNewsAPIError(
                     f"SmartNews API error ({resp.status_code}): {msg}",
                     status_code=resp.status_code,

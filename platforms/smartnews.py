@@ -14,6 +14,7 @@ Accounts can be auto-discovered via the Business Manager
 """
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timezone
 from typing import Any, BinaryIO, Dict, Iterable, List, Optional, Sequence, Union
 
@@ -107,17 +108,28 @@ DEFAULT_INSIGHT_FIELDS: Dict[str, List[str]] = {
 class SmartNewsAdapter:
     platform = "smartnews"
     label = "SmartNews"
-    currency = "JPY"  # default; overridden per-account after discovery
+    currency = "USD"  # default; overridden per-account after discovery
     supports_ad_set_scope = True
 
     def __init__(
         self,
         client: SmartNewsClient,
         account_ids: Optional[Sequence[Union[int, str]]] = None,
+        default_currency: Optional[str] = None,
     ):
         self.client = client
         self.account_ids = [str(x) for x in (account_ids or [])]
-        # Cache per-account currency. Defaults to JPY if SmartNews doesn't tell us.
+        # SmartNews v3 does not expose currency on any account-metadata
+        # endpoint, so we rely on a configurable fallback (``USD`` by
+        # default — most of our advertisers are US-based). Override via
+        # the ``SMARTNEWS_DEFAULT_CURRENCY`` env var or the
+        # ``default_currency`` kwarg.
+        env_cur = os.getenv("SMARTNEWS_DEFAULT_CURRENCY")
+        if default_currency:
+            self.currency = default_currency.upper()
+        elif env_cur:
+            self.currency = env_cur.upper()
+        # else: keep the class-level default
         self._account_currency: Dict[str, str] = {}
 
     # ------------------------------------------------------------------

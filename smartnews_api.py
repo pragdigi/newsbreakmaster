@@ -550,9 +550,15 @@ class SmartNewsClient:
         media_type: str = "IMAGE",
         mime_type: str = "image/jpeg",
     ) -> Any:
-        """Upload an image/video and register it as a media file."""
-        files = {"file": (filename, file_obj, mime_type)}
-        form = {"media_type": media_type}
+        """Upload an image/video and register it as a media file.
+
+        SmartNews v3 expects three multipart fields:
+          - ``file_name`` (form field)
+          - ``media_type`` (form field: IMAGE | VIDEO)
+          - ``media_file`` (the actual file bytes — NOT ``file``)
+        """
+        files = {"media_file": (filename, file_obj, mime_type)}
+        form = {"media_type": media_type, "file_name": filename}
         return self.post(
             f"{MA_BASE}/ad_accounts/{ad_account_id}/media_files",
             form=form,

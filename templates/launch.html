@@ -145,8 +145,8 @@
         <input type="text" name="ad_group_name" class="nb-input" required>
       </div>
       <div>
-        <label class="nb-label">Bid amount <span class="nb-muted" style="font-weight:400;">(optional, smallest currency unit)</span></label>
-        <input type="number" name="bid_amount_cents" class="nb-input" min="0" step="1" placeholder="inherited from campaign if blank">
+        <label class="nb-label">Bid amount <span class="nb-muted" style="font-weight:400;">(USD, optional)</span></label>
+        <input type="number" name="bid_amount_usd" class="nb-input" min="0" step="0.01" placeholder="inherited from campaign if blank">
       </div>
       <div>
         <label class="nb-label">OS <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
@@ -214,31 +214,36 @@
       </div>
     </div>
 
-    <div id="sn-ads" class="nb-stack" style="margin-top:16px;">
-      <div class="nb-ad-row" data-idx="0">
-        <h4 style="margin:0 0 8px 0;">Ad 1</h4>
-        <div class="nb-row-3">
-          <div>
-            <label class="nb-label">Ad name</label>
-            <input type="text" name="ad_name_0" class="nb-input" placeholder="Ad 1" value="Ad 1">
-          </div>
-          <div>
-            <label class="nb-label">Headline (10–25 chars)</label>
-            <input type="text" name="headline_0" class="nb-input" minlength="10" maxlength="25" required>
-          </div>
-          <div>
-            <label class="nb-label">Description (10–90 chars)</label>
-            <input type="text" name="description_0" class="nb-input" minlength="10" maxlength="90" required>
-          </div>
-        </div>
-        <div style="margin-top:12px;">
-          <label class="nb-label">Creative (1:1, min 1080×1080)</label>
-          <input type="file" name="creative_0" accept="image/*" required>
-          <div class="nb-hint">Upload one square image — 1.91:1 landscape will be generated automatically.</div>
-        </div>
+    <!-- Dropzone -->
+    <label for="sn-file-input" class="nb-dropzone" id="sn-dropzone" style="margin-top:16px;">
+      <input type="file" id="sn-file-input" multiple accept="image/*" hidden>
+      <div class="nb-dropzone-icon" aria-hidden="true">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </div>
+      <div class="nb-dropzone-title">Drop 1:1 square images here</div>
+      <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — each image becomes one ad. 1.91:1 landscape is generated automatically.</div>
+    </label>
+
+    <!-- Defaults (live-applied to every card) -->
+    <div class="nb-defaults-panel">
+      <div class="nb-defaults-title">Defaults <span class="nb-muted">(changes here propagate to every ad instantly)</span></div>
+      <div class="nb-row-3">
+        <input type="text" id="sn-default-headline" class="nb-input" placeholder="Default headline (10–25 chars)" maxlength="25">
+        <input type="text" id="sn-default-description" class="nb-input" placeholder="Default description (10–90 chars)" maxlength="90">
+        <input type="url"  id="sn-default-landing" class="nb-input" placeholder="Default landing URL (overrides the field above)">
       </div>
     </div>
-    <button type="button" class="nb-btn" id="sn-add-ad" style="margin-top:10px;">+ Add another ad</button>
+
+    <!-- Creative preview grid -->
+    <div class="nb-creative-count">
+      <span id="sn-creative-count-text">No creatives yet</span>
+      <button type="button" class="nb-btn nb-btn-small" id="sn-clear-all" style="display:none;">Clear all</button>
+    </div>
+    <div id="sn-creative-grid" class="nb-creative-grid"></div>
   </div>
 
   <div class="nb-submit-bar">
@@ -312,60 +317,172 @@
     sync();
   })();
 
-  // --- Budget USD -> cents on submit ---
+  // --- Creative dropzone (one image per ad, 1:1 squares) ---
   (function(){
-    var form = document.getElementById('sn-launch-form');
-    if (!form) return;
-    form.addEventListener('submit', function(){
-      function cents(id){
-        var el = document.getElementById(id);
-        if (!el) return '';
-        var v = parseFloat(el.value);
-        if (isNaN(v) || v < 0) return '';
-        return Math.round(v * 100).toString();
-      }
-      function inject(name, val){
-        if (val === '' || val == null) return;
-        var hidden = document.createElement('input');
-        hidden.type = 'hidden';
-        hidden.name = name;
-        hidden.value = val;
-        form.appendChild(hidden);
-      }
-      inject('daily_budget_cents',   cents('sn-daily-budget-usd'));
-      inject('spending_limit_cents', cents('sn-spending-limit-usd'));
-    });
-  })();
+    var form       = document.getElementById('sn-launch-form');
+    var dropzone   = document.getElementById('sn-dropzone');
+    var fileInput  = document.getElementById('sn-file-input');
+    var grid       = document.getElementById('sn-creative-grid');
+    var countText  = document.getElementById('sn-creative-count-text');
+    var btnClear   = document.getElementById('sn-clear-all');
+    var defH       = document.getElementById('sn-default-headline');
+    var defD       = document.getElementById('sn-default-description');
+    var defL       = document.getElementById('sn-default-landing');
+    if (!form || !dropzone || !fileInput || !grid) return;
 
-  // --- Add-another-ad (existing behavior) ---
-  (function(){
-    var btn = document.getElementById('sn-add-ad');
-    var host = document.getElementById('sn-ads');
-    if (!btn || !host) return;
-    var counter = 1;
-    btn.addEventListener('click', function(){
-      var idx = counter++;
-      var div = document.createElement('div');
-      div.className = 'nb-ad-row';
-      div.dataset.idx = idx;
-      div.style.marginTop = '16px';
-      div.style.paddingTop = '16px';
-      div.style.borderTop = '1px solid var(--border, #2a2f3a)';
-      div.innerHTML =
-        '<h4 style="margin:0 0 8px 0;">Ad ' + (idx + 1) + '</h4>' +
-        '<div class="nb-row-3">' +
-        '  <div><label class="nb-label">Ad name</label>' +
-        '    <input type="text" name="ad_name_' + idx + '" class="nb-input" placeholder="Ad ' + (idx + 1) + '" value="Ad ' + (idx + 1) + '"></div>' +
-        '  <div><label class="nb-label">Headline (10–25 chars)</label>' +
-        '    <input type="text" name="headline_' + idx + '" class="nb-input" minlength="10" maxlength="25" required></div>' +
-        '  <div><label class="nb-label">Description (10–90 chars)</label>' +
-        '    <input type="text" name="description_' + idx + '" class="nb-input" minlength="10" maxlength="90" required></div>' +
+    var items = []; // { file, ad_name, headline, description, landing_url, url }
+    var prevDefaults = { h: '', d: '', l: '' };
+
+    function esc(s){ return String(s || '').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+    function fmtSize(b){
+      if (b < 1024) return b + ' B';
+      if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+      return (b/1024/1024).toFixed(1) + ' MB';
+    }
+
+    function applyDefaultsToItems(){
+      items.forEach(function(it){
+        if (!it.headline || it.headline === prevDefaults.h) it.headline = defH.value || it.headline;
+        if (!it.description || it.description === prevDefaults.d) it.description = defD.value || it.description;
+        if (!it.landing_url || it.landing_url === prevDefaults.l) it.landing_url = defL.value || it.landing_url;
+      });
+      prevDefaults.h = defH.value;
+      prevDefaults.d = defD.value;
+      prevDefaults.l = defL.value;
+    }
+
+    function renderCount(){
+      var n = items.length;
+      countText.textContent = n === 0 ? 'No creatives yet' : (n + ' ad' + (n === 1 ? '' : 's') + ' ready');
+      btnClear.style.display = n > 0 ? 'inline-block' : 'none';
+    }
+
+    function renderCard(it, idx){
+      var card = document.createElement('div');
+      card.className = 'nb-creative-card';
+      card.dataset.idx = String(idx);
+      card.innerHTML =
+        '<div class="nb-creative-media">' +
+          '<img src="' + esc(it.url) + '" alt="">' +
+          '<button type="button" class="nb-creative-remove" title="Remove" aria-label="Remove ad">×</button>' +
+          '<div class="nb-creative-meta">IMAGE · ' + fmtSize(it.file.size) + '</div>' +
         '</div>' +
-        '<div style="margin-top:12px;">' +
-        '  <label class="nb-label">Creative (1:1, min 1080×1080)</label>' +
-        '  <input type="file" name="creative_' + idx + '" accept="image/*" required>' +
+        '<div class="nb-creative-fields">' +
+          '<input type="text" data-role="ad_name" class="nb-input" placeholder="Ad name (optional)" value="' + esc(it.ad_name) + '">' +
+          '<input type="text" data-role="headline" class="nb-input" minlength="10" maxlength="25" required placeholder="Headline (10–25 chars)" value="' + esc(it.headline) + '">' +
+          '<input type="text" data-role="description" class="nb-input" minlength="10" maxlength="90" required placeholder="Description (10–90 chars)" value="' + esc(it.description) + '">' +
+          '<input type="url"  data-role="landing_url" class="nb-input" placeholder="Landing URL (blank = use default above)" value="' + esc(it.landing_url) + '">' +
         '</div>';
-      host.appendChild(div);
+
+      card.querySelector('.nb-creative-remove').addEventListener('click', function(){
+        var i = parseInt(card.dataset.idx, 10);
+        items.splice(i, 1);
+        renderAll();
+      });
+      card.querySelectorAll('input[data-role]').forEach(function(inp){
+        inp.addEventListener('input', function(){
+          var i = parseInt(card.dataset.idx, 10);
+          items[i][inp.dataset.role] = inp.value;
+        });
+      });
+      return card;
+    }
+
+    function renderAll(){
+      grid.innerHTML = '';
+      items.forEach(function(it, i){ grid.appendChild(renderCard(it, i)); });
+      renderCount();
+    }
+
+    function addFiles(fileList){
+      var allowed = Array.prototype.slice.call(fileList || []).filter(function(f){
+        return f && f.type && f.type.indexOf('image/') === 0;
+      });
+      allowed.forEach(function(f, i){
+        var n = items.length + i + 1;
+        items.push({
+          file: f,
+          ad_name: 'Ad ' + n,
+          headline: defH.value || '',
+          description: defD.value || '',
+          landing_url: defL.value || '',
+          url: URL.createObjectURL(f),
+        });
+      });
+      renderAll();
+    }
+
+    ['dragenter','dragover'].forEach(function(ev){
+      dropzone.addEventListener(ev, function(e){ e.preventDefault(); e.stopPropagation(); dropzone.classList.add('dragover'); });
+    });
+    ['dragleave','drop'].forEach(function(ev){
+      dropzone.addEventListener(ev, function(e){ e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('dragover'); });
+    });
+    dropzone.addEventListener('drop', function(e){
+      if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', function(e){
+      if (e.target.files && e.target.files.length) addFiles(e.target.files);
+      fileInput.value = '';
+    });
+
+    btnClear.addEventListener('click', function(){ items = []; renderAll(); });
+
+    [defH, defD, defL].forEach(function(inp){
+      inp.addEventListener('input', function(){
+        applyDefaultsToItems();
+        renderAll();
+      });
+    });
+
+    // On submit, serialize items into indexed hidden file inputs + text fields
+    // (this is what bulk_launcher_smartnews expects: creative_<n>, headline_<n>, etc.)
+    form.addEventListener('submit', function(e){
+      // Clear any stale hidden fields from a prior failed submit.
+      Array.prototype.slice.call(form.querySelectorAll('[data-sn-dropzone-generated="1"]')).forEach(function(el){
+        el.parentNode.removeChild(el);
+      });
+
+      if (items.length === 0) {
+        e.preventDefault();
+        alert('Please add at least one 1:1 image before launching.');
+        dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+
+      var holder = document.createElement('div');
+      holder.style.display = 'none';
+      holder.setAttribute('data-sn-dropzone-generated', '1');
+
+      items.forEach(function(it, i){
+        // Hidden file input carrying this card's image as creative_<i>
+        var file = document.createElement('input');
+        file.type = 'file';
+        file.name = 'creative_' + i;
+        file.setAttribute('data-sn-dropzone-generated', '1');
+        file.required = true;
+        // Wire the File object onto the input via DataTransfer.
+        var dt = new DataTransfer();
+        dt.items.add(it.file);
+        file.files = dt.files;
+        holder.appendChild(file);
+
+        function addHidden(name, val){
+          if (val == null || val === '') return;
+          var h = document.createElement('input');
+          h.type = 'hidden';
+          h.name = name;
+          h.value = val;
+          h.setAttribute('data-sn-dropzone-generated', '1');
+          holder.appendChild(h);
+        }
+        addHidden('ad_name_' + i,          it.ad_name);
+        addHidden('headline_' + i,         it.headline);
+        addHidden('description_' + i,      it.description);
+        addHidden('landing_url_' + i,      it.landing_url);
+      });
+
+      form.appendChild(holder);
     });
   })();
 </script>

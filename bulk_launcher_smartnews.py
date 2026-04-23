@@ -200,6 +200,27 @@ def _int_or_none(v: Any) -> Optional[int]:
         return None
 
 
+def _usd_to_cents(v: Any) -> Optional[int]:
+    """Convert a USD dollar amount (e.g. '50', '1.50', 2.5) to integer cents."""
+    if v is None or v == "":
+        return None
+    try:
+        dollars = float(v)
+    except (TypeError, ValueError):
+        return None
+    if dollars < 0:
+        return None
+    return int(round(dollars * 100))
+
+
+def _budget_cents_from_form(form: Mapping[str, Any], *, usd_key: str, cents_key: str) -> Optional[int]:
+    """Prefer the USD field, fall back to the explicit cents field."""
+    cents = _usd_to_cents(form.get(usd_key))
+    if cents is not None:
+        return cents
+    return _int_or_none(form.get(cents_key))
+
+
 def _int_req(v: Any, *, field: str) -> int:
     got = _int_or_none(v)
     if got is None:
@@ -338,7 +359,11 @@ def smartnews_bulk_launch(
         headline = (form.get(f"headline_{idx}") or form.get("headline") or "").strip()
         description = (form.get(f"description_{idx}") or form.get("description") or "").strip()
         ad_name = (form.get(f"ad_name_{idx}") or f"Ad {idx}").strip()
-        landing = (form.get(f"landing_page_url_{idx}") or default_landing).strip()
+        landing = (
+            form.get(f"landing_page_url_{idx}")
+            or form.get(f"landing_url_{idx}")
+            or default_landing
+        ).strip()
         cta = (form.get(f"cta_label_{idx}") or default_cta).strip().upper() or "LEARN_MORE"
         sponsored = (form.get(f"sponsored_name_{idx}") or default_sponsored).strip()
 
@@ -398,10 +423,14 @@ def _build_campaign_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
     if not name:
         raise ValueError("campaign_name is required")
     objective = (form.get("objective") or "TRAFFIC").strip().upper()
-    daily_budget_cents = _int_or_none(form.get("daily_budget_cents"))
+    daily_budget_cents = _budget_cents_from_form(
+        form, usd_key="daily_budget_usd", cents_key="daily_budget_cents"
+    )
     if daily_budget_cents is None:
         daily_budget_cents = _int_or_none(form.get("daily_budget"))
-    spending_limit_cents = _int_or_none(form.get("spending_limit_cents"))
+    spending_limit_cents = _budget_cents_from_form(
+        form, usd_key="spending_limit_usd", cents_key="spending_limit_cents"
+    )
 
     start, end = _parse_schedule(form)
 
@@ -443,11 +472,15 @@ def _build_ad_group_payload(form: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
     # Budget may live on the ad group instead of the campaign.
-    daily_budget_cents = _int_or_none(form.get("ad_group_daily_budget_cents"))
+    daily_budget_cents = _budget_cents_from_form(
+        form, usd_key="ad_group_daily_budget_usd", cents_key="ad_group_daily_budget_cents"
+    )
     if daily_budget_cents is not None:
         payload["daily_budget_cents"] = daily_budget_cents
 
-    bid_amount_cents = _int_or_none(form.get("bid_amount_cents"))
+    bid_amount_cents = _budget_cents_from_form(
+        form, usd_key="bid_amount_usd", cents_key="bid_amount_cents"
+    )
     if bid_amount_cents is not None:
         payload["bid_amount_cents"] = bid_amount_cents
 

@@ -81,10 +81,20 @@
       <button type="button" id="winners-reload" class="nb-btn">Reload list</button>
       <span id="winners-status" class="nb-muted"></span>
     </div>
+    <div class="nb-form-row" style="margin-top: 8px;">
+      <label>Source
+        <select id="winners-scope" class="studio-thin-input">
+          <option value="all" selected>All platforms (shared pool)</option>
+          <option value="platform">Active platform only</option>
+        </select>
+      </label>
+      <span class="nb-muted nb-small">Winners are shared across SmartNews &amp; NewsBreak so the analyzer learns from one large database.</span>
+    </div>
     <table class="nb-table" id="winners-table">
       <thead>
         <tr>
           <th>Ad</th>
+          <th>Platform</th>
           <th>Offer</th>
           <th>Spend</th>
           <th>Conv</th>
@@ -308,18 +318,25 @@
   }
 
   async function loadWinners() {
-    const res = await fetch('/api/studio/winners');
+    const scopeEl = document.getElementById('winners-scope');
+    const scope = (scopeEl && scopeEl.value) || 'all';
+    const res = await fetch('/api/studio/winners?scope=' + encodeURIComponent(scope));
     const body = await res.json();
     const tbody = document.querySelector('#winners-table tbody');
     tbody.innerHTML = '';
-    (body.winners || []).forEach(w => {
+    const rows = (body.winners || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
+    rows.forEach(w => {
       const m = w.metrics || {};
       const tr = document.createElement('tr');
       const imgSrc = w.local_image_url || w.image_url || '';
+      const srcPlat = w.source_platform || '';
+      const badgeLabel = srcPlat === 'smartnews' ? 'SN' : (srcPlat === 'newsbreak' ? 'NB' : '—');
+      const badgeColor = srcPlat === 'smartnews' ? '#2e6bff' : (srcPlat === 'newsbreak' ? '#ff5a1f' : '#888');
       tr.innerHTML = `
         <td><div class="winner-cell">${imgSrc ? `<img src="${escapeHtml(imgSrc)}" loading="lazy" />` : '<span class="nb-muted nb-small">[no image]</span>'}
           <div><strong>${escapeHtml(w.headline || '')}</strong><br/>
           <small class="nb-muted">${escapeHtml(w.description || '')}</small></div></div></td>
+        <td><span class="nb-pill" style="background:${badgeColor};color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;" title="${escapeHtml(srcPlat)}">${badgeLabel}</span></td>
         <td>${escapeHtml(w.offer_id || '')}</td>
         <td>$${(m.spend || 0).toFixed(2)}</td>
         <td>${m.conversions || 0}</td>
@@ -328,7 +345,22 @@
         <td><small>${w.marked_at || ''}</small></td>`;
       tbody.appendChild(tr);
     });
+    const status = document.getElementById('winners-status');
+    if (status) {
+      const counts = rows.reduce((acc, w) => {
+        const p = w.source_platform || '—';
+        acc[p] = (acc[p] || 0) + 1;
+        return acc;
+      }, {});
+      const breakdown = Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' · ');
+      status.textContent = rows.length ? `${rows.length} winners (${breakdown})` : 'No winners yet.';
+    }
   }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const scopeEl = document.getElementById('winners-scope');
+    if (scopeEl) scopeEl.addEventListener('change', loadWinners);
+  });
 
   document.getElementById('winners-refresh').addEventListener('click', async () => {
     const s = document.getElementById('winners-status');

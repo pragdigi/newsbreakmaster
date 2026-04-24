@@ -1638,19 +1638,30 @@ def api_studio_winners():
     guard = _studio_required()
     if guard is not None:
         return guard
-    platform = _active_platform()
-    winners = storage.list_winners(platform=platform)
+    # "all" (default) returns the cross-platform pool so SmartNews + NewsBreak
+    # winners feed one shared database. ?scope=platform falls back to just the
+    # active surface for debugging / per-platform views.
+    scope = (request.args.get("scope") or "all").lower()
+    active = _active_platform()
+    if scope == "platform":
+        winners = storage.list_winners(platform=active)
+        for w in winners:
+            w.setdefault("source_platform", active)
+    else:
+        winners = storage.list_all_winners()
     for w in winners:
-        # Expose a served URL for any locally-cached creative so the UI can
-        # render it even when the upstream image_url has expired/404'd.
         local = w.get("image_local_path")
         if local and os.path.exists(local):
             w["local_image_url"] = url_for(
                 "winner_image",
-                platform=platform,
+                platform=w.get("source_platform") or active,
                 filename=os.path.basename(local),
             )
-    return jsonify({"winners": winners})
+    return jsonify({
+        "winners": winners,
+        "scope": scope,
+        "active_platform": active,
+    })
 
 
 @app.route("/studio/winner-image/<platform>/<path:filename>")

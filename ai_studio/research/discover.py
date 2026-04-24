@@ -262,8 +262,12 @@ def discover_from_winners(
     model: str = "gemini-3.1-pro",
     min_size: int = CLUSTER_MIN_SIZE,
 ) -> List[Dict[str, Any]]:
-    """Classify own winners vs the catalog; cluster the rest into candidates."""
-    winners = storage.list_winners(platform=platform)
+    """Classify own winners vs the catalog; cluster the rest into candidates.
+
+    Reads from ALL platforms so a winner discovered on SmartNews can seed a
+    style candidate usable on NewsBreak and vice-versa.
+    """
+    winners = storage.list_all_winners()
     if not winners:
         _log_run(
             mode="cluster_winners",

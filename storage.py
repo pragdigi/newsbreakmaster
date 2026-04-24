@@ -434,6 +434,33 @@ def list_winners(*, platform: str = DEFAULT_PLATFORM) -> List[Dict[str, Any]]:
     return _load_catalog(_winners_file(platform))
 
 
+def list_all_winners(*, platforms: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Return winners from every platform as a single combined pool.
+
+    Each row is tagged with ``source_platform`` so callers can still attribute
+    performance to the surface the ad ran on. Writes stay namespaced by
+    platform (see ``upsert_winner``); this helper is read-only and exists so
+    the AI Studio analyzer / prompt generator has one large signal pool that
+    spans SmartNews + NewsBreak.
+
+    Winners that have the same ``ad_id`` across platforms are kept as
+    separate rows (different ad objects, even if the landing URL matches).
+    """
+    plats = platforms or list(KNOWN_PLATFORMS)
+    out: List[Dict[str, Any]] = []
+    for p in plats:
+        try:
+            rows = _load_catalog(_winners_file(p))
+        except Exception:
+            rows = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            r.setdefault("source_platform", p)
+            out.append(r)
+    return out
+
+
 def upsert_winner(item: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     """Upsert by ``ad_id`` (preferred) or fall back to generated ``id``."""
     path = _winners_file(platform)

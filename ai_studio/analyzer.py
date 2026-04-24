@@ -335,7 +335,9 @@ def analyze_offer(
         storage.save_insights(offer_id, out, platform=platform)
         return out
 
-    all_winners = storage.list_winners(platform=platform)
+    # Read winners across ALL platforms so SmartNews + NewsBreak performance
+    # feed the same analyzer. Writes remain platform-scoped; only reads merge.
+    all_winners = storage.list_all_winners()
     offer_winners = [w for w in all_winners if str(w.get("offer_id")) == str(offer_id) and w.get("proven")]
     offer_winners.sort(key=lambda w: w.get("score") or 0, reverse=True)
 

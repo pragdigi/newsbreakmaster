@@ -287,6 +287,13 @@ def bulk_launch(
                 if not asset_url:
                     result["errors"].append(f"upload_asset missing assetUrl: {raw}")
                     continue
+                reused = bool(isinstance(raw, dict) and (raw.get("data") or {}).get("reused"))
+                if reused:
+                    logger.info(
+                        "upload_asset.reused filename=%r asset_url=%s",
+                        c.get("filename", "?"),
+                        asset_url,
+                    )
                 uploaded.append(
                     {
                         "asset_url": asset_url,

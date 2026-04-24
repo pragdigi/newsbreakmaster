@@ -22,6 +22,7 @@ import base64
 import concurrent.futures
 import logging
 import os
+import random
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -84,8 +85,16 @@ def _call_nano_banana(
     *,
     timeout: int = DEFAULT_TIMEOUT,
     aspect: str = "1:1",
+    seed: Optional[int] = None,
+    temperature: float = 1.0,
 ) -> Tuple[str, str]:
-    """Call Gemini Flash Image (Nano Banana 2). Returns (b64, mime)."""
+    """Call Gemini Flash Image (Nano Banana 2). Returns (b64, mime).
+
+    ``seed`` and ``temperature`` are injected into ``generationConfig`` to
+    force variation across batch items that share the same offer/insights.
+    When ``seed`` is None a fresh random value is picked per call so
+    consecutive Generate clicks don't collapse to the same image.
+    """
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_GENAI_API_KEY")
     if not api_key:
         raise ImageGenerationError("GEMINI_API_KEY not configured")
@@ -94,6 +103,7 @@ def _call_nano_banana(
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{NANO_BANANA_MODEL}:generateContent"
     )
+    effective_seed = seed if seed is not None else random.randrange(1, 2**31 - 1)
     body = {
         "contents": [
             {
@@ -103,6 +113,8 @@ def _call_nano_banana(
         ],
         "generationConfig": {
             "responseModalities": ["IMAGE", "TEXT"],
+            "temperature": float(temperature),
+            "seed": int(effective_seed),
             "imageConfig": {
                 "aspectRatio": _ASPECT_NANO.get(_normalize_aspect(aspect), "1:1"),
                 "imageSize": "1K",
@@ -227,11 +239,22 @@ def _render_one(
         if fallback:
             providers.append(("nano-banana-2", _call_nano_banana))
 
+    # Per-prompt seed so each batch item varies even when multiple prompts
+    # share the same style template. Falls back to the prompt's own
+    # variation_id when one is provided by prompt_gen.
+    prompt_seed = prompt.get("variation_id")
+    if not isinstance(prompt_seed, int):
+        prompt_seed = random.randrange(1, 2**31 - 1)
+
     errors: List[str] = []
     for model_name, fn in providers:
         started = time.time()
         try:
-            b64, mime = fn(prompt_text, timeout=timeout, aspect=effective_aspect)
+            kwargs = {"timeout": timeout, "aspect": effective_aspect}
+            if model_name == "nano-banana-2":
+                kwargs["seed"] = prompt_seed
+                kwargs["temperature"] = 1.0
+            b64, mime = fn(prompt_text, **kwargs)
             elapsed_ms = int((time.time() - started) * 1000)
             return {
                 "style_id": prompt.get("style_id"),

@@ -224,6 +224,10 @@ class NewsBreakClient:
         """
         POST /ad/uploadAssets — multipart form.
         NewsBreak expects binary asset + adAccountId.
+
+        Treats 409 "media with the same content already exists" as a success:
+        NewsBreak returns the pre-existing ``assetUrl`` + ``mediaId`` in the
+        error body, which is exactly what we need downstream.
         """
         if isinstance(file_obj, bytes):
             files = {"asset": (filename, file_obj)}
@@ -235,12 +239,32 @@ class NewsBreakClient:
         }
         if media_name:
             data["mediaName"] = media_name
-        return self._request(
-            "POST",
-            "/ad/uploadAssets",
-            data=data,
-            files=files,
-        )
+        try:
+            return self._request(
+                "POST",
+                "/ad/uploadAssets",
+                data=data,
+                files=files,
+            )
+        except NewsBreakAPIError as e:
+            body = e.body if isinstance(e.body, dict) else {}
+            err_msg = str(body.get("errMsg") or body.get("message") or "")
+            payload = body.get("data") if isinstance(body.get("data"), dict) else {}
+            already_exists = (
+                e.status_code == 409
+                or "already exists" in err_msg.lower()
+                or "same content" in err_msg.lower()
+            )
+            if already_exists and payload.get("assetUrl"):
+                return {
+                    "code": 0,
+                    "data": {
+                        "assetUrl": payload.get("assetUrl"),
+                        "mediaId": payload.get("mediaId"),
+                        "reused": True,
+                    },
+                }
+            raise
 
     # --- Reporting ---
     def get_integrated_report(self, payload: Dict[str, Any]) -> Any:

@@ -24,6 +24,71 @@ SQUARE_SUFFIX = "Square format."
 LANDSCAPE_SUFFIX = "16:9 landscape format, wide horizontal composition."
 
 
+# --- Diversity micro-variations ---------------------------------------
+# Injected into each prompt so the same offer doesn't collapse into
+# identical renders every batch. Picked at random per prompt so two
+# product_showcase images in one batch end up with different colour
+# palettes, props, and camera angles.
+_COLOR_PALETTES = [
+    "cool blue and white tones",
+    "warm beige and terracotta tones",
+    "soft pastel pink and cream palette",
+    "muted sage green and ivory palette",
+    "neutral oat and grey tones",
+    "dusty rose and charcoal accents",
+    "pale blue and butter yellow palette",
+    "rich espresso brown with warm honey highlights",
+]
+
+_CAMERA_ANGLES = [
+    "shot at a slight three-quarter angle",
+    "flat overhead angle",
+    "eye-level frontal framing",
+    "low angle looking slightly up",
+    "dutch angle with subtle tilt",
+    "side profile composition",
+    "close-up with shallow depth of field",
+    "wide environmental framing",
+]
+
+_SUBJECT_VARIATIONS = [
+    "a middle-aged woman with shoulder-length brown hair",
+    "a man in his late 50s with salt-and-pepper beard",
+    "a woman in her early 60s with short silver hair and glasses",
+    "a man in his mid 40s with a neatly trimmed beard",
+    "a woman in her 50s with warm smile lines",
+    "an older gentleman in his late 60s with kind eyes",
+    "a woman in her late 40s with curly auburn hair",
+    "a man in his early 50s wearing a simple sweater",
+]
+
+_LIGHTING_MOODS = [
+    "morning window light with gentle shadows",
+    "golden-hour warm side lighting",
+    "overcast diffuse daylight",
+    "bright noon light with crisp contrast",
+    "soft indoor lamp glow",
+    "cloudy afternoon light with muted tones",
+    "directional studio light from the left",
+    "ambient daylight bouncing off white walls",
+]
+
+_DECOR_PROPS = [
+    "with a small potted succulent nearby",
+    "with a folded linen napkin on the side",
+    "next to a ceramic mug with steam rising",
+    "with scattered fresh herbs and lemon slices",
+    "beside a leather-bound notebook and fountain pen",
+    "with a small glass of iced water condensing",
+    "next to a woven rattan tray",
+    "with a single white ceramic bowl alongside",
+]
+
+
+def _pick_variation(rng: random.Random, pool: List[str]) -> str:
+    return pool[rng.randrange(len(pool))]
+
+
 def _suffix_for_aspect(aspect: str) -> str:
     """Return the prompt suffix appropriate for the target aspect ratio.
 
@@ -381,6 +446,11 @@ def generate_prompts(
     for i in range(count):
         picks.append(chosen[i % len(chosen)])
 
+    # A fresh per-call RNG so subsequent Generate clicks produce DIFFERENT
+    # variations even on the same offer/insights. Seeded RNG (if requested)
+    # still yields reproducible output for tests.
+    var_rng = random.Random(seed if seed is not None else None)
+
     out: List[Dict[str, Any]] = []
     offer_cta = (offer.get("cta") or "").strip()
     offer_brand = (offer.get("brand_name") or offer.get("name") or "").strip()
@@ -388,6 +458,14 @@ def generate_prompts(
         angle = _pick_angle(insights, offer, index=i)
         hook = _pick_hook(insights, index=i) or angle
         mechanism = _pick_mechanism(insights, index=i) or ""
+        # Per-prompt diversity tokens — same style can produce visually
+        # distinct renders across the batch.
+        palette = _pick_variation(var_rng, _COLOR_PALETTES)
+        camera = _pick_variation(var_rng, _CAMERA_ANGLES)
+        subject = _pick_variation(var_rng, _SUBJECT_VARIATIONS)
+        lighting = _pick_variation(var_rng, _LIGHTING_MOODS)
+        prop = _pick_variation(var_rng, _DECOR_PROPS)
+        variation_id = var_rng.randrange(10_000_000)
         ctx = {
             "angle": angle,
             "hook": hook,
@@ -396,8 +474,21 @@ def generate_prompts(
             "cta_label": offer_cta or style.default_cta_label,
             "cta_color": style.default_cta_color,
         }
-        prompt = style.template(ctx).strip()
-        prompt = _retune_aspect(prompt, aspect)
+        base_prompt = style.template(ctx).strip()
+        # Inject variation directives before the aspect suffix so the
+        # provider actually sees them as style modifiers, not trailing noise.
+        variation_block = (
+            f" Visual variation: {palette}, {lighting}, {camera}. "
+            f"Subject reference when a person is shown: {subject}. "
+            f"Decor accent: {prop}. Creative seed v{variation_id}."
+        )
+        # Strip any existing aspect suffix, add variation, re-tune aspect.
+        stripped = base_prompt
+        for sentinel in (SQUARE_SUFFIX, LANDSCAPE_SUFFIX):
+            if stripped.endswith(sentinel):
+                stripped = stripped[: -len(sentinel)].rstrip()
+                break
+        prompt = _retune_aspect(stripped + variation_block, aspect)
         out.append(
             {
                 "style_id": style.id,
@@ -407,6 +498,7 @@ def generate_prompts(
                 "cta_color": ctx["cta_color"],
                 "angle": angle,
                 "aspect": aspect,
+                "variation_id": variation_id,
             }
         )
     # Mild shuffle on seed to avoid the UI always starting with "product_showcase".

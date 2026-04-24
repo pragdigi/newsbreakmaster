@@ -10,3 +10,5 @@ storage/
 .idea/
 .vscode/
 .commit_msg.tmp
+
+.git-commit-msg.tmp

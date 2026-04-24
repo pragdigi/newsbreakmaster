@@ -500,22 +500,37 @@ def smartnews_bulk_launch(
         }
 
     # -------- Campaign --------
-    try:
-        campaign_payload = _build_campaign_payload(form)
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
+    # campaign_mode: "existing" reuses a campaign the operator picked in the UI
+    # and only creates a fresh ad group + ads underneath it (mirrors the
+    # NewsBreak "extend existing campaign" workflow). Default is "new" for
+    # backward compatibility with anyone posting without the field.
+    campaign_mode = (form.get("campaign_mode") or "new").strip().lower()
+    reused_campaign = False
+    if campaign_mode == "existing":
+        campaign_id = (form.get("campaign_id") or "").strip()
+        if not campaign_id:
+            return {
+                "ok": False,
+                "error": "campaign_mode=existing requires campaign_id — pick a campaign from the dropdown",
+            }
+        reused_campaign = True
+    else:
+        try:
+            campaign_payload = _build_campaign_payload(form)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
 
-    try:
-        created_campaign = adapter.create_campaign(account_id, campaign_payload)
-    except Exception as e:
-        _log_json("sn_create_campaign_failed", {"error": str(e), "payload": campaign_payload})
-        return {"ok": False, "error": f"create_campaign failed: {e}"}
+        try:
+            created_campaign = adapter.create_campaign(account_id, campaign_payload)
+        except Exception as e:
+            _log_json("sn_create_campaign_failed", {"error": str(e), "payload": campaign_payload})
+            return {"ok": False, "error": f"create_campaign failed: {e}"}
 
-    campaign_id = str(
-        created_campaign.get("campaign_id") or created_campaign.get("id") or ""
-    )
-    if not campaign_id:
-        return {"ok": False, "error": f"campaign create returned no id: {created_campaign}"}
+        campaign_id = str(
+            created_campaign.get("campaign_id") or created_campaign.get("id") or ""
+        )
+        if not campaign_id:
+            return {"ok": False, "error": f"campaign create returned no id: {created_campaign}"}
 
     # -------- Ad Group --------
     try:
@@ -673,6 +688,7 @@ def smartnews_bulk_launch(
         "ok": not errors or bool(ad_results),
         "platform": "smartnews",
         "campaign_id": campaign_id,
+        "campaign_reused": reused_campaign,
         "ad_group_id": ad_group_id,
         "ads": ad_results,
         "submitted_ad_ids": submitted_ad_ids,

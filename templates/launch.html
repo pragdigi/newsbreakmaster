@@ -18,10 +18,13 @@
 {% if result %}
 <div class="nb-card" style="margin-bottom:16px;">
   {% set ok = result.get('ok') %}
-  <h3 style="margin:0 0 8px 0;">{% if ok %}Campaign submitted{% else %}Launch failed{% endif %}</h3>
+  {% set reused = result.get('campaign_reused') %}
+  <h3 style="margin:0 0 8px 0;">
+    {% if ok %}{% if reused %}Ads added to existing campaign{% else %}Campaign submitted{% endif %}{% else %}Launch failed{% endif %}
+  </h3>
   <div class="nb-kpi-grid" style="margin-bottom:12px;">
     <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#34d399' if ok else '#f87171' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
-    <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}{% if reused %} <span class="nb-muted">(reused)</span>{% endif %}</div></div>
     <div class="nb-kpi"><div class="nb-kpi-label">Ad group ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('ad_group_id') or '—' }}</div></div>
     <div class="nb-kpi"><div class="nb-kpi-label">Ads</div><div class="nb-kpi-value">{{ result.get('ads', [])|length }}</div></div>
     <div class="nb-kpi"><div class="nb-kpi-label">Errors</div><div class="nb-kpi-value" style="color:{{ '#f87171' if result.get('errors') else 'var(--text)' }};">{{ result.get('errors', [])|length }}</div></div>
@@ -42,6 +45,27 @@
 {% endif %}
 
 <form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="sn-launch-form">
+  <!-- 0 · Offer -->
+  <div class="nb-field-group">
+    <h3>0 · Offer <span class="nb-muted" style="font-weight:400;font-size:13px;">(optional — prefills sponsor, copy, landing URL, pixel &amp; target CPA)</span></h3>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Offer</label>
+        <select id="sn-offer-ref" class="nb-select">
+          <option value="">— None —</option>
+          {% for o in offers %}
+          <option value="{{ o.id }}">{{ o.name }}{% if o.payout %} · ${{ '%.2f'|format(o.payout) }}{% endif %}</option>
+          {% endfor %}
+        </select>
+        <div class="nb-hint">
+          {% if offers %}Pick an offer to fill in everything below. Pixel preselects once the account's pixel list loads.{% else %}No offers saved yet — <a href="{{ url_for('settings_page') }}">create one here</a>.{% endif %}
+        </div>
+      </div>
+      <div id="sn-offer-summary" class="nb-hint" style="align-self:end;"></div>
+    </div>
+  </div>
+
+  <!-- 1 · Ad account -->
   <div class="nb-field-group">
     <h3>1 · Ad account</h3>
     <select name="account_id" id="sn-account-id" class="nb-select" required>
@@ -52,12 +76,41 @@
     </select>
   </div>
 
+  <!-- 2 · Campaign -->
   <div class="nb-field-group">
     <h3>2 · Campaign</h3>
+    <div class="nb-row-2" style="margin-bottom:12px;">
+      <div>
+        <label class="nb-label">Mode</label>
+        <div>
+          <label style="margin-right:12px;"><input type="radio" name="campaign_mode" value="existing" checked> Extend existing</label>
+          <label><input type="radio" name="campaign_mode" value="new"> Create new</label>
+        </div>
+        <div class="nb-hint">"Extend existing" creates a new ad group + ads under a campaign that already exists — same shape as NewsBreak's flow.</div>
+      </div>
+      <div>
+        <label class="nb-label">Objective</label>
+        <input type="text" class="nb-input" value="WEB_CONVERSION / SALES (locked)" disabled>
+        <div class="nb-hint">Objective is set on the campaign you're extending / creating.</div>
+      </div>
+    </div>
+
+    <div id="sn-existing-campaign" style="margin-bottom:12px;">
+      <label class="nb-label">Existing campaign</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select name="campaign_id" id="sn-campaign-id" class="nb-select" style="flex:1;">
+          <option value="">— Select an ad account first —</option>
+        </select>
+        <button type="button" class="nb-btn nb-btn-small" id="sn-btn-load-campaigns" title="Reload campaigns from SmartNews">Reload</button>
+      </div>
+      <div class="nb-hint" id="sn-campaign-status"></div>
+    </div>
+
+    <div id="sn-new-campaign" style="display:none;">
     <div class="nb-row-2">
       <div>
         <label class="nb-label">Campaign name</label>
-        <input type="text" name="campaign_name" class="nb-input" required>
+        <input type="text" name="campaign_name" id="sn-campaign-name" class="nb-input">
       </div>
       <div>
         <label class="nb-label">Objective</label>
@@ -151,6 +204,7 @@
         <div class="nb-hint" id="sn-pixel-status"></div>
       </div>
     </div>
+    </div><!-- /sn-new-campaign -->
   </div>
 
   <div class="nb-field-group">
@@ -311,6 +365,26 @@
                     String(name).replace(/</g,'&lt;') + ' (' + pid + ')</option>';
           }
           sel.innerHTML = html;
+          // If an offer requested a specific pixel, apply it once the list is
+          // loaded. `data-preselect-pixel` is set by the offer auto-fill IIFE.
+          var pendingPid = sel.getAttribute('data-preselect-pixel');
+          if (pendingPid) {
+            var matched = false;
+            for (var j = 0; j < sel.options.length; j++) {
+              if (String(sel.options[j].value) === String(pendingPid)) {
+                sel.selectedIndex = j;
+                matched = true;
+                break;
+              }
+            }
+            sel.removeAttribute('data-preselect-pixel');
+            if (matched) {
+              setStatus('Loaded ' + pixels.length + ' pixel(s). Preselected from offer.', '#34d399');
+              return;
+            }
+            setStatus('Loaded ' + pixels.length + ' pixel(s). Offer pixel ' + pendingPid + ' not found on this account.', '#f59e0b');
+            return;
+          }
           setStatus('Loaded ' + pixels.length + ' pixel' + (pixels.length === 1 ? '' : 's') + '.', '#34d399');
         })
         .catch(function(err){
@@ -332,6 +406,222 @@
     function sync(){ sel.disabled = !chk.checked; }
     chk.addEventListener('change', sync);
     sync();
+  })();
+
+  // --- Campaign mode toggle (existing / new) ---
+  // When "Extend existing" is selected we hide the whole new-campaign panel
+  // (budget, schedule, target CPA, delivery, pixel) and swap requirements
+  // onto the existing-campaign picker. The pixel + target CPA live on the
+  // existing campaign, so they're intentionally read-only here.
+  (function(){
+    var modes = document.querySelectorAll('input[name="campaign_mode"]');
+    var existing = document.getElementById('sn-existing-campaign');
+    var newBox = document.getElementById('sn-new-campaign');
+    var cid = document.getElementById('sn-campaign-id');
+    var cname = document.getElementById('sn-campaign-name');
+    // Fields inside new-campaign that carry native `required` — we toggle
+    // them so the browser doesn't block submission when the section is hidden.
+    var ownedRequired = newBox ? newBox.querySelectorAll('[required]') : [];
+    function setMode(mode){
+      if (mode === 'existing') {
+        existing.style.display = '';
+        newBox.style.display = 'none';
+        if (cid) cid.setAttribute('required', 'required');
+        ownedRequired.forEach(function(el){
+          el.setAttribute('data-was-required', '1');
+          el.removeAttribute('required');
+        });
+      } else {
+        existing.style.display = 'none';
+        newBox.style.display = '';
+        if (cid) cid.removeAttribute('required');
+        ownedRequired.forEach(function(el){
+          if (el.getAttribute('data-was-required')) el.setAttribute('required', 'required');
+        });
+      }
+    }
+    modes.forEach(function(r){ r.addEventListener('change', function(){ setMode(r.value); }); });
+    var initial = document.querySelector('input[name="campaign_mode"]:checked');
+    setMode(initial ? initial.value : 'existing');
+  })();
+
+  // --- Existing-campaign loader (fetches campaigns for the selected account) ---
+  (function(){
+    var acct = document.getElementById('sn-account-id');
+    var sel  = document.getElementById('sn-campaign-id');
+    var btn  = document.getElementById('sn-btn-load-campaigns');
+    var status = document.getElementById('sn-campaign-status');
+    if (!acct || !sel) return;
+
+    function setStatus(msg, color){ if (status) { status.textContent = msg || ''; status.style.color = color || ''; } }
+
+    function loadCampaigns(){
+      var id = (acct.value || '').trim();
+      if (!id) {
+        sel.innerHTML = '<option value="">— Select an ad account first —</option>';
+        setStatus('');
+        return;
+      }
+      sel.innerHTML = '<option value="">Loading campaigns…</option>';
+      setStatus('Fetching campaigns from SmartNews…', '#9ca3af');
+      fetch('/api/campaigns?ad_account_id=' + encodeURIComponent(id), { credentials: 'same-origin' })
+        .then(function(r){ return r.json().then(function(j){ return { ok: r.ok, body: j }; }); })
+        .then(function(res){
+          if (!res.ok) {
+            sel.innerHTML = '<option value="">Error loading campaigns</option>';
+            setStatus((res.body && res.body.error) || 'Failed to load campaigns', '#f87171');
+            return;
+          }
+          var campaigns = (res.body && res.body.campaigns) || [];
+          if (!campaigns.length) {
+            sel.innerHTML = '<option value="">No campaigns on this account yet — switch to "Create new"</option>';
+            setStatus('No campaigns found. Flip the mode to "Create new" to launch a fresh one.', '#9ca3af');
+            return;
+          }
+          var html = '<option value="">— Select a campaign —</option>';
+          for (var i = 0; i < campaigns.length; i++) {
+            var c = campaigns[i];
+            var cid = c.id || c.campaign_id || c.campaignId || '';
+            var cname = c.name || cid;
+            var cstatus = c.configured_status || c.status || '';
+            html += '<option value="' + String(cid).replace(/"/g,'&quot;') + '">' +
+                    String(cname).replace(/</g,'&lt;') +
+                    (cstatus ? ' [' + cstatus + ']' : '') +
+                    ' (' + cid + ')</option>';
+          }
+          sel.innerHTML = html;
+          setStatus('Loaded ' + campaigns.length + ' campaign' + (campaigns.length === 1 ? '' : 's') + '.', '#34d399');
+        })
+        .catch(function(err){
+          sel.innerHTML = '<option value="">Error loading campaigns</option>';
+          setStatus('Network error: ' + err, '#f87171');
+        });
+    }
+
+    acct.addEventListener('change', loadCampaigns);
+    if (btn) btn.addEventListener('click', loadCampaigns);
+    if (acct.value) loadCampaigns();
+  })();
+
+  // --- Offer auto-fill ---
+  // Selecting a saved offer fills in sponsor, landing URL, default headline /
+  // description (which cascade into every creative card via the Defaults
+  // panel), CTA, target CPA, and queues the preferred pixel to be applied
+  // once the account's pixel list loads. Event name is mapped onto the
+  // SmartNews optimization_event enum when it matches a known key.
+  (function(){
+    var OFFERS = {{ offers|tojson }};
+    var EVENTS = {{ events|tojson }};
+    var PIXELS = {{ pixels|tojson }};
+    var offerSel = document.getElementById('sn-offer-ref');
+    var summary = document.getElementById('sn-offer-summary');
+    if (!offerSel) return;
+
+    function findPixelRecord(id){ return (PIXELS || []).find(function(p){ return p.id === id; }); }
+    function findEventRecord(id){ return (EVENTS || []).find(function(e){ return e.id === id; }); }
+
+    // SmartNews optimization_event enum values.
+    var OPT_EVENT_ENUM = ['PURCHASE','ADD_TO_CART','INITIATE_CHECKOUT','LEAD','COMPLETE_REGISTRATION','SIGN_UP','VIEW_CONTENT','SEARCH','COMPLETE_PAYMENT'];
+    function toEventEnum(ev){
+      if (!ev) return '';
+      var candidates = [ev.event_type, ev.tracking_id, ev.name].filter(Boolean);
+      for (var i = 0; i < candidates.length; i++) {
+        // SmartNews built-ins come back in camelCase (addToCart) or UPPER_SNAKE;
+        // normalize to UPPER_SNAKE_CASE before comparing.
+        var upper = String(candidates[i])
+          .replace(/([a-z])([A-Z])/g, '$1_$2')
+          .replace(/[^a-zA-Z0-9]+/g, '_')
+          .toUpperCase()
+          .replace(/^_+|_+$/g, '');
+        if (OPT_EVENT_ENUM.indexOf(upper) !== -1) return upper;
+      }
+      return '';
+    }
+
+    function applyOffer(offerId){
+      var o = (OFFERS || []).find(function(x){ return x.id === offerId; });
+      if (!o) { if (summary) summary.textContent = ''; return; }
+
+      // Sponsor + landing
+      var sponsorEl = document.querySelector('input[name="sponsored_name"]');
+      if (sponsorEl && o.brand_name) sponsorEl.value = o.brand_name;
+      var landingEl = document.querySelector('input[name="landing_page_url"]');
+      if (landingEl && o.landing_url) landingEl.value = o.landing_url;
+
+      // Default ad copy (cascades into every creative card)
+      var defH = document.getElementById('sn-default-headline');
+      var defD = document.getElementById('sn-default-description');
+      var defL = document.getElementById('sn-default-landing');
+      if (defH && o.headline) defH.value = o.headline;
+      if (defD && o.body) defD.value = o.body;
+      if (defL && o.landing_url) defL.value = o.landing_url;
+      // Fire input so the dropzone applies the defaults to existing cards.
+      [defH, defD, defL].forEach(function(el){
+        if (el) el.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+
+      // CTA — toggle ON and pick a matching enum value if possible
+      if (o.cta) {
+        var ctaSel = document.getElementById('sn-cta-label');
+        var chk = document.getElementById('sn-show-cta');
+        var snake = String(o.cta).replace(/\s+/g,'_').toUpperCase();
+        if (ctaSel) {
+          var hit = Array.prototype.slice.call(ctaSel.options).some(function(op){
+            return op.value === snake;
+          });
+          if (hit) ctaSel.value = snake;
+        }
+        if (chk) { chk.checked = true; chk.dispatchEvent(new Event('change', { bubbles: true })); }
+      }
+
+      // Target CPA + derive a sensible daily budget (10× CPA) if blank-ish
+      if (o.target_cpa && Number(o.target_cpa) > 0) {
+        var tc = document.querySelector('input[name="target_cost_usd"]');
+        if (tc) tc.value = Number(o.target_cpa).toFixed(2);
+        var budget = document.getElementById('sn-daily-budget-usd');
+        if (budget) budget.value = Math.max(Number(o.target_cpa) * 10, 10).toFixed(2);
+      }
+
+      // Optimization event
+      var ev = findEventRecord(o.event_id);
+      var eventEnum = toEventEnum(ev);
+      if (eventEnum) {
+        var optSel = document.querySelector('select[name="optimization_event"]');
+        if (optSel) {
+          var hit = Array.prototype.slice.call(optSel.options).some(function(op){ return op.value === eventEnum; });
+          if (hit) optSel.value = eventEnum;
+        }
+      }
+
+      // Pixel: queue preselection for when the pixel list finishes loading.
+      var px = findPixelRecord(o.pixel_id);
+      if (px && px.pixel_id) {
+        var pxSel = document.getElementById('sn-pixel-select');
+        if (pxSel) {
+          pxSel.setAttribute('data-preselect-pixel', String(px.pixel_id));
+          // If the list has already loaded, apply immediately.
+          var matched = Array.prototype.slice.call(pxSel.options).some(function(op){
+            if (String(op.value) === String(px.pixel_id)) { pxSel.value = op.value; return true; }
+            return false;
+          });
+          if (matched) pxSel.removeAttribute('data-preselect-pixel');
+        }
+      }
+
+      // Campaign name default (only used when switching to "Create new")
+      var cname = document.getElementById('sn-campaign-name');
+      if (cname && !cname.value && o.name) cname.value = o.name + ' — API';
+
+      if (summary) {
+        var bits = [];
+        if (o.brand_name) bits.push('Sponsor: ' + o.brand_name);
+        if (eventEnum) bits.push('Event: ' + eventEnum);
+        if (o.target_cpa) bits.push('Target CPA $' + Number(o.target_cpa).toFixed(2));
+        if (px && px.pixel_id) bits.push('Pixel: ' + (px.name || px.pixel_id));
+        summary.innerHTML = bits.length ? '<strong>Applied:</strong> ' + bits.join(' · ') : '';
+      }
+    }
+    offerSel.addEventListener('change', function(){ applyOffer(offerSel.value); });
   })();
 
   // --- Creative dropzone (one image per ad, 1:1 squares) ---

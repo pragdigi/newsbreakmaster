@@ -31,8 +31,12 @@ logger = logging.getLogger(__name__)
 
 NANO_BANANA_MODEL = os.environ.get("NANO_BANANA_MODEL", "gemini-3.1-flash-image-preview")
 GPT_IMAGE_MODEL = os.environ.get("GPT_IMAGE_MODEL", "gpt-image-2")
-DEFAULT_PARALLEL = int(os.environ.get("AD_STUDIO_IMAGE_PARALLEL", "5"))
-DEFAULT_TIMEOUT = int(os.environ.get("AD_STUDIO_IMAGE_TIMEOUT", "180"))
+# Keep parallelism conservative on smaller plans; a generate batch of 10
+# at parallel=5 with ~1MB base64 strings can OOM a 512MB Starter worker.
+DEFAULT_PARALLEL = int(os.environ.get("AD_STUDIO_IMAGE_PARALLEL", "3"))
+# Per-request timeout — kept short so cross-model fallback can actually run
+# before gunicorn's worker timeout kills the request.
+DEFAULT_TIMEOUT = int(os.environ.get("AD_STUDIO_IMAGE_TIMEOUT", "90"))
 
 # Public model aliases accepted by render_batch(model=...).
 ALIAS_NANO = {"nano-banana-2", "nano-banana", "gemini", "gemini-image"}

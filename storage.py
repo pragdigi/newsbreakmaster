@@ -59,6 +59,28 @@ def _resolve_storage_root() -> str:
 
 
 STORAGE_ROOT = _resolve_storage_root()
+
+import logging as _logging
+_log = _logging.getLogger("storage")
+_configured = os.environ.get("NEWSBREAK_STORAGE_DIR", "").strip()
+_is_persistent = STORAGE_ROOT.startswith("/var/data") or STORAGE_ROOT.startswith("/data")
+_log.warning(
+    "storage.init: STORAGE_ROOT=%s (env NEWSBREAK_STORAGE_DIR=%r, persistent_disk=%s)",
+    STORAGE_ROOT, _configured, _is_persistent,
+)
+if not _is_persistent and _configured:
+    _log.error(
+        "storage.init: $NEWSBREAK_STORAGE_DIR=%r not writable — fell back to ephemeral %s. "
+        "Data will be lost on every deploy. Fix the env var / disk mount.",
+        _configured, STORAGE_ROOT,
+    )
+elif not _is_persistent:
+    _log.error(
+        "storage.init: $NEWSBREAK_STORAGE_DIR is NOT set — using ephemeral %s. "
+        "Data WILL be wiped on every deploy. Set NEWSBREAK_STORAGE_DIR=/var/data/storage.",
+        STORAGE_ROOT,
+    )
+
 TOKENS_DIR = os.path.join(STORAGE_ROOT, "tokens")
 RULES_DIR = os.path.join(STORAGE_ROOT, "rules")
 AUDIT_DIR = os.path.join(STORAGE_ROOT, "audit")

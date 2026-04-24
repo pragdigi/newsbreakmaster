@@ -223,6 +223,61 @@ def _first_str(source: Any, *keys: str) -> str:
     return ""
 
 
+def _discover_group_id_via_campaign(
+    adapter,
+    account_id: str,
+    campaign_id: str,
+    ad_id: str,
+    cache: Dict[tuple, Dict[str, str]],
+) -> Optional[str]:
+    """When the report row doesn't expose ad_set_id (NewsBreak behavior), walk
+    campaign → ad_groups → ads once per campaign and build an ad_id→group_id map.
+    Result is cached in ``cache`` so subsequent ads in the same campaign reuse it.
+    """
+    key = (str(account_id), str(campaign_id))
+    mapping = cache.get(key)
+    if mapping is None:
+        mapping = {}
+        try:
+            groups = adapter.get_ad_groups(account_id, campaign_id) or []
+        except Exception as e:
+            logger.warning(
+                "winners.enrich: get_ad_groups failed account=%s campaign=%s err=%s",
+                account_id, campaign_id, e,
+            )
+            cache[key] = mapping
+            return None
+        for g in groups:
+            gid = str(
+                g.get("id")
+                or g.get("ad_set_id")
+                or g.get("adSetId")
+                or g.get("ad_group_id")
+                or ""
+            )
+            if not gid:
+                continue
+            try:
+                ads = adapter.get_ads(account_id, gid) or []
+            except Exception as e:
+                logger.debug(
+                    "winners.enrich: get_ads failed group=%s err=%s", gid, e,
+                )
+                continue
+            for a in ads:
+                aid_candidate = str(
+                    a.get("id") or a.get("ad_id") or a.get("adId") or ""
+                )
+                if aid_candidate:
+                    mapping[aid_candidate] = gid
+        logger.info(
+            "winners.enrich: built campaign index account=%s campaign=%s groups=%d ads=%d",
+            account_id, campaign_id, len(groups), len(mapping),
+        )
+        cache[key] = mapping
+    return mapping.get(str(ad_id))
+
+
 def _creative_for_ad(adapter, account_id: str, ad_group_id: Optional[str], ad_id: str) -> Dict[str, Any]:
     """Pull headline/description/image_url for a single ad by hitting the
     adapter's ``get_ads`` with the known parent id and filtering to ``ad_id``.
@@ -401,6 +456,9 @@ def refresh_winners(
     errors: List[Dict[str, Any]] = []
     per_account: List[Dict[str, Any]] = []
     current_winner_ids: set[str] = set()
+    # cache: (account_id, campaign_id) → {ad_id: ad_group_id} to avoid
+    # re-fetching ad groups + ads for every row in the same campaign.
+    _ad_group_cache: Dict[tuple, Dict[str, str]] = {}
 
     for aid in account_list:
         try:
@@ -458,10 +516,24 @@ def refresh_winners(
                 or row.get("ad_group_id")
                 or row.get("adSetId")
             )
+            campaign_id = (
+                row.get("campaign_id")
+                or row.get("campaignId")
+                or (row.get("raw") or {}).get("campaignId")
+            )
+            if not group_id and campaign_id:
+                group_id = _discover_group_id_via_campaign(
+                    adapter, aid, str(campaign_id), str(ad_id), _ad_group_cache
+                )
+                if group_id:
+                    logger.info(
+                        "winners.enrich: resolved ad_id=%s → ad_group_id=%s via campaign=%s",
+                        ad_id, group_id, campaign_id,
+                    )
             if not group_id:
                 logger.info(
-                    "winners.enrich: row has no ad_set_id keys; row_keys=%s",
-                    sorted(list(row.keys()))[:25],
+                    "winners.enrich: no ad_set_id for ad=%s (campaign=%s, row_keys=%s)",
+                    ad_id, campaign_id, sorted(list(row.keys()))[:25],
                 )
             creative = _creative_for_ad(adapter, aid, group_id, ad_id)
 

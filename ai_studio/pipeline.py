@@ -36,6 +36,39 @@ def _aspect_for_platform(platform: str) -> str:
     return _PLATFORM_ASPECT.get((platform or "").strip().lower(), "1:1")
 
 
+def _fill_template_placeholders(
+    template: str,
+    *,
+    headline: str,
+    cta_label: str,
+    brand_name: str,
+    angle: str,
+) -> str:
+    """Replace ``{headline}`` / ``{cta_label}`` / ``{brand_name}`` / ``{angle}``
+    tokens inside a candidate-style prompt template.
+
+    GetHookd-discovered candidate templates are written with Python-style
+    ``{headline}`` placeholders. If we feed them to the image model raw,
+    the renderer happily paints the literal text "{headline}" on the ad
+    (we saw two such tiles in the last batch). Substitute before render,
+    but don't fall over if the template happens to contain unrelated
+    braces — use str.replace, not str.format.
+    """
+    out = template or ""
+    replacements = {
+        "{headline}": (headline or angle or "").strip(),
+        "{HEADLINE}": (headline or angle or "").upper().strip(),
+        "{cta_label}": (cta_label or "Learn More").strip(),
+        "{CTA_LABEL}": (cta_label or "Learn More").upper().strip(),
+        "{brand_name}": (brand_name or "").strip(),
+        "{angle}": (angle or headline or "").strip(),
+    }
+    for token, value in replacements.items():
+        if token in out:
+            out = out.replace(token, value)
+    return out
+
+
 def _collect_recent_prompts(platform: str, *, limit: int) -> List[str]:
     """Pull the last ``limit`` prompts from the platform's generation log.
 
@@ -202,7 +235,14 @@ def generate_ads(
                 cand = candidates_index[sid]
                 tpl = (cand.get("prompt_template") or "").strip()
                 if tpl:
-                    base["prompt"] = prompt_gen._retune_aspect(tpl, aspect)
+                    filled = _fill_template_placeholders(
+                        tpl,
+                        headline=base.get("headline") or base.get("angle") or offer.get("headline") or "",
+                        cta_label=base.get("cta_label") or offer.get("cta") or "Learn More",
+                        brand_name=offer.get("brand_name") or offer.get("name") or "",
+                        angle=base.get("angle") or "",
+                    )
+                    base["prompt"] = prompt_gen._retune_aspect(filled, aspect)
                 base["style_id"] = sid
                 base["style_name"] = cand.get("name") or sid
                 base["concept_source"] = "candidate_template"
@@ -220,7 +260,14 @@ def generate_ads(
             )[0]
             tpl = (cand.get("prompt_template") or "").strip()
             if tpl:
-                base["prompt"] = prompt_gen._retune_aspect(tpl, aspect)
+                filled = _fill_template_placeholders(
+                    tpl,
+                    headline=base.get("angle") or offer.get("headline") or "",
+                    cta_label=base.get("cta_label") or offer.get("cta") or "Learn More",
+                    brand_name=offer.get("brand_name") or offer.get("name") or "",
+                    angle=base.get("angle") or "",
+                )
+                base["prompt"] = prompt_gen._retune_aspect(filled, aspect)
             base["style_id"] = sid
             base["style_name"] = cand.get("name") or sid
             base["is_candidate"] = True

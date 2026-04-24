@@ -584,7 +584,11 @@
   box-shadow: 0 0 0 1px rgba(236,72,153,0.35);
 }
 .studio-tile img {
-  display: block; width: 100%; aspect-ratio: var(--tile-aspect, 1 / 1); object-fit: cover;
+  display: block; width: 100%; aspect-ratio: var(--tile-aspect, 1 / 1);
+  /* contain (not cover) so the entire ad is visible — headlines and CTAs
+     often hug the edges of the creative and got clipped with object-fit
+     cover when the image aspect didn't match the tile aspect exactly. */
+  object-fit: contain;
   background: #0f1419;
 }
 .studio-tile-meta {

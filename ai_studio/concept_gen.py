@@ -365,6 +365,15 @@ Hard rules:
      - "16:9 landscape format, wide horizontal composition." when aspect=16:9
 7. Each prompt: 90–180 words.
 8. Headlines: 4–14 words, direct-response voice, no emoji.
+9. TEXT SAFETY: every headline, sub-headline, caption, label, and CTA
+   button MUST sit fully inside a comfortable safe area, leaving at least
+   8% margin from every edge of the canvas. NEVER place any text flush
+   against the left, right, top, or bottom edge — image renderers clip
+   edge-touching glyphs and we lose the first / last letter. State this
+   safe-area requirement explicitly in the prompt you write for each
+   slot (e.g. "All text sits with at least 8% padding from every edge").
+10. Do not emit placeholder tokens like {headline}, {cta_label}, {brand},
+    or {angle} in the final prompt — write the actual ad copy literally.
 
 Return a SINGLE JSON object with this exact shape and nothing else:
 
@@ -538,12 +547,27 @@ def _normalize_concept(
     if not prompt_text:
         # Caller will detect this and fall back.
         return {}
-    prompt_text = _ensure_aspect_suffix(prompt_text, aspect)
 
     cta_label = str(raw.get("cta_label") or fallback_cta_label or "Learn More").strip()
     headline = str(raw.get("headline") or "").strip()
     angle = str(raw.get("angle") or headline or "").strip()
     palette = str(raw.get("palette") or "").strip()
+
+    # Defensive: sometimes the model still leaves placeholder tokens in
+    # the prompt. Substitute them with the actual copy so we don't ship
+    # an ad that literally says "{headline}" on the creative.
+    for token, value in (
+        ("{headline}", headline or angle or ""),
+        ("{HEADLINE}", (headline or angle or "").upper()),
+        ("{cta_label}", cta_label),
+        ("{CTA_LABEL}", cta_label.upper()),
+        ("{angle}", angle),
+        ("{brand_name}", ""),  # caller has no brand in this scope
+    ):
+        if token in prompt_text:
+            prompt_text = prompt_text.replace(token, value)
+
+    prompt_text = _ensure_aspect_suffix(prompt_text, aspect)
 
     return {
         "style_id": sid,

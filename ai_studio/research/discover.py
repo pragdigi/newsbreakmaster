@@ -363,10 +363,29 @@ def normalize_gethookd_ad(ad: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _fetch_gethookd(params: Dict[str, Any], *, timeout: int = 60) -> List[Dict[str, Any]]:
-    if not GETHOOKD_API_KEY:
-        raise RuntimeError("GETHOOKD_API_KEY not configured")
-    resp = requests.get(
+# GetHookd renamed their search parameter at some point; the production API
+# now rejects ``q`` with "Unrecognized parameter(s): q". We don't have access
+# to current docs, so we probe the most likely names and remember the first
+# one the server accepts. Order goes from most likely to least.
+_GETHOOKD_QUERY_PARAM_CANDIDATES: Tuple[str, ...] = (
+    "query",
+    "search",
+    "keyword",
+    "keywords",
+    "term",
+    "q",
+)
+_gethookd_query_param: Optional[str] = os.environ.get("GETHOOKD_QUERY_PARAM") or None
+
+
+def _gethookd_query_key_to_try() -> List[str]:
+    if _gethookd_query_param:
+        return [_gethookd_query_param]
+    return list(_GETHOOKD_QUERY_PARAM_CANDIDATES)
+
+
+def _do_gethookd_request(params: Dict[str, Any], *, timeout: int) -> "requests.Response":
+    return requests.get(
         f"{GETHOOKD_BASE_URL}/explore",
         params={k: v for k, v in params.items() if v not in (None, "")},
         headers={
@@ -375,11 +394,50 @@ def _fetch_gethookd(params: Dict[str, Any], *, timeout: int = 60) -> List[Dict[s
         },
         timeout=timeout,
     )
-    if resp.status_code >= 400:
-        raise RuntimeError(f"GetHookd /explore {resp.status_code}: {resp.text[:400]}")
-    payload = resp.json() or {}
-    rows = payload.get("data") or []
-    return [normalize_gethookd_ad(ad) for ad in rows if isinstance(ad, dict)]
+
+
+def _fetch_gethookd(params: Dict[str, Any], *, timeout: int = 60) -> List[Dict[str, Any]]:
+    """Fetch /explore, automatically discovering the correct query-param name.
+
+    If the request includes a ``__query`` virtual key, we try each candidate
+    parameter name (``query``, ``search``, etc.) until the API stops
+    returning a 422 "Unrecognized parameter(s)" error. The discovered name
+    is cached on the module so subsequent calls hit the right name on the
+    first try, and can be pinned via ``GETHOOKD_QUERY_PARAM`` env var.
+    """
+    global _gethookd_query_param
+
+    if not GETHOOKD_API_KEY:
+        raise RuntimeError("GETHOOKD_API_KEY not configured")
+
+    query_value = params.pop("__query", None)
+    candidates = _gethookd_query_key_to_try() if query_value else [None]
+
+    last_err: Optional[str] = None
+    for key in candidates:
+        attempt = dict(params)
+        if key and query_value:
+            attempt[key] = query_value
+        resp = _do_gethookd_request(attempt, timeout=timeout)
+        if resp.status_code == 422 and key:
+            body = resp.text[:400]
+            if "Unrecognized parameter" in body and key in body:
+                last_err = f"422 (param {key!r} rejected)"
+                continue
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"GetHookd /explore {resp.status_code}: {resp.text[:400]}"
+            )
+        if key and key != _gethookd_query_param:
+            logger.info("gethookd: query param resolved to %r", key)
+            _gethookd_query_param = key
+        payload = resp.json() or {}
+        rows = payload.get("data") or []
+        return [normalize_gethookd_ad(ad) for ad in rows if isinstance(ad, dict)]
+
+    raise RuntimeError(
+        f"GetHookd /explore: all query param candidates rejected ({last_err})"
+    )
 
 
 _GETHOOKD_CLUSTER_PROMPT = """You are categorising competitor ads into reusable visual style templates.
@@ -452,7 +510,9 @@ def discover_from_gethookd(
             "page": 1,
         }
         if q:
-            params["q"] = q
+            # Translated by _fetch_gethookd into whatever query param name
+            # GetHookd currently accepts (query / search / keyword / ...).
+            params["__query"] = q
         if filters:
             for k, v in filters.items():
                 if v not in (None, ""):

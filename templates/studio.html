@@ -62,8 +62,13 @@
 
   <!-- ============ WINNERS =========== -->
   <div class="nb-tab-panel" data-panel="winners" hidden>
-    <div class="nb-form-row">
-      <button type="button" id="winners-refresh" class="nb-btn">Refresh winners from report</button>
+    <div class="studio-threshold-row">
+      <label>Days <input type="number" id="winners-days" value="14" min="1" max="90" class="studio-thin-input" /></label>
+      <label>Min spend $ <input type="number" id="winners-spend" value="20" min="0" step="1" class="studio-thin-input" /></label>
+      <label>Min conv <input type="number" id="winners-conv" value="3" min="0" step="1" class="studio-thin-input" /></label>
+      <label>CPA factor <input type="number" id="winners-cpa-factor" value="1.0" min="0.1" step="0.1" class="studio-thin-input" title="CPA ≤ target_cpa × factor. Increase above 1.0 to loosen." /></label>
+      <button type="button" id="winners-refresh" class="nb-btn nb-btn-primary">Force pull winners now</button>
+      <button type="button" id="winners-reload" class="nb-btn">Reload list</button>
       <span id="winners-status" class="nb-muted"></span>
     </div>
     <table class="nb-table" id="winners-table">
@@ -278,14 +283,29 @@
 
   document.getElementById('winners-refresh').addEventListener('click', async () => {
     const s = document.getElementById('winners-status');
-    s.textContent = 'Refreshing…';
-    const res = await fetch('/api/studio/refresh-winners', { method: 'POST' });
-    const body = await res.json();
-    s.textContent = body.ok
-      ? `Found ${body.summary.winners_found} winners across ${body.summary.accounts_scanned} accounts.`
-      : 'Error: ' + (body.error || 'unknown');
-    if (body.ok) loadWinners();
+    const payload = {
+      days: parseInt(document.getElementById('winners-days').value, 10) || 14,
+      min_spend: parseFloat(document.getElementById('winners-spend').value) || 0,
+      min_conv: parseFloat(document.getElementById('winners-conv').value) || 0,
+      cpa_factor: parseFloat(document.getElementById('winners-cpa-factor').value) || 1.0,
+    };
+    s.textContent = `Pulling last ${payload.days}d from ad accounts…`;
+    try {
+      const res = await fetch('/api/studio/refresh-winners', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json();
+      if (!body.ok) throw new Error(body.error || 'refresh failed');
+      const sm = body.summary || {};
+      s.textContent = `Scanned ${sm.accounts_scanned||0} accounts, ${sm.considered||0} ad rows · ${sm.added||0} new, ${sm.updated||0} updated, ${sm.demoted||0} demoted.`;
+      loadWinners();
+    } catch (err) {
+      s.textContent = 'Error: ' + err.message;
+    }
   });
+  document.getElementById('winners-reload').addEventListener('click', loadWinners);
 
   const insightsSel = document.getElementById('insights-offer');
   const insightsBody = document.getElementById('insights-body');
@@ -409,31 +429,160 @@
 </script>
 
 <style>
-.nb-tabs { display: flex; gap: .5rem; border-bottom: 1px solid var(--nb-border, #e5e7eb); margin: 1rem 0; }
-.nb-tab { background: none; border: none; padding: .5rem 1rem; cursor: pointer;
-  border-bottom: 2px solid transparent; font-weight: 500; color: #555; }
-.nb-tab.active { border-bottom-color: #d23f3f; color: #111; }
-.studio-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 1rem; margin-top: 1rem; }
-.studio-tile { background: white; border: 1px solid var(--nb-border, #e5e7eb);
-  border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
-.studio-tile.is-candidate { border-color: #ec4899; box-shadow: 0 0 0 1px #ec489966; }
-.studio-tile img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover; }
-.studio-tile-meta { padding: .5rem .75rem; display: flex; flex-wrap: wrap; gap: .25rem .5rem; align-items: center; font-size: .85rem; }
-.studio-tile-actions { display: flex; gap: .25rem; padding: .5rem .75rem; border-top: 1px solid #f3f4f6; }
-.studio-tile-error { padding: 1rem; color: #b91c1c; font-size: .85rem; }
-.chip { display: inline-block; font-size: .7rem; padding: .1rem .4rem; border-radius: 999px;
-  background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; text-transform: lowercase; }
-.chip.experimental { background: #fdf2f8; color: #be185d; border-color: #fbcfe8; }
-.chip.promoted { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
-.chip.archived { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
-.chip.testing { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
-.candidate-card header { display: flex; gap: .5rem; align-items: center; margin-bottom: .25rem; }
-.candidate-stats { display: grid; grid-template-columns: repeat(3, auto); gap: .1rem 1rem; margin: .5rem 0; }
-.candidate-stats dt { font-size: .7rem; color: #6b7280; text-transform: uppercase; }
-.candidate-stats dd { margin: 0; font-weight: 600; }
-.winner-cell { display: flex; gap: .5rem; align-items: center; }
-.winner-cell img { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; }
-.nb-btn.small { padding: .25rem .5rem; font-size: .8rem; }
+/* ===== Studio page — dark-theme tuned ===== */
+.nb-section-header h1 { color: var(--text); }
+.nb-section-header .nb-muted { color: var(--muted); }
+
+.nb-tabs {
+  display: flex; gap: .25rem;
+  border-bottom: 1px solid #2d3a4d;
+  margin: 1rem 0;
+}
+.nb-tab {
+  background: none; border: none; padding: .55rem 1rem; cursor: pointer;
+  border-bottom: 2px solid transparent; font-weight: 500;
+  color: var(--muted);
+}
+.nb-tab:hover { color: var(--text); }
+.nb-tab.active { border-bottom-color: #ef4444; color: var(--text); }
+
+.nb-tab-panel { display: block; padding-top: 8px; }
+.nb-tab-panel[hidden] { display: none; }
+
+.nb-form-row {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin-bottom: 10px;
+}
+.nb-form-row label { color: var(--text); font-size: .9rem; }
+#studio-gen-form.nb-form { gap: 10px; }
+#studio-gen-form select,
+#studio-gen-form input[type="number"],
+#studio-gen-form input[type="range"],
+#research-keywords,
+#insights-offer,
+#research-brainstorm-offer,
+#research-upload-offer,
+#research-upload,
+.studio-thin-input {
+  background: #0f1419;
+  border: 1px solid #2d3a4d;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+}
+#studio-gen-form input[type="range"] { padding: 0; }
+.studio-thin-input { width: 80px; padding: 6px 8px; }
+
+.studio-threshold-row {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  padding: 12px; margin-bottom: 12px;
+  background: var(--surface); border: 1px solid #2d3a4d; border-radius: 8px;
+}
+.studio-threshold-row label {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--muted); font-size: .82rem;
+}
+.studio-threshold-row label input { color: var(--text); }
+
+.studio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px; margin-top: 14px;
+}
+.studio-tile {
+  background: var(--surface);
+  border: 1px solid #2d3a4d;
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  color: var(--text);
+}
+.studio-tile.is-candidate {
+  border-color: #ec4899;
+  box-shadow: 0 0 0 1px rgba(236,72,153,0.35);
+}
+.studio-tile img {
+  display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover;
+  background: #0f1419;
+}
+.studio-tile-meta {
+  padding: .55rem .75rem;
+  display: flex; flex-wrap: wrap; gap: .25rem .5rem;
+  align-items: center; font-size: .85rem;
+  color: var(--text);
+}
+.studio-tile-meta .nb-muted { color: var(--muted); }
+.studio-tile-actions {
+  display: flex; gap: .4rem; padding: .5rem .75rem;
+  border-top: 1px solid #2d3a4d; background: #141c28;
+}
+.studio-tile-error {
+  padding: 1rem; color: #fca5a5; font-size: .85rem;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.chip {
+  display: inline-block;
+  font-size: .7rem; padding: .12rem .5rem; border-radius: 999px;
+  background: rgba(148,163,184,0.15); color: #cbd5e1;
+  border: 1px solid rgba(148,163,184,0.3);
+  text-transform: lowercase; letter-spacing: .02em;
+}
+.chip.experimental { background: rgba(236,72,153,0.15); color: #f9a8d4; border-color: rgba(236,72,153,0.4); }
+.chip.candidate    { background: rgba(236,72,153,0.12); color: #f9a8d4; border-color: rgba(236,72,153,0.35); }
+.chip.promoted     { background: rgba(16,185,129,0.15); color: #6ee7b7; border-color: rgba(16,185,129,0.4); }
+.chip.archived     { background: rgba(239,68,68,0.15);  color: #fca5a5; border-color: rgba(239,68,68,0.4); }
+.chip.testing      { background: rgba(59,130,246,0.15); color: #93c5fd; border-color: rgba(59,130,246,0.4); }
+
+.candidate-card { margin-bottom: 10px; }
+.candidate-card header {
+  display: flex; gap: .5rem; align-items: center; margin-bottom: .35rem;
+}
+.candidate-stats {
+  display: grid; grid-template-columns: repeat(3, auto);
+  gap: .1rem 1.25rem; margin: .5rem 0;
+}
+.candidate-stats dt { font-size: .7rem; color: var(--muted); text-transform: uppercase; }
+.candidate-stats dd { margin: 0; font-weight: 600; color: var(--text); }
+
+.winner-cell { display: flex; gap: .6rem; align-items: center; }
+.winner-cell img {
+  width: 48px; height: 48px; object-fit: cover; border-radius: 4px;
+  background: #0f1419; border: 1px solid #2d3a4d;
+}
+.winner-cell strong { color: var(--text); }
+.winner-cell small { color: var(--muted); }
+
+.nb-btn.small { padding: .3rem .6rem; font-size: .78rem; }
+.nb-btn.primary, .nb-btn-primary {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.nb-btn.primary:hover, .nb-btn-primary:hover {
+  background: #2563eb; border-color: #2563eb;
+}
+
+#gen-insights {
+  margin-top: 14px;
+}
+#gen-insights h3 { margin-top: 0; color: var(--text); }
+#gen-insights details { margin-bottom: 6px; }
+#gen-insights summary { color: var(--text); cursor: pointer; }
+#gen-insights pre {
+  background: #0f1419; border: 1px solid #2d3a4d;
+  color: var(--text); padding: 8px 10px; border-radius: 6px;
+  font-size: 12px; overflow: auto; white-space: pre-wrap;
+}
+
+#insights-body h4 { color: var(--text); margin: 14px 0 4px; }
+#insights-body ul { margin: 4px 0 8px 18px; color: var(--text); }
+#insights-body pre {
+  background: #0f1419; border: 1px solid #2d3a4d;
+  color: var(--text); padding: 8px 10px; border-radius: 6px;
+  font-size: 12px; overflow: auto;
+}
+
+.nb-table { color: var(--text); }
+.nb-table tbody tr:hover { background: rgba(59,130,246,0.06); }
 </style>
 {% endblock %}

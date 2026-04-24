@@ -1639,12 +1639,27 @@ def api_studio_refresh_winners():
     guard = _studio_required()
     if guard is not None:
         return guard
+    body = request.get_json(silent=True) or {}
+    def _num(key, default):
+        try:
+            return type(default)(body[key]) if key in body and body[key] not in (None, "") else default
+        except (TypeError, ValueError):
+            return default
+    days = _num("days", 14)
+    min_spend = _num("min_spend", 20.0)
+    min_conv = _num("min_conv", 3.0)
+    cpa_factor = _num("cpa_factor", 1.0)
     adapter = _adapter()
     if not adapter:
         return jsonify({"error": "no adapter configured"}), 400
     try:
         summary = _studio_winners.refresh_winners(
-            adapter, platform=_active_platform()
+            adapter,
+            platform=_active_platform(),
+            days=days,
+            min_spend=min_spend,
+            min_conv=min_conv,
+            cpa_factor=cpa_factor,
         )
     except Exception as exc:  # noqa: BLE001
         app.logger.exception("refresh_winners failed")

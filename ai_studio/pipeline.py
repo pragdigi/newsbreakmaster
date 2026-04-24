@@ -186,6 +186,7 @@ def generate_ads(
         aspect=aspect,
         recent_prompts=recent_prompts,
         model=model_analyzer,
+        platform=platform,
     )
 
     prompts: List[Dict[str, Any]] = []

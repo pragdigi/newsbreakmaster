@@ -32,12 +32,16 @@ When the LLM is unreachable / returns garbage we fall back to
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import os
 import random
 import re
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import storage
 
 from . import prompt_gen
 
@@ -54,6 +58,18 @@ CLAUDE_CONCEPT_MODEL = os.environ.get(
 
 # How many of the most recent prompts to feed back as "do not repeat".
 RECENT_PROMPT_MEMORY = 30
+
+# How many winner creatives to attach as visual references in the LLM call.
+# Too few = no signal, too many = bloats latency / cost / breaks Claude image
+# limits. 6 is a good middle ground.
+DEFAULT_REFERENCE_IMAGE_COUNT = int(
+    os.environ.get("AD_STUDIO_CONCEPT_REF_IMAGES", "6")
+)
+# Hard cap for safety — Claude allows up to 20 image content blocks per
+# request, Gemini accepts more but parts get truncated very fast.
+MAX_REFERENCE_IMAGES = 10
+# Skip files larger than this on disk to keep payloads small (~3MB each).
+MAX_REFERENCE_BYTES = 3 * 1024 * 1024
 
 
 _STYLE_BRIEFS: Dict[str, str] = {
@@ -130,12 +146,140 @@ SYSTEM_PROMPT = (
     "the same setting, props, character, copy, or composition. You have full "
     "creative latitude to invent new angles, scenes, props, characters, and copy "
     "as long as you stay truthful to the offer's category and never fabricate "
-    "specific medical, financial, or legal claims."
+    "specific medical, financial, or legal claims.\n\n"
+    "When the user attaches reference images, those are PROVEN WINNERS from "
+    "the same offer (or sibling offers on adjacent platforms). Study them "
+    "carefully — pay attention to composition, framing, lighting, colour "
+    "palette, layout of text, presence/style of CTAs, and the emotional "
+    "register of the imagery. Your concepts should INHERIT THE WINNING "
+    "VISUAL DNA (mood, framing logic, copy density, palette range) but never "
+    "duplicate a specific scene, character, prop combination, or headline "
+    "from the references. You are remixing what works, not copying it."
 )
+
+
+def _format_reference_summary(refs: Sequence[Dict[str, Any]]) -> str:
+    """Short text recap of the visual references so the model can reason
+    about them even before it 'looks' at the bytes. Helps Claude when an
+    image content block is dropped, and helps Gemini ground multimodal
+    grounding to the right metadata."""
+    if not refs:
+        return "(none)"
+    rows: List[str] = []
+    for i, r in enumerate(refs, 1):
+        metrics = r.get("metrics") or {}
+        cpa = metrics.get("cpa")
+        conv = metrics.get("conversions") or 0
+        score = r.get("score") or 0
+        platform = r.get("source_platform") or r.get("platform") or "?"
+        head = (r.get("headline") or "").strip().replace("\n", " ")
+        if len(head) > 140:
+            head = head[:137] + "..."
+        rows.append(
+            f"  Reference {i} [{platform} · CPA ${cpa or '—'} · conv "
+            f"{int(conv)} · score {score}] headline: {head}"
+        )
+    return "\n".join(rows)
 
 
 def _format_brief(style_id: str) -> str:
     return _STYLE_BRIEFS.get(style_id, "Editorial direct-response social ad.")
+
+
+def _guess_mime(path: str) -> str:
+    mime, _ = mimetypes.guess_type(path)
+    if mime and mime.startswith("image/"):
+        return mime
+    lower = path.lower()
+    if lower.endswith(".png"):
+        return "image/png"
+    if lower.endswith(".webp"):
+        return "image/webp"
+    if lower.endswith(".gif"):
+        return "image/gif"
+    return "image/jpeg"
+
+
+def _read_reference_image(path: str) -> Optional[Tuple[str, str]]:
+    """Return ``(base64_no_prefix, mime_type)`` for a local image file, or
+    ``None`` when the file is missing / too large / unreadable."""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    if size > MAX_REFERENCE_BYTES or size <= 0:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    return base64.b64encode(raw).decode("ascii"), _guess_mime(path)
+
+
+def collect_reference_images(
+    offer_id: str,
+    *,
+    platform: str,
+    limit: int = DEFAULT_REFERENCE_IMAGE_COUNT,
+) -> List[Dict[str, Any]]:
+    """Pick the top winners (with on-disk images) to feed to the LLM.
+
+    Strategy:
+      1. Prefer winners attributed to this exact ``offer_id`` (any platform).
+      2. Top up with the highest-scoring proven winners across all platforms
+         so the model still gets visual grounding even for brand-new offers.
+
+    Each returned dict carries ``image_local_path``, ``b64`` (the raw
+    base64 string with no data-URI prefix), ``mime``, plus enough metadata
+    for the text recap (headline, metrics, source_platform).
+    """
+    if limit <= 0:
+        return []
+    cap = min(limit, MAX_REFERENCE_IMAGES)
+
+    try:
+        all_winners = storage.list_all_winners()
+    except Exception:  # noqa: BLE001
+        all_winners = []
+
+    proven = [w for w in all_winners if w.get("proven")]
+    proven.sort(key=lambda w: float(w.get("score") or 0), reverse=True)
+
+    offer_key = str(offer_id) if offer_id else ""
+    primary = [w for w in proven if str(w.get("offer_id") or "") == offer_key]
+    backfill = [w for w in proven if str(w.get("offer_id") or "") != offer_key]
+
+    out: List[Dict[str, Any]] = []
+    seen_paths: set = set()
+    for source in (primary, backfill):
+        for w in source:
+            if len(out) >= cap:
+                break
+            path = (w.get("image_local_path") or "").strip()
+            if not path or path in seen_paths:
+                continue
+            payload = _read_reference_image(path)
+            if not payload:
+                continue
+            b64, mime = payload
+            seen_paths.add(path)
+            out.append(
+                {
+                    "image_local_path": path,
+                    "b64": b64,
+                    "mime": mime,
+                    "headline": w.get("headline") or "",
+                    "metrics": w.get("metrics") or {},
+                    "score": w.get("score"),
+                    "source_platform": w.get("source_platform") or platform,
+                }
+            )
+        if len(out) >= cap:
+            break
+    return out
 
 
 def _format_recent_prompts(recent: Sequence[str], *, limit: int = RECENT_PROMPT_MEMORY) -> str:
@@ -157,6 +301,7 @@ def _build_user_prompt(
     allocation: Sequence[Dict[str, Any]],
     aspect: str,
     recent_prompts: Sequence[str],
+    references: Sequence[Dict[str, Any]] = (),
 ) -> str:
     insights = insights or {}
     angles = insights.get("suggested_angles") or []
@@ -172,6 +317,14 @@ def _build_user_prompt(
         )
     slots_text = "\n".join(slots_block)
 
+    refs_text = _format_reference_summary(references)
+    refs_intro = (
+        f"\nVisual reference winners attached above ({len(references)} images) — "
+        "study composition, framing, palette, copy density, and CTA style. Inherit "
+        "the winning visual DNA, never copy a specific scene/character/headline:\n"
+        f"{refs_text}\n"
+    ) if references else ""
+
     return f"""Offer: {offer.get('name') or '(unnamed)'}
 Brand: {offer.get('brand_name') or '(none)'}
 Default headline: {offer.get('headline') or '(none)'}
@@ -184,7 +337,7 @@ Winner-derived insights for this offer:
 - mechanisms: {", ".join(map(str, mechanisms)) or '(none)'}
 - emotional_triggers: {", ".join(map(str, triggers)) or '(none)'}
 - suggested_angles: {", ".join(map(str, angles)) or '(none)'}
-
+{refs_intro}
 Target aspect ratio: {aspect}
 
 Slot allocation (write one concept per slot, in order):
@@ -238,16 +391,31 @@ Output ONLY that JSON object. No prose, no markdown fences."""
 # ---------------------------------------------------------------------------
 
 
-def _call_gemini(prompt: str, *, api_key: str, model: str) -> Optional[str]:
+def _call_gemini(
+    prompt: str,
+    *,
+    api_key: str,
+    model: str,
+    references: Sequence[Dict[str, Any]] = (),
+) -> Optional[str]:
     import requests
 
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{model}:generateContent?key={api_key}"
     )
+    parts: List[Dict[str, Any]] = []
+    for ref in references:
+        b64 = ref.get("b64")
+        mime = ref.get("mime") or "image/jpeg"
+        if not b64:
+            continue
+        parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+    parts.append({"text": prompt})
+
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "temperature": 1.0,
             "topP": 0.95,
@@ -273,7 +441,13 @@ def _call_gemini(prompt: str, *, api_key: str, model: str) -> Optional[str]:
         return None
 
 
-def _call_claude(prompt: str, *, api_key: str, model: str) -> Optional[str]:
+def _call_claude(
+    prompt: str,
+    *,
+    api_key: str,
+    model: str,
+    references: Sequence[Dict[str, Any]] = (),
+) -> Optional[str]:
     import requests
 
     url = "https://api.anthropic.com/v1/messages"
@@ -282,12 +456,26 @@ def _call_claude(prompt: str, *, api_key: str, model: str) -> Optional[str]:
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    content: List[Dict[str, Any]] = []
+    for ref in references:
+        b64 = ref.get("b64")
+        mime = ref.get("mime") or "image/jpeg"
+        if not b64:
+            continue
+        content.append(
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": mime, "data": b64},
+            }
+        )
+    content.append({"type": "text", "text": prompt})
+
     body = {
         "model": model,
         "max_tokens": 4096,
         "temperature": 1.0,
         "system": SYSTEM_PROMPT + "\n\nReturn only JSON.",
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": content}],
     }
     try:
         r = requests.post(url, json=body, headers=headers, timeout=120)
@@ -380,6 +568,8 @@ def generate_concepts(
     aspect: str = "1:1",
     recent_prompts: Optional[Sequence[str]] = None,
     model: Optional[str] = None,
+    platform: str = "newsbreak",
+    reference_count: int = DEFAULT_REFERENCE_IMAGE_COUNT,
 ) -> Optional[List[Dict[str, Any]]]:
     """Ask the configured LLM for ``len(allocation)`` fresh ad concepts.
 
@@ -399,12 +589,24 @@ def generate_concepts(
     if not gemini_key and not anthropic_key:
         return None
 
+    references: List[Dict[str, Any]] = []
+    offer_id = str(offer.get("id") or offer.get("offer_id") or "")
+    if reference_count > 0:
+        try:
+            references = collect_reference_images(
+                offer_id, platform=platform, limit=reference_count
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("concept_gen: reference collection failed: %s", exc)
+            references = []
+
     user_prompt = _build_user_prompt(
         offer=offer,
         insights=insights,
         allocation=allocation,
         aspect=aspect,
         recent_prompts=recent_prompts or [],
+        references=references,
     )
 
     preference = (model or DEFAULT_CONCEPT_MODEL).lower()
@@ -416,12 +618,22 @@ def generate_concepts(
     used_model: Optional[str] = None
     for backend in order:
         if backend == "gemini" and gemini_key:
-            raw_text = _call_gemini(user_prompt, api_key=gemini_key, model=GEMINI_CONCEPT_MODEL)
+            raw_text = _call_gemini(
+                user_prompt,
+                api_key=gemini_key,
+                model=GEMINI_CONCEPT_MODEL,
+                references=references,
+            )
             if raw_text:
                 used_model = GEMINI_CONCEPT_MODEL
                 break
         if backend == "claude" and anthropic_key:
-            raw_text = _call_claude(user_prompt, api_key=anthropic_key, model=CLAUDE_CONCEPT_MODEL)
+            raw_text = _call_claude(
+                user_prompt,
+                api_key=anthropic_key,
+                model=CLAUDE_CONCEPT_MODEL,
+                references=references,
+            )
             if raw_text:
                 used_model = CLAUDE_CONCEPT_MODEL
                 break
@@ -462,13 +674,19 @@ def generate_concepts(
         out.append(normalized)
 
     logger.info(
-        "concept_gen: %s emitted %d fresh concepts (aspect=%s, recent=%d)",
+        "concept_gen: %s emitted %d fresh concepts (aspect=%s, recent=%d, refs=%d)",
         used_model,
         len(out),
         aspect,
         len(recent_prompts or []),
+        len(references),
     )
     return out
 
 
-__all__ = ["generate_concepts", "RECENT_PROMPT_MEMORY"]
+__all__ = [
+    "generate_concepts",
+    "collect_reference_images",
+    "RECENT_PROMPT_MEMORY",
+    "DEFAULT_REFERENCE_IMAGE_COUNT",
+]

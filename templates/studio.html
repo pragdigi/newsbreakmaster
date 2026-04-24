@@ -313,8 +313,9 @@
     (body.winners || []).forEach(w => {
       const m = w.metrics || {};
       const tr = document.createElement('tr');
+      const imgSrc = w.local_image_url || w.image_url || '';
       tr.innerHTML = `
-        <td><div class="winner-cell">${w.image_url ? `<img src="${w.image_url}" />` : ''}
+        <td><div class="winner-cell">${imgSrc ? `<img src="${escapeHtml(imgSrc)}" loading="lazy" />` : '<span class="nb-muted nb-small">[no image]</span>'}
           <div><strong>${escapeHtml(w.headline || '')}</strong><br/>
           <small class="nb-muted">${escapeHtml(w.description || '')}</small></div></div></td>
         <td>${escapeHtml(w.offer_id || '')}</td>

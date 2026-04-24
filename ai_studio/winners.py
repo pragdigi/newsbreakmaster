@@ -23,10 +23,65 @@ import logging
 import os
 from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import urlsplit
 
 import storage
 
+try:
+    import requests  # type: ignore
+except Exception:  # pragma: no cover - requests is a hard dep but be defensive
+    requests = None  # type: ignore
+
 logger = logging.getLogger(__name__)
+
+
+def _guess_image_ext(url: str, content_type: Optional[str]) -> str:
+    if content_type:
+        ct = content_type.split(";", 1)[0].strip().lower()
+        if ct == "image/png":
+            return "png"
+        if ct in ("image/jpeg", "image/jpg"):
+            return "jpg"
+        if ct == "image/webp":
+            return "webp"
+        if ct == "image/gif":
+            return "gif"
+    path = urlsplit(url).path.lower()
+    for e in ("png", "jpg", "jpeg", "webp", "gif"):
+        if path.endswith("." + e):
+            return "jpg" if e == "jpeg" else e
+    return "jpg"
+
+
+def _cache_winner_image(ad_id: str, image_url: Optional[str], *, platform: str) -> Optional[str]:
+    """Download the ad's creative once and save it locally for later visual
+    context (multimodal analyzer, winners UI, etc.). Returns the local path
+    or ``None`` if the fetch fails. Idempotent: keeps the existing file when
+    one is already on disk for this ad_id.
+    """
+    if not image_url or not ad_id or requests is None:
+        return None
+    # Reuse any existing cached file for this ad (ignore extension).
+    existing_dir = storage.winner_image_dir(platform)
+    try:
+        for fn in os.listdir(existing_dir):
+            if fn.rsplit(".", 1)[0] == str(ad_id):
+                return os.path.join(existing_dir, fn)
+    except FileNotFoundError:
+        pass
+    try:
+        resp = requests.get(image_url, timeout=15, stream=True)
+        resp.raise_for_status()
+        ext = _guess_image_ext(image_url, resp.headers.get("Content-Type"))
+        path = storage.winner_image_path(ad_id, platform=platform, ext=ext)
+        with open(path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    f.write(chunk)
+        return path
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("winner image cache failed ad=%s err=%s", ad_id, exc)
+        return None
 
 # Defaults — tweak per offer via env overrides
 DEFAULT_WINDOW_DAYS = int(os.environ.get("AD_STUDIO_WINNERS_WINDOW_DAYS", "14"))
@@ -320,6 +375,11 @@ def refresh_winners(
                 ad_id,
             )
 
+            # Download+cache the creative image (best-effort, never fatal)
+            local_img = _cache_winner_image(
+                ad_id, creative.get("image_url"), platform=plat
+            )
+
             winner = {
                 "ad_id": ad_id,
                 "ad_account_id": aid,
@@ -327,6 +387,7 @@ def refresh_winners(
                 "headline": creative.get("headline") or row.get("name") or "",
                 "description": creative.get("description") or "",
                 "image_url": creative.get("image_url"),
+                "image_local_path": local_img,
                 "sponsored_name": creative.get("sponsored_name"),
                 "landing_url": creative.get("landing_page_url") or row.get("landing_page_url"),
                 "metrics": {

@@ -395,6 +395,18 @@ def _research_runs_file(platform: str) -> str:
     return os.path.join(_catalog_dir(platform), "research_runs.jsonl")
 
 
+def winner_image_dir(platform: str = DEFAULT_PLATFORM) -> str:
+    """Directory that holds cached winner creative images (one file per ad)."""
+    path = os.path.join(_catalog_dir(platform), "winner_images")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def winner_image_path(ad_id: str, *, platform: str = DEFAULT_PLATFORM, ext: str = "jpg") -> str:
+    safe = "".join(c for c in str(ad_id) if c.isalnum() or c in ("-", "_")) or "unknown"
+    return os.path.join(winner_image_dir(platform), f"{safe}.{ext.lstrip('.')}")
+
+
 # Winners ---------------------------------------------------------------
 def list_winners(*, platform: str = DEFAULT_PLATFORM) -> List[Dict[str, Any]]:
     return _load_catalog(_winners_file(platform))

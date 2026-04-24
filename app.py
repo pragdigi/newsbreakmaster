@@ -26,6 +26,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_from_directory,
     session,
     url_for,
 )
@@ -1637,7 +1638,28 @@ def api_studio_winners():
     guard = _studio_required()
     if guard is not None:
         return guard
-    return jsonify({"winners": storage.list_winners(platform=_active_platform())})
+    platform = _active_platform()
+    winners = storage.list_winners(platform=platform)
+    for w in winners:
+        # Expose a served URL for any locally-cached creative so the UI can
+        # render it even when the upstream image_url has expired/404'd.
+        local = w.get("image_local_path")
+        if local and os.path.exists(local):
+            w["local_image_url"] = url_for(
+                "winner_image",
+                platform=platform,
+                filename=os.path.basename(local),
+            )
+    return jsonify({"winners": winners})
+
+
+@app.route("/studio/winner-image/<platform>/<path:filename>")
+def winner_image(platform, filename):
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    directory = storage.winner_image_dir(platform)
+    return send_from_directory(directory, filename)
 
 
 @app.route("/api/studio/refresh-winners", methods=["POST"])

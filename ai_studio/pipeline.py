@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import storage
 
-from . import analyzer, image_gen, prompt_gen
+from . import analyzer, concept_gen, image_gen, prompt_gen
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,30 @@ _PLATFORM_ASPECT = {
 
 def _aspect_for_platform(platform: str) -> str:
     return _PLATFORM_ASPECT.get((platform or "").strip().lower(), "1:1")
+
+
+def _collect_recent_prompts(platform: str, *, limit: int) -> List[str]:
+    """Pull the last ``limit`` prompts from the platform's generation log.
+
+    Used as anti-repetition memory for the concept LLM so successive batches
+    don't keep producing the same scenes. Pulls a small extra buffer in case
+    older rows were image-only (no prompts persisted).
+    """
+    out: List[str] = []
+    try:
+        rows = storage.list_generations(platform=platform, limit=max(limit * 2, limit))
+    except Exception:  # noqa: BLE001
+        return out
+    for row in rows[-limit * 2 :]:
+        prompts = row.get("prompts") or []
+        if isinstance(prompts, list):
+            for p in prompts:
+                if isinstance(p, str) and p.strip():
+                    out.append(p.strip())
+    # Keep order, only the most recent ``limit`` items survive.
+    if len(out) > limit:
+        out = out[-limit:]
+    return out
 
 
 def _load_offer(offer_id: str, *, platform: str) -> Optional[Dict[str, Any]]:
@@ -148,12 +172,45 @@ def generate_ads(
         for c in storage.list_style_candidates(platform=platform)
     }
 
-    # Build one prompt per slot. Candidate slots use the candidate's
-    # prompt_template; catalog slots use prompt_gen with a fixed style.
+    # ------------------------------------------------------------------
+    # Step 1: try the LLM concept generator. It writes one fully-formed
+    # image prompt per allocated slot, with explicit anti-repetition memory
+    # built from the platform's recent generation log. If it succeeds we
+    # use those prompts directly; if it fails we fall back to prompt_gen.
+    # ------------------------------------------------------------------
+    recent_prompts = _collect_recent_prompts(platform, limit=concept_gen.RECENT_PROMPT_MEMORY)
+    llm_concepts = concept_gen.generate_concepts(
+        offer,
+        insights,
+        allocation=allocation,
+        aspect=aspect,
+        recent_prompts=recent_prompts,
+        model=model_analyzer,
+    )
+
     prompts: List[Dict[str, Any]] = []
     for i, slot in enumerate(allocation):
         sid = slot.get("style_id")
         is_candidate = bool(slot.get("is_candidate"))
+
+        if llm_concepts and i < len(llm_concepts):
+            base = dict(llm_concepts[i])
+            # Candidate-slot prompt template overrides take precedence over
+            # the LLM concept (operator opted into a hand-tuned template).
+            if is_candidate and sid in candidates_index:
+                cand = candidates_index[sid]
+                tpl = (cand.get("prompt_template") or "").strip()
+                if tpl:
+                    base["prompt"] = prompt_gen._retune_aspect(tpl, aspect)
+                base["style_id"] = sid
+                base["style_name"] = cand.get("name") or sid
+                base["concept_source"] = "candidate_template"
+            base["is_candidate"] = is_candidate
+            base["aspect"] = aspect
+            prompts.append(base)
+            continue
+
+        # Fallback: hardcoded scene templates (only when LLM is unreachable).
         if is_candidate and sid in candidates_index:
             cand = candidates_index[sid]
             base = prompt_gen.generate_prompts(
@@ -167,6 +224,7 @@ def generate_ads(
             base["style_name"] = cand.get("name") or sid
             base["is_candidate"] = True
             base["aspect"] = aspect
+            base["concept_source"] = "candidate_template"
             prompts.append(base)
         else:
             base = prompt_gen.generate_prompts(
@@ -178,6 +236,7 @@ def generate_ads(
                 aspect=aspect,
             )[0]
             base["is_candidate"] = False
+            base["concept_source"] = base.get("concept_source") or "fallback"
             prompts.append(base)
 
     images: List[Dict[str, Any]] = []
@@ -203,6 +262,8 @@ def generate_ads(
             "model_analyzer": model_analyzer or analyzer.DEFAULT_ANALYZER_MODEL,
             "prompts": [p["prompt"] for p in prompts],
             "style_ids": [p.get("style_id") for p in prompts],
+            "concept_sources": [p.get("concept_source", "fallback") for p in prompts],
+            "headlines": [p.get("headline") or p.get("angle") for p in prompts],
             "is_candidate_mask": [bool(p.get("is_candidate")) for p in prompts],
             "image_errors": [img.get("error") for img in images],
             "image_providers": [img.get("model") for img in images],

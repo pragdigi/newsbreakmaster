@@ -154,30 +154,73 @@ def _score(cpa: Optional[float], target_cpa: Optional[float], conversions: float
     return round(edge * (conversions or 0), 3)
 
 
-def _first_image_url(*candidates: Any) -> Optional[str]:
-    """Walk a handful of candidate shapes and return the first URL-looking
-    string we can find. Handles SmartNews ``image_creative_info.media_files``
-    and NewsBreak's flatter ``imageUrl`` / ``image_url`` / ``creatives[*]``.
+# Keys that, on any platform we integrate with, tend to hold an image URL.
+# NewsBreak uses ``assetUrl`` / ``assetMediaUrl`` nested under ``creative.content``;
+# SmartNews uses ``url`` / ``file_url`` nested under ``image_creative_info.media_files``;
+# GetHookd/Meta/TikTok discovery payloads use the snake/camel variants.
+_IMAGE_URL_KEYS = (
+    "assetUrl", "asset_url",
+    "url", "file_url", "fileUrl",
+    "preview_url", "previewUrl",
+    "image_url", "imageUrl",
+    "thumbnailUrl", "thumbnail_url",
+    "display_url", "displayUrl",
+    "mediaUrl", "media_url",
+    "cover_url", "coverUrl",
+    "src",
+)
+
+
+def _first_image_url(*candidates: Any, _depth: int = 0) -> Optional[str]:
+    """Walk arbitrary nested dicts/lists and return the first URL that looks
+    like an image. Handles SmartNews ``image_creative_info.media_files``,
+    NewsBreak's ``creative.content.assetUrl``, and the flatter
+    ``imageUrl`` / ``image_url`` shapes from normalized rows.
+
+    Bounded recursion (depth<=6) so pathological payloads can't loop.
     """
+    if _depth > 6:
+        return None
     for c in candidates:
         if not c:
             continue
-        if isinstance(c, str) and c.startswith(("http://", "https://")):
-            return c
+        if isinstance(c, str):
+            if c.startswith(("http://", "https://")):
+                return c
+            continue
         if isinstance(c, dict):
-            for k in (
-                "url", "file_url", "preview_url", "image_url", "imageUrl",
-                "thumbnailUrl", "thumbnail_url", "display_url", "displayUrl",
-            ):
+            # Pass 1 — prefer the well-known image keys directly on this dict.
+            for k in _IMAGE_URL_KEYS:
                 v = c.get(k)
                 if isinstance(v, str) and v.startswith(("http://", "https://")):
                     return v
+            # Pass 2 — descend into nested containers (creative.content, etc.).
+            for v in c.values():
+                if isinstance(v, (dict, list, tuple)):
+                    got = _first_image_url(v, _depth=_depth + 1)
+                    if got:
+                        return got
+            continue
         if isinstance(c, (list, tuple)):
             for item in c:
-                got = _first_image_url(item)
+                got = _first_image_url(item, _depth=_depth + 1)
                 if got:
                     return got
     return None
+
+
+def _first_str(source: Any, *keys: str) -> str:
+    """Fetch the first non-empty string value from ``source`` walking the
+    given keys in order. ``source`` may be ``None`` or non-dict; returns
+    empty string in that case.
+    """
+    if not isinstance(source, dict):
+        return ""
+    for k in keys:
+        v = source.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
 
 
 def _creative_for_ad(adapter, account_id: str, ad_group_id: Optional[str], ad_id: str) -> Dict[str, Any]:
@@ -200,49 +243,58 @@ def _creative_for_ad(adapter, account_id: str, ad_group_id: Optional[str], ad_id
             continue
         raw = a.get("raw") or a
         creative = a.get("creative") or raw.get("creative") or {}
+        # SmartNews shape: ``creative.image_creative_info``
         img_info = creative.get("image_creative_info") or {}
+        # NewsBreak shape: ``creative.content.{assetUrl,headline,description,...}``
+        content = creative.get("content") or {}
+        # Walk everything we know about — _first_image_url handles nested dicts.
         image_url = _first_image_url(
-            img_info.get("media_files"),
-            creative.get("media_files"),
-            creative.get("creatives"),
+            content,
+            img_info,
+            creative,
             raw.get("creatives"),
             raw.get("media"),
-            raw.get("imageUrl"),
-            raw.get("image_url"),
-            a.get("imageUrl"),
-            a.get("image_url"),
+            raw,
+            a,
+        )
+        headline = (
+            _first_str(img_info, "headline")
+            or _first_str(content, "headline", "title")
+            or _first_str(creative, "headline", "title")
+            or _first_str(a, "headline", "name")
+            or _first_str(raw, "headline", "title")
+        )
+        description = (
+            _first_str(img_info, "description")
+            or _first_str(content, "description", "body")
+            or _first_str(creative, "description", "body")
+            or _first_str(a, "body", "description")
+            or _first_str(raw, "description", "body")
+        )
+        sponsored_name = (
+            _first_str(img_info, "sponsored_name")
+            or _first_str(content, "brandName", "brand_name", "sponsored_name", "sponsoredName")
+            or _first_str(creative, "sponsored_name", "sponsoredName", "brandName")
+            or _first_str(raw, "sponsoredName", "sponsored_name", "brandName")
+        )
+        landing_page_url = (
+            _first_str(a, "landing_page_url", "landingPageUrl")
+            or _first_str(content, "clickThroughUrl", "click_through_url", "landing_page_url", "landingPageUrl")
+            or _first_str(creative, "landing_page_url", "landingPageUrl", "clickThroughUrl")
+            or _first_str(raw, "landing_page_url", "landingPageUrl")
+        )
+        cta_label = (
+            _first_str(a, "cta_label", "ctaLabel")
+            or _first_str(content, "callToAction", "call_to_action", "cta_label", "ctaLabel")
+            or _first_str(creative, "callToAction", "cta_label", "ctaLabel")
+            or _first_str(raw, "callToAction", "cta_label", "ctaLabel")
         )
         return {
-            "headline": (
-                img_info.get("headline")
-                or creative.get("headline")
-                or a.get("headline")
-                or raw.get("headline")
-                or raw.get("title")
-                or a.get("name")
-                or ""
-            ),
-            "description": (
-                img_info.get("description")
-                or creative.get("description")
-                or a.get("body")
-                or raw.get("description")
-                or raw.get("body")
-                or ""
-            ),
-            "sponsored_name": (
-                img_info.get("sponsored_name")
-                or creative.get("sponsored_name")
-                or raw.get("sponsoredName")
-                or raw.get("sponsored_name")
-            ),
-            "landing_page_url": (
-                a.get("landing_page_url")
-                or raw.get("landing_page_url")
-                or raw.get("landingPageUrl")
-                or a.get("landingPageUrl")
-            ),
-            "cta_label": a.get("cta_label") or raw.get("cta_label") or raw.get("ctaLabel"),
+            "headline": headline,
+            "description": description,
+            "sponsored_name": sponsored_name or None,
+            "landing_page_url": landing_page_url or None,
+            "cta_label": cta_label or None,
             "image_url": image_url,
         }
     return {}

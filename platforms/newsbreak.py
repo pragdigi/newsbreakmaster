@@ -38,8 +38,9 @@ class NewsBreakAdapter:
         return unwrap_list_response(raw)
 
     def get_ads(self, account_id: str, parent_id: str) -> List[Dict[str, Any]]:
-        # parent_id is ad_set_id on NewsBreak
-        raw = self.client.get_ads(parent_id)
+        # parent_id is ad_set_id on NewsBreak; /ad/getList also requires
+        # adAccountId or the endpoint rejects the request with HTTP 400.
+        raw = self.client.get_ads(parent_id, ad_account_id=account_id)
         return unwrap_list_response(raw)
 
     # --- writes ---

@@ -199,6 +199,7 @@ class NewsBreakClient:
         self,
         ad_set_id: str,
         *,
+        ad_account_id: Optional[str] = None,
         page_no: int = 1,
         page_size: int = 100,
     ) -> Any:
@@ -206,17 +207,17 @@ class NewsBreakClient:
 
         NewsBreak uses /campaign/getList and /ad-set/getList; the ad-level
         endpoint follows the same pattern. /ad/list (without the ``get``)
-        returns 404.
+        returns 404, and /ad/getList requires ``adAccountId`` in addition
+        to ``adSetId``.
         """
-        return self._request(
-            "GET",
-            "/ad/getList",
-            params={
-                "adSetId": ad_set_id,
-                "pageNo": page_no,
-                "pageSize": page_size,
-            },
-        )
+        params: Dict[str, Any] = {
+            "adSetId": ad_set_id,
+            "pageNo": page_no,
+            "pageSize": page_size,
+        }
+        if ad_account_id:
+            params["adAccountId"] = ad_account_id
+        return self._request("GET", "/ad/getList", params=params)
 
     def create_ad(self, payload: Dict[str, Any]) -> Any:
         return self._request("POST", "/ad/create", json_body=payload)

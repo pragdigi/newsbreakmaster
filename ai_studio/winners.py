@@ -223,6 +223,79 @@ def _first_str(source: Any, *keys: str) -> str:
     return ""
 
 
+def _build_account_index(
+    adapter,
+    account_id: str,
+    cache: Dict[tuple, Dict[str, str]],
+) -> Dict[str, str]:
+    """Walk the full campaign → ad_group → ad tree for an account and build
+    an ``ad_id → ad_group_id`` index. One network burst per account per
+    refresh, then every row lookup is O(1).
+
+    NewsBreak's ``/report`` at AD dim doesn't include ``adSetId`` or
+    ``campaignId`` on each row, so this is the only reliable way to resolve
+    the parent group needed by ``_creative_for_ad``.
+    """
+    key = ("account", str(account_id))
+    mapping = cache.get(key)
+    if mapping is not None:
+        return mapping
+    mapping = {}
+    try:
+        campaigns = adapter.get_campaigns(account_id) or []
+    except Exception as e:
+        logger.warning(
+            "winners.enrich: get_campaigns failed account=%s err=%s",
+            account_id, e,
+        )
+        cache[key] = mapping
+        return mapping
+    total_groups = 0
+    for c in campaigns:
+        cid = str(
+            c.get("id") or c.get("campaign_id") or c.get("campaignId") or ""
+        )
+        if not cid:
+            continue
+        try:
+            groups = adapter.get_ad_groups(account_id, cid) or []
+        except Exception as e:
+            logger.debug(
+                "winners.enrich: get_ad_groups failed campaign=%s err=%s", cid, e,
+            )
+            continue
+        for g in groups:
+            gid = str(
+                g.get("id")
+                or g.get("ad_set_id")
+                or g.get("adSetId")
+                or g.get("ad_group_id")
+                or ""
+            )
+            if not gid:
+                continue
+            total_groups += 1
+            try:
+                ads = adapter.get_ads(account_id, gid) or []
+            except Exception as e:
+                logger.debug(
+                    "winners.enrich: get_ads failed group=%s err=%s", gid, e,
+                )
+                continue
+            for a in ads:
+                aid_candidate = str(
+                    a.get("id") or a.get("ad_id") or a.get("adId") or ""
+                )
+                if aid_candidate:
+                    mapping[aid_candidate] = gid
+    logger.info(
+        "winners.enrich: built account index account=%s campaigns=%d groups=%d ads=%d",
+        account_id, len(campaigns), total_groups, len(mapping),
+    )
+    cache[key] = mapping
+    return mapping
+
+
 def _discover_group_id_via_campaign(
     adapter,
     account_id: str,
@@ -230,11 +303,10 @@ def _discover_group_id_via_campaign(
     ad_id: str,
     cache: Dict[tuple, Dict[str, str]],
 ) -> Optional[str]:
-    """When the report row doesn't expose ad_set_id (NewsBreak behavior), walk
-    campaign → ad_groups → ads once per campaign and build an ad_id→group_id map.
-    Result is cached in ``cache`` so subsequent ads in the same campaign reuse it.
+    """When the report row does expose campaign_id but not ad_set_id, walk
+    just that campaign once and cache per (account, campaign).
     """
-    key = (str(account_id), str(campaign_id))
+    key = ("campaign", str(account_id), str(campaign_id))
     mapping = cache.get(key)
     if mapping is None:
         mapping = {}
@@ -531,10 +603,21 @@ def refresh_winners(
                         ad_id, group_id, campaign_id,
                     )
             if not group_id:
-                logger.info(
-                    "winners.enrich: no ad_set_id for ad=%s (campaign=%s, row_keys=%s)",
-                    ad_id, campaign_id, sorted(list(row.keys()))[:25],
-                )
+                # Fallback for NewsBreak: report rows don't carry campaign_id
+                # either, so walk the whole account tree once and resolve
+                # ad_id → ad_group_id from a global index.
+                account_index = _build_account_index(adapter, aid, _ad_group_cache)
+                group_id = account_index.get(str(ad_id))
+                if group_id:
+                    logger.info(
+                        "winners.enrich: resolved ad_id=%s → ad_group_id=%s via account index",
+                        ad_id, group_id,
+                    )
+                else:
+                    logger.info(
+                        "winners.enrich: ad=%s not found in account=%s index (size=%d)",
+                        ad_id, aid, len(account_index),
+                    )
             creative = _creative_for_ad(adapter, aid, group_id, ad_id)
 
             # Download+cache the creative image (best-effort, never fatal)

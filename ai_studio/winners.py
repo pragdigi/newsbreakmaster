@@ -250,13 +250,44 @@ def _build_account_index(
         )
         cache[key] = mapping
         return mapping
-    total_groups = 0
+    campaign_ids: List[str] = []
     for c in campaigns:
         cid = str(
             c.get("id") or c.get("campaign_id") or c.get("campaignId") or ""
         )
-        if not cid:
-            continue
+        if cid:
+            campaign_ids.append(cid)
+
+    # If get_campaigns returned nothing (or far fewer than we expected),
+    # try pulling campaign IDs from the report so we can still walk the
+    # ad-group tree. NewsBreak's /campaign/getList can omit campaigns
+    # depending on status filters, so this is a useful safety net.
+    if not campaign_ids or len(campaign_ids) < 2:
+        try:
+            from datetime import date as _d, timedelta as _td
+
+            today = _d.today()
+            rep = adapter.fetch_report_rows(
+                account_id, "campaign", today - _td(days=90), today
+            ) or []
+            for r in rep:
+                cid = str(
+                    r.get("id")
+                    or r.get("campaign_id")
+                    or r.get("campaignId")
+                    or ""
+                )
+                if cid and cid not in campaign_ids:
+                    campaign_ids.append(cid)
+        except Exception as e:
+            logger.debug(
+                "winners.enrich: campaign-report fallback failed account=%s err=%s",
+                account_id, e,
+            )
+
+    total_groups = 0
+    group_ids: List[str] = []
+    for cid in campaign_ids:
         try:
             groups = adapter.get_ad_groups(account_id, cid) or []
         except Exception as e:
@@ -275,22 +306,57 @@ def _build_account_index(
             if not gid:
                 continue
             total_groups += 1
-            try:
-                ads = adapter.get_ads(account_id, gid) or []
-            except Exception as e:
-                logger.debug(
-                    "winners.enrich: get_ads failed group=%s err=%s", gid, e,
+            if gid not in group_ids:
+                group_ids.append(gid)
+
+    # Defense-in-depth: if walking campaigns → ad_groups didn't surface
+    # any groups, hit the AD_SET dim report to recover group IDs. This is
+    # what unblocks NewsBreak accounts where /campaign/getList returns
+    # filtered results (status-based) but the report still shows spend.
+    if not group_ids:
+        try:
+            from datetime import date as _d, timedelta as _td
+
+            today = _d.today()
+            ad_set_rep = adapter.fetch_report_rows(
+                account_id, "ad_set", today - _td(days=90), today
+            ) or []
+            for r in ad_set_rep:
+                gid = str(
+                    r.get("id")
+                    or r.get("ad_set_id")
+                    or r.get("adSetId")
+                    or ""
                 )
-                continue
-            for a in ads:
-                aid_candidate = str(
-                    a.get("id") or a.get("ad_id") or a.get("adId") or ""
-                )
-                if aid_candidate:
-                    mapping[aid_candidate] = gid
+                if gid and gid not in group_ids:
+                    group_ids.append(gid)
+            logger.info(
+                "winners.enrich: ad_set-report fallback account=%s groups=%d",
+                account_id, len(group_ids),
+            )
+        except Exception as e:
+            logger.debug(
+                "winners.enrich: ad_set-report fallback failed account=%s err=%s",
+                account_id, e,
+            )
+
+    for gid in group_ids:
+        try:
+            ads = adapter.get_ads(account_id, gid) or []
+        except Exception as e:
+            logger.debug(
+                "winners.enrich: get_ads failed group=%s err=%s", gid, e,
+            )
+            continue
+        for a in ads:
+            aid_candidate = str(
+                a.get("id") or a.get("ad_id") or a.get("adId") or ""
+            )
+            if aid_candidate:
+                mapping[aid_candidate] = gid
     logger.info(
         "winners.enrich: built account index account=%s campaigns=%d groups=%d ads=%d",
-        account_id, len(campaigns), total_groups, len(mapping),
+        account_id, len(campaign_ids), len(group_ids), len(mapping),
     )
     cache[key] = mapping
     return mapping

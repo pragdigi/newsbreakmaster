@@ -90,15 +90,33 @@ class NewsBreakAdapter:
     ) -> List[Dict[str, Any]]:
         from rules_engine import build_report_payload, normalize_report_rows
 
-        dim = "AD"
         if scope == "ad_set":
-            dim = "AD_SET"
+            dimensions: List[str] = ["AD_SET", "CAMPAIGN"]
         elif scope == "campaign":
-            dim = "CAMPAIGN"
+            dimensions = ["CAMPAIGN"]
         elif scope == "ad_account":
-            dim = "AD_ACCOUNT"
-        payload = build_report_payload(account_id, start, end, dim)
-        raw = self.client.get_integrated_report(payload)
+            dimensions = ["AD_ACCOUNT"]
+        else:
+            # AD scope: request the full hierarchy so each row carries
+            # campaignId + adSetId. Without this, NewsBreak only emits
+            # adId + metrics and there's no way to resolve the parent
+            # ad set for creative enrichment or winner discovery.
+            dimensions = ["AD", "AD_SET", "CAMPAIGN"]
+
+        payload = build_report_payload(account_id, start, end, dimensions[0])
+        payload["dimensions"] = dimensions
+        try:
+            raw = self.client.get_integrated_report(payload)
+        except NewsBreakAPIError:
+            if len(dimensions) == 1:
+                raise
+            # Some tenants may reject multi-dim payloads; retry with just
+            # the primary dimension so reporting still works even if
+            # enrichment has to fall back to the account index path.
+            fallback_payload = build_report_payload(
+                account_id, start, end, dimensions[0]
+            )
+            raw = self.client.get_integrated_report(fallback_payload)
         rows = normalize_report_rows(raw)
         return [_canonicalize_row(r, scope) for r in rows]
 

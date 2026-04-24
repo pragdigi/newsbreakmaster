@@ -281,6 +281,18 @@
       </div>
     </div>
 
+    <!-- AI Studio: generate a batch -->
+    <div class="nb-ai-studio-bar" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap;">
+      <button type="button" class="nb-btn" id="sn-studio-generate" style="background:#4f46e5;border-color:#4f46e5;color:#fff;">
+        ✨ Generate with AI (10)
+      </button>
+      <span class="nb-muted" style="font-size:13px;">
+        Uses your offer + winners to render a batch of on-brand 1:1 ads and drops them into the queue below.
+      </span>
+      <input type="hidden" name="studio_gen_id" id="sn-studio-gen-id" />
+      <span id="sn-studio-gen-status" class="nb-muted" style="font-size:13px;"></span>
+    </div>
+
     <!-- Dropzone -->
     <label for="sn-file-input" class="nb-dropzone" id="sn-dropzone" style="margin-top:16px;">
       <input type="file" id="sn-file-input" multiple accept="image/*" hidden>
@@ -1100,6 +1112,18 @@
   <div class="nb-field-group">
     <h3>6 · Creatives</h3>
 
+    <!-- AI Studio: generate a batch -->
+    <div class="nb-ai-studio-bar" style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      <button type="button" class="nb-btn" id="nb-studio-generate" style="background:#4f46e5;border-color:#4f46e5;color:#fff;">
+        ✨ Generate with AI (10)
+      </button>
+      <span class="nb-muted" style="font-size:13px;">
+        Pulls your saved offer + winners, produces 10 1:1 ads and feeds them to the dropzone.
+      </span>
+      <input type="hidden" name="studio_gen_id" id="nb-studio-gen-id" />
+      <span id="nb-studio-gen-status" class="nb-muted" style="font-size:13px;"></span>
+    </div>
+
     <!-- Dropzone -->
     <label for="file-input" class="nb-dropzone" id="dropzone">
       <input type="file" id="file-input" name="creatives" multiple accept="image/*,video/*" hidden>
@@ -1561,4 +1585,94 @@
 })();
 </script>
 {% endif %}
+
+<script>
+/* ========= AI Studio "Generate with AI" integration ========= */
+(function () {
+  var platform = {{ active_platform|tojson }};
+  var config = platform === 'smartnews'
+    ? {
+        buttonId: 'sn-studio-generate',
+        statusId: 'sn-studio-gen-status',
+        genIdId: 'sn-studio-gen-id',
+        fileInputId: 'sn-file-input',
+        offerSelectId: 'sn-offer-ref',
+      }
+    : {
+        buttonId: 'nb-studio-generate',
+        statusId: 'nb-studio-gen-status',
+        genIdId: 'nb-studio-gen-id',
+        fileInputId: 'file-input',
+        offerSelectId: 'offer_ref',
+      };
+
+  var btn = document.getElementById(config.buttonId);
+  if (!btn) return;
+  var statusEl = document.getElementById(config.statusId);
+  var genIdEl = document.getElementById(config.genIdId);
+
+  function currentOfferId() {
+    var sel = document.getElementById(config.offerSelectId);
+    if (sel && sel.value) return sel.value;
+    // Fall back to any element named offer / offer_id.
+    var fallback = document.querySelector('[name="offer_id"], [name="offer"]');
+    return fallback ? fallback.value : '';
+  }
+
+  function setStatus(msg) { if (statusEl) statusEl.textContent = msg || ''; }
+
+  async function dropFileToInput(file) {
+    var input = document.getElementById(config.fileInputId);
+    if (!input) return false;
+    try {
+      var dt = new DataTransfer();
+      for (var i = 0; i < (input.files ? input.files.length : 0); i++) {
+        dt.items.add(input.files[i]);
+      }
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    } catch (err) {
+      console.error('failed to append file to input', err);
+      return false;
+    }
+  }
+
+  btn.addEventListener('click', async function () {
+    var offerId = currentOfferId();
+    if (!offerId) { setStatus('Pick an offer in Section 0 first.'); return; }
+    btn.disabled = true;
+    setStatus('Generating… 30-60s depending on models.');
+    try {
+      var res = await fetch('/api/studio/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          offer_id: offerId,
+          platform: platform,
+          count: 10,
+          model_image: 'nano-banana-2',
+        }),
+      });
+      var body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'generate failed');
+      genIdEl.value = body.gen_id;
+      var dropped = 0;
+      for (var i = 0; i < body.images.length; i++) {
+        var img = body.images[i];
+        if (!img.b64) continue;
+        var blob = await (await fetch('data:' + (img.mime || 'image/png') + ';base64,' + img.b64)).blob();
+        var file = new File([blob], (body.gen_id.slice(0, 6)) + '-' + i + '.png', { type: img.mime || 'image/png' });
+        if (await dropFileToInput(file)) dropped++;
+      }
+      setStatus('Dropped ' + dropped + ' generated images. Batch ' + body.gen_id.slice(0, 8) + '.');
+    } catch (err) {
+      setStatus('Error: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();
+</script>
 {% endblock %}

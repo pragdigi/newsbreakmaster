@@ -149,6 +149,98 @@ def run_scheduled_rules() -> None:
             logger.exception("Scheduler failed for platform %s: %s", platform, e)
 
 
+def _adapters_for_platform(platform: str):
+    """Yield (adapter, uid) pairs for every configured account on a platform."""
+    creds = _env_credentials_for(platform) or _file_credentials_for(platform)
+    for cred in creds:
+        uid = cred["uid"]
+        try:
+            if platform == "newsbreak":
+                adapter = get_adapter(
+                    "newsbreak",
+                    access_token=cred.get("access_token"),
+                    org_ids=cred.get("org_ids") or [],
+                )
+            elif platform == "smartnews":
+                adapter = get_adapter(
+                    "smartnews",
+                    client_id=cred.get("client_id"),
+                    client_secret=cred.get("client_secret"),
+                    account_ids=cred.get("account_ids") or [],
+                )
+            else:
+                continue
+        except Exception as e:
+            logger.warning("AI studio scheduler skip %s/%s: %s", platform, uid, e)
+            continue
+        yield adapter, uid
+
+
+def run_ad_studio_nightly() -> None:
+    """Nightly AI Ad Studio maintenance: refresh winners + discover styles + reconcile lifecycle.
+
+    Runs across every platform with configured credentials. Each hook is
+    isolated behind try/except so a single failure doesn't kill the others.
+    """
+    for platform in PLATFORMS:
+        for adapter, uid in _adapters_for_platform(platform):
+            # 1) Winners refresher — produces winners.json and flips
+            #    becomes_winner=true on any matching generation row.
+            try:
+                from ai_studio.winners import refresh_winners
+
+                summary = refresh_winners(adapter, platform=platform)
+                logger.info(
+                    "ai_studio.winners platform=%s uid=%s added=%s updated=%s demoted=%s linked=%s",
+                    platform,
+                    uid,
+                    summary.get("added"),
+                    summary.get("updated"),
+                    summary.get("demoted"),
+                    summary.get("generations_linked"),
+                )
+            except Exception as e:
+                logger.exception(
+                    "ai_studio.winners failed platform=%s uid=%s: %s", platform, uid, e
+                )
+
+            # 2) Research discovery — scan catalog for candidate styles
+            #    across every available mode.
+            try:
+                from ai_studio.research import discover_all
+
+                discovered = discover_all(adapter, platform=platform)
+                logger.info(
+                    "ai_studio.research platform=%s uid=%s modes=%s candidates=%s",
+                    platform,
+                    uid,
+                    list(discovered.keys()),
+                    sum(len(v or []) for v in discovered.values()),
+                )
+            except Exception as e:
+                logger.exception(
+                    "ai_studio.research failed platform=%s uid=%s: %s", platform, uid, e
+                )
+
+            # 3) Lifecycle reconciliation — promote/archive/demote-flag.
+            try:
+                from ai_studio.research.lifecycle import reconcile
+
+                report = reconcile(platform=platform)
+                logger.info(
+                    "ai_studio.lifecycle platform=%s uid=%s promoted=%s archived=%s flagged=%s",
+                    platform,
+                    uid,
+                    len(report.get("promoted", [])),
+                    len(report.get("archived", [])),
+                    len(report.get("demotion_flagged", [])),
+                )
+            except Exception as e:
+                logger.exception(
+                    "ai_studio.lifecycle failed platform=%s uid=%s: %s", platform, uid, e
+                )
+
+
 def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
     global _scheduler
     if _scheduler is not None:
@@ -161,9 +253,22 @@ def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
         id="newsbreak_rules",
         replace_existing=True,
     )
+    # AI Ad Studio nightly pass at 05:30 UTC — well after most US/JP spend
+    # has settled into the previous 24h window.
+    sched.add_job(
+        run_ad_studio_nightly,
+        "cron",
+        hour=int(os.environ.get("AD_STUDIO_NIGHTLY_HOUR", "5")),
+        minute=int(os.environ.get("AD_STUDIO_NIGHTLY_MINUTE", "30")),
+        id="ai_studio_nightly",
+        replace_existing=True,
+    )
     sched.start()
     _scheduler = sched
-    logger.info("Scheduler started: rules every %s min (all platforms)", interval_minutes)
+    logger.info(
+        "Scheduler started: rules every %s min + AI studio nightly (all platforms)",
+        interval_minutes,
+    )
     return sched
 
 

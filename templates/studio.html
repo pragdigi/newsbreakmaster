@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+{% block title %}AI Ad Studio · {{ active_platform_label }}{% endblock %}
+{% block content %}
+<section class="nb-section">
+  <header class="nb-section-header">
+    <h1>AI Ad Studio</h1>
+    <p class="nb-muted">
+      Learns from your winning ads, distills them into insights, and generates
+      a full batch of on-brand static ads ready to drop into a launch.
+      Active platform: <strong>{{ active_platform_label }}</strong>.
+    </p>
+  </header>
+
+  <nav class="nb-tabs" role="tablist" aria-label="AI Studio sections">
+    <button type="button" class="nb-tab active" data-tab="generate">Generate</button>
+    <button type="button" class="nb-tab" data-tab="winners">Winners</button>
+    <button type="button" class="nb-tab" data-tab="insights">Insights</button>
+    <button type="button" class="nb-tab" data-tab="research">Research</button>
+  </nav>
+
+  <!-- ============ GENERATE =========== -->
+  <div class="nb-tab-panel" data-panel="generate">
+    <form id="studio-gen-form" class="nb-form">
+      <div class="nb-form-row">
+        <label for="gen-offer">Offer</label>
+        <select id="gen-offer" required>
+          <option value="">Select an offer…</option>
+          {% for o in offers %}
+          <option value="{{ o.id }}">{{ o.name }}{% if o.brand_name %} — {{ o.brand_name }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="nb-form-row">
+        <label for="gen-count">How many</label>
+        <input type="number" id="gen-count" value="10" min="1" max="20" />
+      </div>
+      <div class="nb-form-row">
+        <label for="gen-model">Image model</label>
+        <select id="gen-model">
+          <option value="nano-banana-2">Nano Banana 2 (Gemini)</option>
+          <option value="gpt-image-2">gpt-image-2 (OpenAI)</option>
+        </select>
+      </div>
+      <div class="nb-form-row">
+        <label for="gen-research-ratio">Research mix (candidates %)</label>
+        <input type="range" id="gen-research-ratio" min="0" max="60" step="5" value="30" />
+        <output id="gen-research-ratio-out">30%</output>
+      </div>
+      <div class="nb-form-row">
+        <button type="submit" class="nb-btn primary">Generate</button>
+        <span id="gen-status" class="nb-muted"></span>
+      </div>
+    </form>
+
+    <div id="gen-insights" class="nb-card" hidden>
+      <h3>Insights used</h3>
+      <div id="gen-insights-body"></div>
+    </div>
+
+    <div id="gen-grid" class="studio-grid"></div>
+  </div>
+
+  <!-- ============ WINNERS =========== -->
+  <div class="nb-tab-panel" data-panel="winners" hidden>
+    <div class="nb-form-row">
+      <button type="button" id="winners-refresh" class="nb-btn">Refresh winners from report</button>
+      <span id="winners-status" class="nb-muted"></span>
+    </div>
+    <table class="nb-table" id="winners-table">
+      <thead>
+        <tr>
+          <th>Ad</th>
+          <th>Offer</th>
+          <th>Spend</th>
+          <th>Conv</th>
+          <th>CPA</th>
+          <th>Score</th>
+          <th>Marked</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ============ INSIGHTS =========== -->
+  <div class="nb-tab-panel" data-panel="insights" hidden>
+    <div class="nb-form-row">
+      <label for="insights-offer">Offer</label>
+      <select id="insights-offer">
+        <option value="">Select an offer…</option>
+        {% for o in offers %}
+        <option value="{{ o.id }}">{{ o.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="button" id="insights-regen" class="nb-btn">Regenerate</button>
+    </div>
+    <div id="insights-body" class="nb-card"><em class="nb-muted">Pick an offer to see its insights.</em></div>
+  </div>
+
+  <!-- ============ RESEARCH =========== -->
+  <div class="nb-tab-panel" data-panel="research" hidden>
+    <section class="nb-card">
+      <h3>Candidate catalog</h3>
+      <p class="nb-muted">
+        Experimental ad styles discovered by the research module. Approved
+        styles graduate into the main catalog; failures get archived.
+      </p>
+      <div id="research-candidates"></div>
+    </section>
+
+    <section class="nb-card">
+      <h3>Discovery controls</h3>
+      <div class="nb-form-row">
+        <button type="button" class="nb-btn" data-discover="cluster_winners">Cluster our winners</button>
+        <span class="nb-muted">Finds clusters of winning ads that don't match the catalog.</span>
+      </div>
+      <div class="nb-form-row">
+        <input type="text" id="research-keywords" placeholder="GetHookd keywords (comma-separated)" />
+        <button type="button" class="nb-btn" data-discover="gethookd">Search GetHookd</button>
+        <span id="gethookd-credits" class="nb-muted"></span>
+      </div>
+      <div class="nb-form-row">
+        <select id="research-brainstorm-offer">
+          <option value="">Offer for brainstorm…</option>
+          {% for o in offers %}
+          <option value="{{ o.id }}">{{ o.name }}</option>
+          {% endfor %}
+        </select>
+        <button type="button" class="nb-btn" data-discover="brainstorm">Brainstorm with AI</button>
+      </div>
+      <div class="nb-form-row">
+        <input type="file" id="research-upload" multiple accept="image/*" />
+        <select id="research-upload-offer">
+          <option value="">Attach to offer…</option>
+          {% for o in offers %}
+          <option value="{{ o.id }}">{{ o.name }}</option>
+          {% endfor %}
+        </select>
+        <button type="button" class="nb-btn" id="research-upload-btn">Extract style from uploads</button>
+      </div>
+      <div id="research-status" class="nb-muted"></div>
+    </section>
+
+    <section class="nb-card">
+      <h3>Allocation monitor</h3>
+      <div id="research-allocation">
+        <em class="nb-muted">Recent generations will show catalog vs. candidate slot share here.</em>
+      </div>
+    </section>
+  </div>
+</section>
+
+<script>
+(function () {
+  const tabs = document.querySelectorAll('.nb-tab');
+  const panels = document.querySelectorAll('.nb-tab-panel');
+  tabs.forEach(btn => btn.addEventListener('click', () => {
+    tabs.forEach(b => b.classList.toggle('active', b === btn));
+    const key = btn.dataset.tab;
+    panels.forEach(p => p.hidden = p.dataset.panel !== key);
+    if (key === 'winners') loadWinners();
+    if (key === 'research') loadResearch();
+  }));
+
+  const ratio = document.getElementById('gen-research-ratio');
+  const ratioOut = document.getElementById('gen-research-ratio-out');
+  ratio.addEventListener('input', () => ratioOut.textContent = ratio.value + '%');
+
+  const form = document.getElementById('studio-gen-form');
+  const grid = document.getElementById('gen-grid');
+  const statusEl = document.getElementById('gen-status');
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const offerId = document.getElementById('gen-offer').value;
+    if (!offerId) return;
+    const count = parseInt(document.getElementById('gen-count').value, 10) || 10;
+    const model = document.getElementById('gen-model').value;
+    const researchRatio = parseFloat(ratio.value) / 100;
+    statusEl.textContent = 'Generating… this takes 30-60s depending on the models.';
+    grid.innerHTML = '';
+    try {
+      const res = await fetch('/api/studio/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          offer_id: offerId,
+          count,
+          model_image: model,
+          research_ratio: researchRatio,
+        })
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'generate failed');
+      renderBatch(body);
+      statusEl.textContent = 'Batch ' + body.gen_id.slice(0, 8) + ' ready. Drop any tile into a launch.';
+    } catch (err) {
+      statusEl.textContent = 'Error: ' + err.message;
+    }
+  });
+
+  function renderBatch(body) {
+    const card = document.getElementById('gen-insights');
+    const body_ = document.getElementById('gen-insights-body');
+    if (body.prompts && body.prompts.length) {
+      card.hidden = false;
+      body_.innerHTML = body.prompts.map((p, i) => `
+        <details><summary>${escapeHtml(p.style_name || p.style_id)} ${p.is_candidate ? '<span class="chip experimental">experimental</span>' : ''}</summary>
+        <pre>${escapeHtml(p.prompt)}</pre></details>
+      `).join('');
+    }
+    body.images.forEach((img, i) => {
+      const tile = document.createElement('div');
+      tile.className = 'studio-tile' + (img.is_candidate ? ' is-candidate' : '');
+      if (img.b64) {
+        tile.innerHTML = `
+          <img src="data:${img.mime || 'image/png'};base64,${img.b64}" alt="${escapeHtml(img.style_name || '')}" />
+          <div class="studio-tile-meta">
+            <strong>${escapeHtml(img.style_name || img.style_id || '')}</strong>
+            ${img.is_candidate ? '<span class="chip experimental">experimental</span>' : ''}
+            <span class="nb-muted">${escapeHtml(img.model || '')} · ${img.ms||0}ms</span>
+          </div>
+          <div class="studio-tile-actions">
+            <button type="button" class="nb-btn small" data-send="launch" data-gen="${body.gen_id}" data-idx="${i}">Send to launch</button>
+            <a class="nb-btn small" href="data:${img.mime || 'image/png'};base64,${img.b64}" download="${body.gen_id}-${i}.png">Download</a>
+          </div>
+        `;
+      } else {
+        tile.innerHTML = `<div class="studio-tile-error">Error: ${escapeHtml(img.error || 'no image')}</div>`;
+      }
+      grid.appendChild(tile);
+    });
+
+    grid.querySelectorAll('[data-send="launch"]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        const image = body.images[idx];
+        if (!image || !image.b64) return;
+        const blob = await (await fetch(`data:${image.mime};base64,${image.b64}`)).blob();
+        const file = new File([blob], `${body.gen_id}-${idx}.png`, { type: image.mime || 'image/png' });
+        if (window.opener && window.opener.adStudioDrop) {
+          window.opener.adStudioDrop(file, body.gen_id);
+          btn.textContent = 'Sent ✓';
+        } else {
+          sessionStorage.setItem('studio_queue_' + idx, JSON.stringify({
+            gen_id: body.gen_id,
+            b64: image.b64,
+            mime: image.mime,
+            name: file.name,
+          }));
+          btn.textContent = 'Queued — open Bulk launch';
+        }
+      });
+    });
+  }
+
+  async function loadWinners() {
+    const res = await fetch('/api/studio/winners');
+    const body = await res.json();
+    const tbody = document.querySelector('#winners-table tbody');
+    tbody.innerHTML = '';
+    (body.winners || []).forEach(w => {
+      const m = w.metrics || {};
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><div class="winner-cell">${w.image_url ? `<img src="${w.image_url}" />` : ''}
+          <div><strong>${escapeHtml(w.headline || '')}</strong><br/>
+          <small class="nb-muted">${escapeHtml(w.description || '')}</small></div></div></td>
+        <td>${escapeHtml(w.offer_id || '')}</td>
+        <td>$${(m.spend || 0).toFixed(2)}</td>
+        <td>${m.conversions || 0}</td>
+        <td>${m.cpa ? '$' + Number(m.cpa).toFixed(2) : '—'}</td>
+        <td>${w.score || ''}</td>
+        <td><small>${w.marked_at || ''}</small></td>`;
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('winners-refresh').addEventListener('click', async () => {
+    const s = document.getElementById('winners-status');
+    s.textContent = 'Refreshing…';
+    const res = await fetch('/api/studio/refresh-winners', { method: 'POST' });
+    const body = await res.json();
+    s.textContent = body.ok
+      ? `Found ${body.summary.winners_found} winners across ${body.summary.accounts_scanned} accounts.`
+      : 'Error: ' + (body.error || 'unknown');
+    if (body.ok) loadWinners();
+  });
+
+  const insightsSel = document.getElementById('insights-offer');
+  const insightsBody = document.getElementById('insights-body');
+  insightsSel.addEventListener('change', () => loadInsights(false));
+  document.getElementById('insights-regen').addEventListener('click', () => loadInsights(true));
+  async function loadInsights(fresh) {
+    const id = insightsSel.value;
+    if (!id) return;
+    insightsBody.innerHTML = '<em class="nb-muted">Loading…</em>';
+    const res = await fetch(`/api/studio/insights/${encodeURIComponent(id)}?fresh=${fresh ? 1 : 0}`);
+    const body = await res.json();
+    if (!res.ok) { insightsBody.textContent = 'Error: ' + body.error; return; }
+    const ins = body.insights || {};
+    insightsBody.innerHTML = `
+      <div><strong>Model:</strong> ${escapeHtml(ins.model || '—')} · <strong>Generated:</strong> ${escapeHtml(ins.generated_at || '')}</div>
+      <h4>Top hooks</h4>
+      <ul>${(ins.top_hooks || []).map(x => '<li>' + escapeHtml(x) + '</li>').join('')}</ul>
+      <h4>Emotional triggers</h4>
+      <ul>${(ins.emotional_triggers || []).map(x => '<li>' + escapeHtml(x) + '</li>').join('')}</ul>
+      <h4>Mechanisms</h4>
+      <ul>${(ins.mechanisms || []).map(x => '<li>' + escapeHtml(x) + '</li>').join('')}</ul>
+      <h4>Suggested angles</h4>
+      <ul>${(ins.suggested_angles || []).map(x => '<li>' + escapeHtml(x) + '</li>').join('')}</ul>
+      <h4>Winning style mix</h4>
+      <pre>${escapeHtml(JSON.stringify(ins.winning_style_mix || {}, null, 2))}</pre>
+    `;
+  }
+
+  async function loadResearch() {
+    const res = await fetch('/api/studio/research/candidates');
+    const body = await res.json();
+    const host = document.getElementById('research-candidates');
+    const cands = (body.candidates || []).filter(c => !String(c.style_id || '').startsWith('catalog:'));
+    if (!cands.length) {
+      host.innerHTML = '<em class="nb-muted">No candidates yet — run a discovery mode below.</em>';
+    } else {
+      host.innerHTML = cands.map(c => `
+        <div class="nb-card candidate-card">
+          <header>
+            <strong>${escapeHtml(c.name || c.style_id)}</strong>
+            <span class="chip ${escapeHtml(c.status || 'candidate')}">${escapeHtml(c.status || 'candidate')}</span>
+            <span class="chip">${escapeHtml(c.source || '')}</span>
+          </header>
+          <p>${escapeHtml(c.description || '')}</p>
+          <dl class="candidate-stats">
+            <dt>Trials</dt><dd>${c.trials || 0}</dd>
+            <dt>Wins</dt><dd>${c.wins || 0}</dd>
+            <dt>CPA</dt><dd>${c.cpa ? '$' + Number(c.cpa).toFixed(2) : '—'}</dd>
+          </dl>
+          <div class="nb-form-row">
+            <button type="button" class="nb-btn small" data-act="promote" data-id="${escapeHtml(c.style_id)}">Promote</button>
+            <button type="button" class="nb-btn small" data-act="archive" data-id="${escapeHtml(c.style_id)}">Archive</button>
+          </div>
+        </div>
+      `).join('');
+      host.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
+        const act = b.dataset.act, id = b.dataset.id;
+        await fetch('/api/studio/research/' + act, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ style_id: id }),
+        });
+        loadResearch();
+      }));
+    }
+
+    try {
+      const auth = await (await fetch('/api/studio/research/gethookd/authcheck')).json();
+      const credits = auth?.payload?.remaining_credits;
+      document.getElementById('gethookd-credits').textContent =
+        credits != null ? `${credits} GetHookd credits left` : '';
+    } catch (_) {}
+  }
+
+  document.querySelectorAll('[data-discover]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const mode = btn.dataset.discover;
+      const statusEl = document.getElementById('research-status');
+      statusEl.textContent = `Running ${mode}…`;
+      const payload = { mode };
+      if (mode === 'gethookd') {
+        const kw = document.getElementById('research-keywords').value.trim();
+        payload.keywords = kw ? kw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      }
+      if (mode === 'brainstorm') {
+        payload.offer_id = document.getElementById('research-brainstorm-offer').value;
+        if (!payload.offer_id) { statusEl.textContent = 'Select an offer first.'; return; }
+      }
+      const res = await fetch('/api/studio/research/discover', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json();
+      statusEl.textContent = res.ok
+        ? `Got ${(body.candidates || []).length || 0} new candidates.`
+        : 'Error: ' + body.error;
+      if (res.ok) loadResearch();
+    });
+  });
+
+  document.getElementById('research-upload-btn').addEventListener('click', async () => {
+    const files = document.getElementById('research-upload').files;
+    if (!files.length) return;
+    const fd = new FormData();
+    fd.append('offer_id', document.getElementById('research-upload-offer').value || '');
+    for (const f of files) fd.append('images', f);
+    document.getElementById('research-status').textContent = `Uploading ${files.length} references…`;
+    const res = await fetch('/api/studio/research/upload-refs', { method: 'POST', body: fd });
+    const body = await res.json();
+    document.getElementById('research-status').textContent = res.ok
+      ? `Extracted ${(body.candidates || []).length} style templates.`
+      : 'Error: ' + body.error;
+    if (res.ok) loadResearch();
+  });
+
+  function escapeHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+})();
+</script>
+
+<style>
+.nb-tabs { display: flex; gap: .5rem; border-bottom: 1px solid var(--nb-border, #e5e7eb); margin: 1rem 0; }
+.nb-tab { background: none; border: none; padding: .5rem 1rem; cursor: pointer;
+  border-bottom: 2px solid transparent; font-weight: 500; color: #555; }
+.nb-tab.active { border-bottom-color: #d23f3f; color: #111; }
+.studio-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem; margin-top: 1rem; }
+.studio-tile { background: white; border: 1px solid var(--nb-border, #e5e7eb);
+  border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+.studio-tile.is-candidate { border-color: #ec4899; box-shadow: 0 0 0 1px #ec489966; }
+.studio-tile img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover; }
+.studio-tile-meta { padding: .5rem .75rem; display: flex; flex-wrap: wrap; gap: .25rem .5rem; align-items: center; font-size: .85rem; }
+.studio-tile-actions { display: flex; gap: .25rem; padding: .5rem .75rem; border-top: 1px solid #f3f4f6; }
+.studio-tile-error { padding: 1rem; color: #b91c1c; font-size: .85rem; }
+.chip { display: inline-block; font-size: .7rem; padding: .1rem .4rem; border-radius: 999px;
+  background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; text-transform: lowercase; }
+.chip.experimental { background: #fdf2f8; color: #be185d; border-color: #fbcfe8; }
+.chip.promoted { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+.chip.archived { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+.chip.testing { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+.candidate-card header { display: flex; gap: .5rem; align-items: center; margin-bottom: .25rem; }
+.candidate-stats { display: grid; grid-template-columns: repeat(3, auto); gap: .1rem 1rem; margin: .5rem 0; }
+.candidate-stats dt { font-size: .7rem; color: #6b7280; text-transform: uppercase; }
+.candidate-stats dd { margin: 0; font-weight: 600; }
+.winner-cell { display: flex; gap: .5rem; align-items: center; }
+.winner-cell img { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; }
+.nb-btn.small { padding: .25rem .5rem; font-size: .8rem; }
+</style>
+{% endblock %}

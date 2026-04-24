@@ -18,6 +18,7 @@
       <a href="{{ url_for('scaling') }}">Scaling</a>
       <a href="{{ url_for('rules_page') }}">Rules</a>
       <a href="{{ url_for('settings_page') }}">Offers</a>
+      <a href="{{ url_for('studio_page') }}">AI Studio</a>
       <span class="nb-platform-switcher" title="Active ad platform">
         {% for p in available_platforms %}
           {% if p.id == active_platform %}

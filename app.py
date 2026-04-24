@@ -285,6 +285,42 @@ def _inject_platform():
     }
 
 
+def _studio_link_launch_if_any(platform: str, gen_id, result) -> None:
+    """Record launched ad IDs on an AI Studio generation batch, if linked.
+
+    Called by both the NewsBreak and SmartNews launch flows. Gracefully
+    no-ops when the studio module isn't importable, when no ``gen_id`` was
+    submitted, or when the result payload doesn't expose ad IDs.
+    """
+    if not gen_id:
+        return
+    try:
+        from ai_studio.feedback import link_launch
+    except Exception:  # noqa: BLE001
+        return
+    ad_ids: list = []
+    if not isinstance(result, dict):
+        return
+    for ad_set in result.get("ad_sets") or []:
+        for ad in (ad_set or {}).get("ads") or []:
+            aid = ad.get("id") or ad.get("ad_id")
+            if aid:
+                ad_ids.append(aid)
+    for ad in result.get("ads") or []:
+        if isinstance(ad, dict):
+            aid = ad.get("id") or ad.get("ad_id")
+            if aid:
+                ad_ids.append(aid)
+        elif ad:
+            ad_ids.append(ad)
+    if not ad_ids:
+        return
+    try:
+        link_launch(str(gen_id), ad_ids, platform=platform)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning("studio link_launch failed: %s", exc)
+
+
 @app.route("/platform/switch", methods=["POST"])
 def platform_switch():
     target = normalize_platform(request.form.get("platform") or request.args.get("platform"))
@@ -426,6 +462,7 @@ def launch():
             files=request.files,
             pair_builder=creative_pair_from_square,
         )
+        _studio_link_launch_if_any(platform, request.form.get("studio_gen_id"), result)
         return render_template(
             "launch.html",
             accounts=account_options,
@@ -636,6 +673,8 @@ def launch():
         )
     except Exception:
         pass
+
+    _studio_link_launch_if_any(platform, request.form.get("studio_gen_id"), result)
 
     return render_template(
         "launch.html",
@@ -1534,6 +1573,366 @@ def api_offers_delete(item_id):
         return jsonify({"error": "unauthorized"}), 401
     ok = storage.delete_offer(item_id, platform=_active_platform())
     return jsonify({"ok": ok})
+
+
+# -------------------------------------------------------------------
+# AI Ad Studio routes
+# -------------------------------------------------------------------
+try:
+    from ai_studio import analyzer as _studio_analyzer
+    from ai_studio import image_gen as _studio_image_gen
+    from ai_studio import pipeline as _studio_pipeline
+    from ai_studio import winners as _studio_winners
+    from ai_studio.research import (
+        bandit as _studio_bandit,
+        discover as _studio_discover,
+        lifecycle as _studio_lifecycle,
+    )
+    _AI_STUDIO_AVAILABLE = True
+except Exception as _studio_exc:  # noqa: BLE001
+    app.logger.warning("AI Ad Studio import failed: %s", _studio_exc)
+    _AI_STUDIO_AVAILABLE = False
+
+
+def _studio_required():
+    if not _auth_required():
+        return jsonify({"error": "unauthorized"}), 401
+    if not _AI_STUDIO_AVAILABLE:
+        return jsonify({"error": "ai_studio module unavailable"}), 503
+    return None
+
+
+@app.route("/studio")
+def studio_page():
+    if not _effective_token():
+        return redirect(url_for("login"))
+    platform = _active_platform()
+    return render_template(
+        "studio.html",
+        platform=platform,
+        offers=storage.list_offers(platform=platform),
+        catalog=[
+            {
+                "id": s.id,
+                "name": s.name,
+                "description": s.description,
+            }
+            for s in (
+                _studio_pipeline.prompt_gen.STYLE_CATALOG
+                if _AI_STUDIO_AVAILABLE
+                else []
+            )
+        ],
+    )
+
+
+@app.route("/api/studio/winners", methods=["GET"])
+def api_studio_winners():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    return jsonify({"winners": storage.list_winners(platform=_active_platform())})
+
+
+@app.route("/api/studio/refresh-winners", methods=["POST"])
+def api_studio_refresh_winners():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "no adapter configured"}), 400
+    try:
+        summary = _studio_winners.refresh_winners(
+            adapter, platform=_active_platform()
+        )
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("refresh_winners failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"ok": True, "summary": summary})
+
+
+@app.route("/api/studio/insights/<offer_id>", methods=["GET"])
+def api_studio_insights(offer_id):
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    platform = _active_platform()
+    fresh = request.args.get("fresh", "").lower() in {"1", "true", "yes"}
+    if fresh:
+        try:
+            insights = _studio_analyzer.analyze_offer(
+                offer_id, platform=platform, force=True
+            )
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("analyze_offer failed")
+            return jsonify({"error": str(exc)}), 500
+    else:
+        insights = storage.load_insights(offer_id, platform=platform)
+        if not insights:
+            try:
+                insights = _studio_analyzer.analyze_offer(
+                    offer_id, platform=platform
+                )
+            except Exception as exc:  # noqa: BLE001
+                app.logger.exception("analyze_offer failed")
+                return jsonify({"error": str(exc)}), 500
+    return jsonify({"insights": insights})
+
+
+@app.route("/api/studio/generate", methods=["POST"])
+def api_studio_generate():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    data = request.get_json(force=True, silent=True) or {}
+    offer_id = str(data.get("offer_id") or "").strip()
+    if not offer_id:
+        return jsonify({"error": "offer_id required"}), 400
+    platform = normalize_platform(data.get("platform") or _active_platform())
+    count = int(data.get("count") or 10)
+    model_image = (data.get("model_image") or "nano-banana-2").strip()
+    model_analyzer = (data.get("model_analyzer") or "").strip() or None
+    style_mix = data.get("style_mix") or None
+    research_ratio = data.get("research_ratio")
+    try:
+        research_ratio = float(research_ratio) if research_ratio is not None else None
+    except (TypeError, ValueError):
+        research_ratio = None
+
+    try:
+        result = _studio_pipeline.generate_ads(
+            offer_id,
+            platform=platform,
+            count=count,
+            model_image=model_image,
+            model_analyzer=model_analyzer,
+            style_mix=style_mix,
+            research_ratio=research_ratio,
+        )
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("studio/generate failed")
+        return jsonify({"error": str(exc)}), 500
+
+    thin = {
+        "gen_id": result["gen_id"],
+        "offer_id": result["offer_id"],
+        "platform": result["platform"],
+        "allocation": result["allocation"],
+        "prompts": [
+            {
+                "style_id": p.get("style_id"),
+                "style_name": p.get("style_name"),
+                "is_candidate": p.get("is_candidate"),
+                "prompt": p.get("prompt"),
+                "cta_label": p.get("cta_label"),
+                "cta_color": p.get("cta_color"),
+                "angle": p.get("angle"),
+            }
+            for p in result["prompts"]
+        ],
+        "images": [
+            {
+                "style_id": img.get("style_id"),
+                "style_name": img.get("style_name"),
+                "is_candidate": img.get("is_candidate"),
+                "b64": img.get("b64"),
+                "mime": img.get("mime"),
+                "model": img.get("model"),
+                "ms": img.get("ms"),
+                "error": img.get("error"),
+            }
+            for img in result["images"]
+        ],
+    }
+    return jsonify(thin)
+
+
+@app.route("/api/studio/link-launch", methods=["POST"])
+def api_studio_link_launch():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    data = request.get_json(force=True, silent=True) or {}
+    gen_id = (data.get("gen_id") or "").strip()
+    ad_ids = data.get("ad_ids") or []
+    if not gen_id:
+        return jsonify({"error": "gen_id required"}), 400
+    updated = storage.update_generation(
+        gen_id,
+        {"launched_ad_ids": [str(x) for x in ad_ids]},
+        platform=_active_platform(),
+    )
+    return jsonify({"ok": bool(updated), "generation": updated})
+
+
+# ---- Research ---------------------------------------------------------
+
+
+@app.route("/api/studio/research/candidates", methods=["GET"])
+def api_studio_research_candidates():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    return jsonify(
+        {"candidates": storage.list_style_candidates(platform=_active_platform())}
+    )
+
+
+@app.route("/api/studio/research/discover", methods=["POST"])
+def api_studio_research_discover():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    data = request.get_json(force=True, silent=True) or {}
+    mode = (data.get("mode") or "").strip()
+    platform = normalize_platform(data.get("platform") or _active_platform())
+    offer_id = (data.get("offer_id") or "").strip() or None
+    try:
+        if mode == "cluster_winners":
+            out = _studio_discover.discover_from_winners(platform)
+        elif mode == "gethookd":
+            out = _studio_discover.discover_from_gethookd(
+                platform=platform,
+                keywords=data.get("keywords") or [],
+                filters=data.get("filters") or None,
+                limit=int(data.get("limit") or 50),
+            )
+        elif mode == "brainstorm":
+            if not offer_id:
+                return jsonify({"error": "offer_id required for brainstorm"}), 400
+            offer = None
+            for o in storage.list_offers(platform=platform):
+                if str(o.get("id")) == offer_id:
+                    offer = o
+                    break
+            if not offer:
+                return jsonify({"error": "offer not found"}), 404
+            out = _studio_discover.discover_from_brainstorm(
+                offer,
+                platform=platform,
+                count=int(data.get("count") or 5),
+            )
+        elif mode == "all":
+            out = _studio_discover.discover_all(
+                platform,
+                offer_id=offer_id,
+                gethookd_keywords=data.get("keywords") or None,
+                gethookd_filters=data.get("filters") or None,
+            )
+        else:
+            return jsonify({"error": f"unknown mode: {mode}"}), 400
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("research/discover %s failed", mode)
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"ok": True, "mode": mode, "candidates": out})
+
+
+@app.route("/api/studio/research/gethookd/authcheck", methods=["GET"])
+def api_studio_research_gethookd_authcheck():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    import requests as _req
+    key = os.environ.get("GETHOOKD_API_KEY", "")
+    if not key:
+        return jsonify({"error": "GETHOOKD_API_KEY not configured"}), 400
+    base = os.environ.get("GETHOOKD_BASE_URL", "https://app.gethookd.ai/api/v1")
+    try:
+        resp = _req.get(
+            f"{base}/authcheck",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        payload = resp.json() if resp.content else {}
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"ok": resp.ok, "status": resp.status_code, "payload": payload})
+
+
+@app.route("/api/studio/research/promote", methods=["POST"])
+def api_studio_research_promote():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    data = request.get_json(force=True, silent=True) or {}
+    style_id = (data.get("style_id") or "").strip()
+    if not style_id:
+        return jsonify({"error": "style_id required"}), 400
+    updated = storage.upsert_style_candidate(
+        {
+            "style_id": style_id,
+            "status": "promoted",
+            "promoted_at": datetime.now(timezone.utc).isoformat(),
+        },
+        platform=_active_platform(),
+    )
+    return jsonify({"ok": True, "candidate": updated})
+
+
+@app.route("/api/studio/research/archive", methods=["POST"])
+def api_studio_research_archive():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    data = request.get_json(force=True, silent=True) or {}
+    style_id = (data.get("style_id") or "").strip()
+    if not style_id:
+        return jsonify({"error": "style_id required"}), 400
+    updated = storage.upsert_style_candidate(
+        {
+            "style_id": style_id,
+            "status": "archived",
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+        },
+        platform=_active_platform(),
+    )
+    return jsonify({"ok": True, "candidate": updated})
+
+
+@app.route("/api/studio/research/upload-refs", methods=["POST"])
+def api_studio_research_upload_refs():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    offer_id = (request.form.get("offer_id") or "").strip()
+    files = request.files.getlist("images")
+    if not files:
+        return jsonify({"error": "no files"}), 400
+    platform = _active_platform()
+    save_dir = os.path.join(
+        storage._catalog_dir(platform), "research_uploads", offer_id or "misc"
+    )
+    os.makedirs(save_dir, exist_ok=True)
+    saved_paths = []
+    for f in files:
+        if not f.filename:
+            continue
+        name = f"{uuid.uuid4().hex[:8]}_{os.path.basename(f.filename)}"
+        full = os.path.join(save_dir, name)
+        f.save(full)
+        saved_paths.append(full)
+    try:
+        out = _studio_discover.discover_from_uploads(
+            offer_id, platform=platform, image_paths=saved_paths
+        )
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("discover_from_uploads failed")
+        return jsonify({"error": str(exc), "saved_paths": saved_paths}), 500
+    return jsonify({"ok": True, "candidates": out, "saved_paths": saved_paths})
+
+
+@app.route("/api/studio/research/runs", methods=["GET"])
+def api_studio_research_runs():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    return jsonify(
+        {"runs": storage.list_research_runs(platform=_active_platform(), limit=200)}
+    )
 
 
 if __name__ == "__main__":

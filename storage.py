@@ -365,3 +365,246 @@ def list_token_user_ids(*, platform: str = DEFAULT_PLATFORM) -> List[str]:
     if not os.path.isdir(d):
         return []
     return [f.replace(".json", "") for f in os.listdir(d) if f.endswith(".json")]
+
+
+# --- AI Ad Studio: winners / insights / generations / style candidates ---
+# All files live under storage/catalog/<platform>/ alongside pixels/events/offers.
+#
+#   winners.json           list of proven ad-level winners (offer_id-tagged)
+#   ad_insights.json       per-offer AI digest cache
+#   generations.jsonl      append-only generation batch log
+#   style_candidates.json  research pool of candidate ad styles
+#   research_runs.jsonl    append-only log of discovery runs
+def _winners_file(platform: str) -> str:
+    return os.path.join(_catalog_dir(platform), "winners.json")
+
+
+def _insights_file(platform: str) -> str:
+    return os.path.join(_catalog_dir(platform), "ad_insights.json")
+
+
+def _generations_file(platform: str) -> str:
+    return os.path.join(_catalog_dir(platform), "generations.jsonl")
+
+
+def _style_candidates_file(platform: str) -> str:
+    return os.path.join(_catalog_dir(platform), "style_candidates.json")
+
+
+def _research_runs_file(platform: str) -> str:
+    return os.path.join(_catalog_dir(platform), "research_runs.jsonl")
+
+
+# Winners ---------------------------------------------------------------
+def list_winners(*, platform: str = DEFAULT_PLATFORM) -> List[Dict[str, Any]]:
+    return _load_catalog(_winners_file(platform))
+
+
+def upsert_winner(item: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
+    """Upsert by ``ad_id`` (preferred) or fall back to generated ``id``."""
+    path = _winners_file(platform)
+    items = _load_catalog(path)
+    now = datetime.now(timezone.utc).isoformat()
+    key = str(item.get("ad_id") or item.get("id") or "")
+    if not key:
+        item["id"] = str(uuid.uuid4())
+        item["created_at"] = now
+        item["updated_at"] = now
+        items.append(item)
+        _save_catalog(path, items)
+        return item
+    for i, existing in enumerate(items):
+        if str(existing.get("ad_id") or existing.get("id") or "") == key:
+            merged = {**existing, **item, "updated_at": now}
+            if not merged.get("id"):
+                merged["id"] = str(uuid.uuid4())
+            items[i] = merged
+            _save_catalog(path, items)
+            return merged
+    item["id"] = item.get("id") or str(uuid.uuid4())
+    item["created_at"] = item.get("created_at") or now
+    item["updated_at"] = now
+    items.append(item)
+    _save_catalog(path, items)
+    return item
+
+
+def delete_winner(ad_id: str, *, platform: str = DEFAULT_PLATFORM) -> bool:
+    path = _winners_file(platform)
+    items = _load_catalog(path)
+    remaining = [x for x in items if str(x.get("ad_id")) != str(ad_id) and x.get("id") != ad_id]
+    if len(remaining) == len(items):
+        return False
+    _save_catalog(path, remaining)
+    return True
+
+
+# Insights --------------------------------------------------------------
+def list_insights(*, platform: str = DEFAULT_PLATFORM) -> List[Dict[str, Any]]:
+    return _load_catalog(_insights_file(platform))
+
+
+def load_insights(offer_id: str, *, platform: str = DEFAULT_PLATFORM) -> Optional[Dict[str, Any]]:
+    key = str(offer_id)
+    for it in list_insights(platform=platform):
+        if str(it.get("offer_id")) == key:
+            return it
+    return None
+
+
+def save_insights(offer_id: str, insights: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
+    path = _insights_file(platform)
+    items = _load_catalog(path)
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {**insights, "offer_id": str(offer_id), "updated_at": now}
+    if not payload.get("generated_at"):
+        payload["generated_at"] = now
+    for i, existing in enumerate(items):
+        if str(existing.get("offer_id")) == str(offer_id):
+            items[i] = payload
+            _save_catalog(path, items)
+            return payload
+    items.append(payload)
+    _save_catalog(path, items)
+    return payload
+
+
+# Generations log (append-only jsonl) -----------------------------------
+def append_generation(entry: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
+    path = _generations_file(platform)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        **entry,
+        "platform": _norm_platform(platform),
+        "created_at": entry.get("created_at") or now,
+    }
+    if not row.get("gen_id"):
+        row["gen_id"] = str(uuid.uuid4())
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, default=str) + "\n")
+    return row
+
+
+def list_generations(*, platform: str = DEFAULT_PLATFORM, limit: int = 500) -> List[Dict[str, Any]]:
+    path = _generations_file(platform)
+    if not os.path.exists(path):
+        return []
+    out: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    if limit > 0:
+        return out[-limit:]
+    return out
+
+
+def update_generation(gen_id: str, patch: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Optional[Dict[str, Any]]:
+    """Rewrite the jsonl in place with ``patch`` applied to the matching row.
+
+    Append-only is preserved for any append ordering — we just rewrite the
+    whole file since typical generations log is small (< 10k rows).
+    """
+    path = _generations_file(platform)
+    rows = list_generations(platform=platform, limit=0)
+    updated: Optional[Dict[str, Any]] = None
+    for i, r in enumerate(rows):
+        if str(r.get("gen_id")) == str(gen_id):
+            merged = {**r, **patch, "updated_at": datetime.now(timezone.utc).isoformat()}
+            rows[i] = merged
+            updated = merged
+            break
+    if updated is None:
+        return None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, default=str) + "\n")
+    shutil.move(tmp, path)
+    return updated
+
+
+# Style candidates ------------------------------------------------------
+def list_style_candidates(*, platform: str = DEFAULT_PLATFORM) -> List[Dict[str, Any]]:
+    return _load_catalog(_style_candidates_file(platform))
+
+
+def upsert_style_candidate(item: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
+    """Upsert by ``style_id`` (preferred) or fall back to generated ``id``."""
+    path = _style_candidates_file(platform)
+    items = _load_catalog(path)
+    now = datetime.now(timezone.utc).isoformat()
+    key = str(item.get("style_id") or item.get("id") or "")
+    if not key:
+        item["style_id"] = str(uuid.uuid4())
+        item["id"] = item["style_id"]
+        item["created_at"] = now
+        item["updated_at"] = now
+        items.append(item)
+        _save_catalog(path, items)
+        return item
+    for i, existing in enumerate(items):
+        if str(existing.get("style_id") or existing.get("id") or "") == key:
+            merged = {**existing, **item, "updated_at": now}
+            items[i] = merged
+            _save_catalog(path, items)
+            return merged
+    item["style_id"] = item.get("style_id") or key
+    item["id"] = item.get("id") or item["style_id"]
+    item["created_at"] = item.get("created_at") or now
+    item["updated_at"] = now
+    items.append(item)
+    _save_catalog(path, items)
+    return item
+
+
+def delete_style_candidate(style_id: str, *, platform: str = DEFAULT_PLATFORM) -> bool:
+    path = _style_candidates_file(platform)
+    items = _load_catalog(path)
+    remaining = [x for x in items if str(x.get("style_id")) != str(style_id) and x.get("id") != style_id]
+    if len(remaining) == len(items):
+        return False
+    _save_catalog(path, remaining)
+    return True
+
+
+def append_research_run(entry: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
+    path = _research_runs_file(platform)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        **entry,
+        "platform": _norm_platform(platform),
+        "created_at": entry.get("created_at") or now,
+    }
+    if not row.get("run_id"):
+        row["run_id"] = str(uuid.uuid4())
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, default=str) + "\n")
+    return row
+
+
+def list_research_runs(*, platform: str = DEFAULT_PLATFORM, limit: int = 200) -> List[Dict[str, Any]]:
+    path = _research_runs_file(platform)
+    if not os.path.exists(path):
+        return []
+    out: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    if limit > 0:
+        return out[-limit:]
+    return out

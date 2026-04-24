@@ -99,11 +99,39 @@ def _score(cpa: Optional[float], target_cpa: Optional[float], conversions: float
     return round(edge * (conversions or 0), 3)
 
 
+def _first_image_url(*candidates: Any) -> Optional[str]:
+    """Walk a handful of candidate shapes and return the first URL-looking
+    string we can find. Handles SmartNews ``image_creative_info.media_files``
+    and NewsBreak's flatter ``imageUrl`` / ``image_url`` / ``creatives[*]``.
+    """
+    for c in candidates:
+        if not c:
+            continue
+        if isinstance(c, str) and c.startswith(("http://", "https://")):
+            return c
+        if isinstance(c, dict):
+            for k in (
+                "url", "file_url", "preview_url", "image_url", "imageUrl",
+                "thumbnailUrl", "thumbnail_url", "display_url", "displayUrl",
+            ):
+                v = c.get(k)
+                if isinstance(v, str) and v.startswith(("http://", "https://")):
+                    return v
+        if isinstance(c, (list, tuple)):
+            for item in c:
+                got = _first_image_url(item)
+                if got:
+                    return got
+    return None
+
+
 def _creative_for_ad(adapter, account_id: str, ad_group_id: Optional[str], ad_id: str) -> Dict[str, Any]:
     """Pull headline/description/image_url for a single ad by hitting the
     adapter's ``get_ads`` with the known parent id and filtering to ``ad_id``.
 
     Fails open: returns ``{}`` if the adapter can't satisfy the request.
+    Handles both SmartNews (``creative.image_creative_info.media_files``) and
+    NewsBreak (``imageUrl`` / ``creatives[*].imageUrl``) response shapes.
     """
     if not ad_group_id:
         return {}
@@ -113,23 +141,55 @@ def _creative_for_ad(adapter, account_id: str, ad_group_id: Optional[str], ad_id
         logger.debug("get_ads failed account=%s group=%s err=%s", account_id, ad_group_id, e)
         return {}
     for a in ads:
-        if str(a.get("id") or a.get("ad_id") or "") == str(ad_id):
-            raw = a.get("raw") or a
-            creative = a.get("creative") or raw.get("creative") or {}
-            img_info = creative.get("image_creative_info") or {}
-            media_files = img_info.get("media_files") or []
-            image_url = None
-            if media_files:
-                first = media_files[0] if isinstance(media_files, list) else {}
-                image_url = first.get("url") or first.get("file_url") or first.get("preview_url")
-            return {
-                "headline": img_info.get("headline") or a.get("headline") or "",
-                "description": img_info.get("description") or a.get("body") or "",
-                "sponsored_name": img_info.get("sponsored_name"),
-                "landing_page_url": a.get("landing_page_url") or raw.get("landing_page_url"),
-                "cta_label": a.get("cta_label") or raw.get("cta_label"),
-                "image_url": image_url,
-            }
+        if str(a.get("id") or a.get("ad_id") or a.get("adId") or "") != str(ad_id):
+            continue
+        raw = a.get("raw") or a
+        creative = a.get("creative") or raw.get("creative") or {}
+        img_info = creative.get("image_creative_info") or {}
+        image_url = _first_image_url(
+            img_info.get("media_files"),
+            creative.get("media_files"),
+            creative.get("creatives"),
+            raw.get("creatives"),
+            raw.get("media"),
+            raw.get("imageUrl"),
+            raw.get("image_url"),
+            a.get("imageUrl"),
+            a.get("image_url"),
+        )
+        return {
+            "headline": (
+                img_info.get("headline")
+                or creative.get("headline")
+                or a.get("headline")
+                or raw.get("headline")
+                or raw.get("title")
+                or a.get("name")
+                or ""
+            ),
+            "description": (
+                img_info.get("description")
+                or creative.get("description")
+                or a.get("body")
+                or raw.get("description")
+                or raw.get("body")
+                or ""
+            ),
+            "sponsored_name": (
+                img_info.get("sponsored_name")
+                or creative.get("sponsored_name")
+                or raw.get("sponsoredName")
+                or raw.get("sponsored_name")
+            ),
+            "landing_page_url": (
+                a.get("landing_page_url")
+                or raw.get("landing_page_url")
+                or raw.get("landingPageUrl")
+                or a.get("landingPageUrl")
+            ),
+            "cta_label": a.get("cta_label") or raw.get("cta_label") or raw.get("ctaLabel"),
+            "image_url": image_url,
+        }
     return {}
 
 

@@ -20,15 +20,25 @@
 
   <!-- ============ GENERATE =========== -->
   <div class="nb-tab-panel" data-panel="generate">
+    {% if not offers %}
+    <div class="nb-card" style="border-left:4px solid #f59e0b;">
+      <strong>No offers configured yet.</strong>
+      The studio needs an offer to know the brand, landing URL, pixel, event,
+      target CPA and preferred copy — without it there's nothing to prompt the
+      image model with.
+      <a href="{{ url_for('settings_page') }}" class="nb-btn nb-btn-primary" style="margin-left:8px;">Create your first offer</a>
+    </div>
+    {% endif %}
     <form id="studio-gen-form" class="nb-form">
       <div class="nb-form-row">
         <label for="gen-offer">Offer</label>
         <select id="gen-offer" required>
           <option value="">Select an offer…</option>
           {% for o in offers %}
-          <option value="{{ o.id }}">{{ o.name }}{% if o.brand_name %} — {{ o.brand_name }}{% endif %}</option>
+          <option value="{{ o.id }}" data-ad-accounts="{{ (o.ad_account_ids or [])|join(',') }}">{{ o.name }}{% if o.brand_name %} — {{ o.brand_name }}{% endif %}</option>
           {% endfor %}
         </select>
+        <span class="nb-muted nb-small" id="gen-offer-hint"></span>
       </div>
       <div class="nb-form-row">
         <label for="gen-count">How many</label>
@@ -166,6 +176,42 @@
     if (key === 'winners') loadWinners();
     if (key === 'research') loadResearch();
   }));
+
+  // Preselect offer from ?offer_id or infer from ?ad_account_id.
+  (function () {
+    const qs = new URLSearchParams(window.location.search);
+    const sel = document.getElementById('gen-offer');
+    const hint = document.getElementById('gen-offer-hint');
+    const insightsSel = document.getElementById('insights-offer');
+    if (!sel) return;
+
+    const directId = qs.get('offer_id');
+    if (directId && Array.from(sel.options).some(o => o.value === directId)) {
+      sel.value = directId;
+      if (insightsSel && Array.from(insightsSel.options).some(o => o.value === directId)) {
+        insightsSel.value = directId;
+      }
+      if (hint) hint.textContent = 'Pre-selected from launch context.';
+      return;
+    }
+
+    const accountId = qs.get('ad_account_id');
+    if (accountId) {
+      const match = Array.from(sel.options).find(o => {
+        const ids = (o.dataset.adAccounts || '').split(',').map(x => x.trim()).filter(Boolean);
+        return ids.includes(String(accountId));
+      });
+      if (match) {
+        sel.value = match.value;
+        if (insightsSel && Array.from(insightsSel.options).some(o => o.value === match.value)) {
+          insightsSel.value = match.value;
+        }
+        if (hint) hint.textContent = 'Matched to ad account ' + accountId + '.';
+      } else if (hint) {
+        hint.textContent = 'No offer linked to ad account ' + accountId + ' yet — link one in Settings.';
+      }
+    }
+  })();
 
   const ratio = document.getElementById('gen-research-ratio');
   const ratioOut = document.getElementById('gen-research-ratio-out');

@@ -554,6 +554,25 @@
       var o = (OFFERS || []).find(function(x){ return x.id === offerId; });
       if (!o) { if (summary) summary.textContent = ''; return; }
 
+      // Ad account auto-select: if offer has linked ad accounts and the
+      // current selection isn't already one of them, switch to the first.
+      var accSel = document.getElementById('sn-account-id');
+      var linked = Array.isArray(o.ad_account_ids) ? o.ad_account_ids.map(String) : [];
+      if (accSel && linked.length) {
+        var current = String(accSel.value || '');
+        if (linked.indexOf(current) === -1) {
+          var match = linked.find(function(id){
+            return Array.prototype.slice.call(accSel.options).some(function(op){
+              return String(op.value) === String(id);
+            });
+          });
+          if (match) {
+            accSel.value = match;
+            accSel.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+      }
+
       // Sponsor + landing
       var sponsorEl = document.querySelector('input[name="sponsored_name"]');
       if (sponsorEl && o.brand_name) sponsorEl.value = o.brand_name;
@@ -713,7 +732,8 @@
       renderCount();
     }
 
-    function addFiles(fileList){
+    function addFiles(fileList, opts){
+      opts = opts || {};
       var allowed = Array.prototype.slice.call(fileList || []).filter(function(f){
         return f && f.type && f.type.indexOf('image/') === 0;
       });
@@ -726,10 +746,25 @@
           description: defD.value || '',
           landing_url: defL.value || '',
           url: URL.createObjectURL(f),
+          aiBatch: !!opts.aiBatch,
         });
       });
       renderAll();
     }
+
+    function clearAiBatch(){
+      items = items.filter(function(it){ return !it.aiBatch; });
+      renderAll();
+    }
+
+    // Expose a small API so the AI Studio integration can cleanly replace
+    // AI-generated images without clobbering manual uploads and without
+    // accumulating across retries (that's what caused the 1000+ creative blow-ups).
+    window.snDropzone = {
+      addFiles: addFiles,
+      clearAiBatch: clearAiBatch,
+      count: function(){ return items.length; },
+    };
 
     ['dragenter','dragover'].forEach(function(ev){
       dropzone.addEventListener(ev, function(e){ e.preventDefault(); e.stopPropagation(); dropzone.classList.add('dragover'); });
@@ -1263,7 +1298,8 @@
     renderCount();
   }
 
-  function addFiles(fileList) {
+  function addFiles(fileList, opts) {
+    opts = opts || {};
     const allowed = Array.from(fileList).filter(f => f && f.type && (f.type.startsWith('image/') || f.type.startsWith('video/')));
     allowed.forEach(f => {
       items.push({
@@ -1272,10 +1308,22 @@
         body: defB.value || '',
         landing_url: defL.value || '',
         url: URL.createObjectURL(f),
+        aiBatch: !!opts.aiBatch,
       });
     });
     renderAll();
   }
+
+  function clearAiBatch() {
+    items = items.filter(it => !it.aiBatch);
+    renderAll();
+  }
+
+  window.nbDropzone = {
+    addFiles,
+    clearAiBatch,
+    count: () => items.length,
+  };
 
   // dropzone events
   ;['dragenter','dragover'].forEach(ev =>
@@ -1493,6 +1541,23 @@
     const o = OFFERS.find(x => x.id === offerId);
     if (!o) { offerSummary.textContent = ''; return; }
 
+    // Ad account auto-select: if offer has linked ad accounts and the
+    // current selection isn't one of them, switch to the first match.
+    const accSel = document.getElementById('ad_account_id');
+    const linked = Array.isArray(o.ad_account_ids) ? o.ad_account_ids.map(String) : [];
+    if (accSel && linked.length) {
+      const current = String(accSel.value || '');
+      if (!linked.includes(current)) {
+        const match = linked.find(id =>
+          Array.from(accSel.options).some(op => String(op.value) === String(id))
+        );
+        if (match) {
+          accSel.value = match;
+          accSel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }
+    }
+
     if (o.headline) { defH.value = o.headline; }
     if (o.body) { defB.value = o.body; }
     if (o.utm_parameters && defU) { defU.value = o.utm_parameters; }
@@ -1621,27 +1686,19 @@
 
   function setStatus(msg) { if (statusEl) statusEl.textContent = msg || ''; }
 
-  async function dropFileToInput(file) {
-    var input = document.getElementById(config.fileInputId);
-    if (!input) return false;
-    try {
-      var dt = new DataTransfer();
-      for (var i = 0; i < (input.files ? input.files.length : 0); i++) {
-        dt.items.add(input.files[i]);
-      }
-      dt.items.add(file);
-      input.files = dt.files;
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    } catch (err) {
-      console.error('failed to append file to input', err);
-      return false;
-    }
+  function getDropzoneApi() {
+    return platform === 'smartnews' ? window.snDropzone : window.nbDropzone;
   }
 
   btn.addEventListener('click', async function () {
     var offerId = currentOfferId();
     if (!offerId) { setStatus('Pick an offer in Section 0 first.'); return; }
+
+    var api = getDropzoneApi();
+    // Every click replaces the previous AI batch so repeated clicks don't
+    // stack (this was the root cause of the 1000+ creative blow-up).
+    if (api && typeof api.clearAiBatch === 'function') api.clearAiBatch();
+
     btn.disabled = true;
     setStatus('Generating… 30-60s depending on models.');
     try {
@@ -1658,15 +1715,21 @@
       var body = await res.json();
       if (!res.ok) throw new Error(body.error || 'generate failed');
       genIdEl.value = body.gen_id;
-      var dropped = 0;
+
+      var files = [];
       for (var i = 0; i < body.images.length; i++) {
         var img = body.images[i];
         if (!img.b64) continue;
         var blob = await (await fetch('data:' + (img.mime || 'image/png') + ';base64,' + img.b64)).blob();
-        var file = new File([blob], (body.gen_id.slice(0, 6)) + '-' + i + '.png', { type: img.mime || 'image/png' });
-        if (await dropFileToInput(file)) dropped++;
+        files.push(new File([blob], 'ai-' + body.gen_id.slice(0, 6) + '-' + i + '.png', { type: img.mime || 'image/png' }));
       }
-      setStatus('Dropped ' + dropped + ' generated images. Batch ' + body.gen_id.slice(0, 8) + '.');
+
+      if (api && typeof api.addFiles === 'function' && files.length) {
+        api.addFiles(files, { aiBatch: true });
+        setStatus('Dropped ' + files.length + ' generated images. Batch ' + body.gen_id.slice(0, 8) + '. (Click Generate again to replace.)');
+      } else {
+        setStatus('Generated ' + files.length + ' images but dropzone is not ready — reload and try again.');
+      }
     } catch (err) {
       setStatus('Error: ' + err.message);
     } finally {

@@ -73,7 +73,7 @@
     <p class="nb-muted nb-small">Bundle a pixel, event, default creative copy, landing URL and payout. Selecting an offer on the launch page auto-fills everything.</p>
     <table class="nb-table" id="offers-table">
       <thead>
-        <tr><th>Offer</th><th>Brand</th><th>Landing URL</th><th>Pixel</th><th>Event</th><th>Payout</th><th>Target CPA</th><th></th></tr>
+        <tr><th>Offer</th><th>Brand</th><th>Ad accounts</th><th>Landing URL</th><th>Pixel</th><th>Event</th><th>Payout</th><th>Target CPA</th><th></th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -102,10 +102,23 @@ let state = {
   pixels: {{ pixels|tojson }},
   events: {{ events|tojson }},
   offers: {{ offers|tojson }},
+  adAccounts: [],
 };
 
 function pixelName(id) { const p = state.pixels.find(x=>x.id===id); return p ? `${p.name} (${p.pixel_id})` : '—'; }
-function eventName(id) { const e = state.events.find(x=>x.id===id); return e ? `${e.name}` : '—'; }
+function eventName(id) {
+  const e = state.events.find(x=>x.id===id);
+  if (!e) return '—';
+  const idLabel = e.tracking_id || e.event_type || '';
+  return idLabel ? `${e.name} (${idLabel})` : e.name;
+}
+function accountsLabel(ids) {
+  if (!ids || !ids.length) return '—';
+  return ids.map(id => {
+    const a = (state.adAccounts || []).find(x => String(x.id) === String(id));
+    return a ? `${a.name} (${a.id})` : id;
+  }).join(', ');
+}
 function fmtMoney(v) { return v == null || v === '' ? '—' : `$${Number(v).toFixed(2)}`; }
 
 function renderPixels() {
@@ -148,6 +161,7 @@ function renderOffers() {
     <tr>
       <td><strong>${escape(o.name)}</strong><br><span class="nb-muted nb-small">${escape((o.headline||'').slice(0,60))}</span></td>
       <td>${escape(o.brand_name||'—')}${o.cta ? `<br><span class="nb-muted nb-small">CTA: ${escape(o.cta)}</span>` : ''}</td>
+      <td class="nb-muted nb-small">${escape(accountsLabel(o.ad_account_ids))}</td>
       <td class="nb-muted nb-small">${escape((o.landing_url||'').slice(0,50))}</td>
       <td>${pixelName(o.pixel_id)}</td>
       <td>${eventName(o.event_id)}</td>
@@ -157,7 +171,7 @@ function renderOffers() {
         <button type="button" class="nb-btn-ghost" data-edit="offer" data-id="${o.id}">Edit</button>
         <button type="button" class="nb-btn-ghost nb-danger" data-del="offer" data-id="${o.id}">Delete</button>
       </td>
-    </tr>`).join('') : `<tr><td colspan="8" class="nb-muted">No offers yet.</td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="9" class="nb-muted">No offers yet.</td></tr>`;
 }
 
 function escape(s) { return (s||'').toString().replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
@@ -186,7 +200,16 @@ function formHtml(kind, item) {
   }
   // offer
   const pixelOpts = state.pixels.map(p => `<option value="${p.id}" ${item.pixel_id===p.id?'selected':''}>${escape(p.name)} (${escape(p.pixel_id)})</option>`).join('');
-  const eventOpts = state.events.map(e => `<option value="${e.id}" ${item.event_id===e.id?'selected':''}>${escape(e.name)}</option>`).join('');
+  const eventOpts = state.events.map(e => {
+    const idLabel = e.tracking_id || e.event_type || '';
+    const suffix = idLabel ? ` (${escape(idLabel)})` : '';
+    return `<option value="${e.id}" ${item.event_id===e.id?'selected':''}>${escape(e.name)}${suffix}</option>`;
+  }).join('');
+  const selectedAccounts = Array.isArray(item.ad_account_ids) ? item.ad_account_ids.map(String) : [];
+  const accountOpts = (state.adAccounts || []).map(a => {
+    const sel = selectedAccounts.includes(String(a.id)) ? 'selected' : '';
+    return `<option value="${escape(String(a.id))}" ${sel}>${escape(a.name)} (${escape(String(a.id))})</option>`;
+  }).join('');
   const CTA_OPTIONS = ['Learn More','Shop Now','Sign Up','Get Offer','Subscribe','Download','Get Quote','Apply Now','Book Now','Contact Us'];
   const ctaOpts = CTA_OPTIONS.map(c => `<option value="${c}" ${(item.cta||'Learn More')===c?'selected':''}>${c}</option>`).join('');
   return `
@@ -211,6 +234,10 @@ function formHtml(kind, item) {
         <select name="event_id"><option value="">— none —</option>${eventOpts}</select>
       </label>
     </div>
+    <label class="nb-field">
+      <span>Linked ad accounts <small class="nb-muted">(Ctrl/Cmd click for multi — picked automatically when this offer is selected on the launch form)</small></span>
+      <select name="ad_account_ids" multiple size="${Math.min(6, Math.max(3, (state.adAccounts||[]).length))}">${accountOpts || '<option disabled>Loading ad accounts…</option>'}</select>
+    </label>
     <div class="nb-row-2">
       <label class="nb-field"><span>Payout ($)</span><input name="payout" type="number" step="0.01" value="${item.payout ?? ''}" placeholder="e.g. 50"></label>
       <label class="nb-field"><span>Target CPA ($)</span><input name="target_cpa" type="number" step="0.01" value="${item.target_cpa ?? ''}" placeholder="auto = payout × 0.8"></label>
@@ -248,6 +275,7 @@ async function saveModal() {
     for (const k of ['name','brand_name','cta','landing_url','headline','body','pixel_id','event_id','payout','target_cpa','utm_parameters','notes']) {
       body[k] = fd.get(k);
     }
+    body.ad_account_ids = fd.getAll('ad_account_ids').filter(Boolean).map(String);
   }
   const url = `/api/${kind}s` + (id ? '' : '');
   const res = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -263,11 +291,24 @@ async function deleteItem(kind, id) {
   if (res.ok) reload();
 }
 
+async function loadAdAccounts() {
+  try {
+    const r = await fetch('/api/accounts');
+    if (!r.ok) return;
+    const data = await r.json();
+    state.adAccounts = (data.accounts || []).map(a => ({
+      id: String(a.id || a.ad_account_id || a.adAccountId || ''),
+      name: a.name || a.ad_account_name || '',
+    })).filter(a => a.id);
+  } catch (_) { /* offline / not logged in — silently skip */ }
+}
+
 async function reload() {
   const [p, e, o] = await Promise.all([
     fetch('/api/pixels').then(r=>r.json()),
     fetch('/api/events').then(r=>r.json()),
     fetch('/api/offers').then(r=>r.json()),
+    loadAdAccounts(),
   ]);
   state.pixels = p.pixels || [];
   state.events = e.events || [];
@@ -339,5 +380,6 @@ document.getElementById('btn-sync-events').addEventListener('click', async () =>
 });
 
 renderPixels(); renderEvents(); renderOffers();
+loadAdAccounts().then(renderOffers);
 </script>
 {% endblock %}

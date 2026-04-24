@@ -1546,6 +1546,11 @@ def api_offers_save():
     if payout is not None and target_cpa is None:
         target_cpa = round(payout * 0.8, 2)
 
+    raw_accounts = data.get("ad_account_ids") or []
+    if isinstance(raw_accounts, str):
+        raw_accounts = [x.strip() for x in raw_accounts.split(",")]
+    ad_account_ids = [str(x).strip() for x in raw_accounts if str(x).strip()]
+
     saved = storage.upsert_offer(
         {
             "id": data.get("id"),
@@ -1561,6 +1566,7 @@ def api_offers_save():
             "target_cpa": target_cpa,
             "utm_parameters": (data.get("utm_parameters") or "").strip(),
             "notes": (data.get("notes") or "").strip(),
+            "ad_account_ids": ad_account_ids,
         },
         platform=_active_platform(),
     )

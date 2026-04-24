@@ -229,15 +229,26 @@ def _creative_for_ad(adapter, account_id: str, ad_group_id: Optional[str], ad_id
 
     Fails open: returns ``{}`` if the adapter can't satisfy the request.
     Handles both SmartNews (``creative.image_creative_info.media_files``) and
-    NewsBreak (``imageUrl`` / ``creatives[*].imageUrl``) response shapes.
+    NewsBreak (``creative.content.assetUrl``) response shapes.
     """
     if not ad_group_id:
+        logger.info(
+            "winners.enrich: skip ad_id=%s — no parent ad_set_id on report row",
+            ad_id,
+        )
         return {}
     try:
         ads = adapter.get_ads(account_id, ad_group_id) or []
-    except Exception as e:  # pragma: no cover - network
-        logger.debug("get_ads failed account=%s group=%s err=%s", account_id, ad_group_id, e)
+    except Exception as e:
+        logger.warning(
+            "winners.enrich: get_ads failed account=%s group=%s err=%s",
+            account_id, ad_group_id, e,
+        )
         return {}
+    logger.info(
+        "winners.enrich: get_ads account=%s group=%s returned %d ads (looking for %s)",
+        account_id, ad_group_id, len(ads), ad_id,
+    )
     for a in ads:
         if str(a.get("id") or a.get("ad_id") or a.get("adId") or "") != str(ad_id):
             continue
@@ -289,6 +300,24 @@ def _creative_for_ad(adapter, account_id: str, ad_group_id: Optional[str], ad_id
             or _first_str(creative, "callToAction", "cta_label", "ctaLabel")
             or _first_str(raw, "callToAction", "cta_label", "ctaLabel")
         )
+        if not image_url:
+            try:
+                sample_keys = {
+                    "ad_keys": sorted(list(a.keys()))[:15],
+                    "creative_keys": sorted(list(creative.keys()))[:15] if isinstance(creative, dict) else None,
+                    "content_keys": sorted(list(content.keys()))[:15] if isinstance(content, dict) else None,
+                }
+                logger.warning(
+                    "winners.enrich: no image_url for ad_id=%s — keys=%s",
+                    ad_id, sample_keys,
+                )
+            except Exception:
+                pass
+        else:
+            logger.info(
+                "winners.enrich: ad_id=%s image_url=%s headline=%r",
+                ad_id, image_url, (headline or "")[:60],
+            )
         return {
             "headline": headline,
             "description": description,
@@ -297,6 +326,10 @@ def _creative_for_ad(adapter, account_id: str, ad_group_id: Optional[str], ad_id
             "cta_label": cta_label or None,
             "image_url": image_url,
         }
+    logger.warning(
+        "winners.enrich: ad_id=%s not in %d ads returned by get_ads(group=%s)",
+        ad_id, len(ads), ad_group_id,
+    )
     return {}
 
 
@@ -419,13 +452,18 @@ def refresh_winners(
                 # clear, but record target=None so analyzer can weight it lower.
                 pass
 
-            # Enrich with creative copy (best effort)
-            creative = _creative_for_ad(
-                adapter,
-                aid,
-                row.get("ad_set_id") or row.get("parent_id") or row.get("ad_group_id"),
-                ad_id,
+            group_id = (
+                row.get("ad_set_id")
+                or row.get("parent_id")
+                or row.get("ad_group_id")
+                or row.get("adSetId")
             )
+            if not group_id:
+                logger.info(
+                    "winners.enrich: row has no ad_set_id keys; row_keys=%s",
+                    sorted(list(row.keys()))[:25],
+                )
+            creative = _creative_for_ad(adapter, aid, group_id, ad_id)
 
             # Download+cache the creative image (best-effort, never fatal)
             local_img = _cache_winner_image(

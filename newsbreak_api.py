@@ -195,8 +195,28 @@ class NewsBreakClient:
         )
 
     # --- Ads ---
-    def get_ads(self, ad_set_id: str) -> Any:
-        return self._request("GET", "/ad/list", params={"adSetId": ad_set_id})
+    def get_ads(
+        self,
+        ad_set_id: str,
+        *,
+        page_no: int = 1,
+        page_size: int = 100,
+    ) -> Any:
+        """GET /ad/getList — paginated list of ads under an ad set.
+
+        NewsBreak uses /campaign/getList and /ad-set/getList; the ad-level
+        endpoint follows the same pattern. /ad/list (without the ``get``)
+        returns 404.
+        """
+        return self._request(
+            "GET",
+            "/ad/getList",
+            params={
+                "adSetId": ad_set_id,
+                "pageNo": page_no,
+                "pageSize": page_size,
+            },
+        )
 
     def create_ad(self, payload: Dict[str, Any]) -> Any:
         return self._request("POST", "/ad/create", json_body=payload)

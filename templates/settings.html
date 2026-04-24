@@ -7,7 +7,7 @@
       <h1>Offers &amp; tracking — {{ active_platform_label }}</h1>
       <p class="nb-muted">
         {% if active_platform == 'smartnews' %}
-          SmartNews uses built-in conversion event keys (purchase, addToCart, viewContent, …) and doesn't expose a separate pixel list. Use the buttons below to load the built-in events.
+          SmartNews v3 exposes real tracking pixels per ad account and a fixed list of built-in conversion events (purchase, addToCart, viewContent, …). Click <strong>Sync from SmartNews</strong> to pull every pixel from every ad account you can see and seed the built-in events in one shot.
         {% else %}
           Save your pixels, conversion events, and offer bundles so they show up as dropdowns on the bulk launcher.
         {% endif %}
@@ -24,7 +24,7 @@
     </div>
     <p class="nb-muted nb-small">
       {% if active_platform == 'smartnews' %}
-        SmartNews has no pixel concept — leave this empty or record internal pixels for your team.
+        Pixels here are pulled from every SmartNews ad account you can see (<code>/ad_accounts/{id}/pixels</code>). Hit <strong>Sync from SmartNews</strong> in the Conversion events card to refresh both pixels and events.
       {% else %}
         NewsBreak doesn't expose a pixel list API — add them here once and reuse everywhere.
       {% endif %}
@@ -42,7 +42,7 @@
       <h2>Conversion events</h2>
       <div style="display:flex;gap:8px;">
         {% if active_platform == 'smartnews' %}
-          <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Seed the built-in SmartNews conversion event keys">Load SmartNews built-ins</button>
+          <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Seed built-in conversion events and pull every pixel from every ad account">Sync from SmartNews</button>
         {% else %}
           <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Pull events from every ad account on your token">Sync from NewsBreak</button>
         {% endif %}
@@ -51,7 +51,7 @@
     </div>
     <p class="nb-muted nb-small">
       {% if active_platform == 'smartnews' %}
-        SmartNews Insights reports against built-in event keys (e.g. <code>purchase</code>, <code>addToCart</code>, <code>viewContent</code>). Click <strong>Load SmartNews built-ins</strong> to seed them locally so they appear in rules and offer bundles.
+        SmartNews Insights reports against built-in event keys (e.g. <code>purchase</code>, <code>addToCart</code>, <code>viewContent</code>). Click <strong>Sync from SmartNews</strong> to seed them locally <em>and</em> import every tracking pixel from your ad accounts, so both show up in the Offer builder.
       {% else %}
         Grab the <strong>tracking ID</strong> for each conversion event from NewsBreak Ad Manager → Tools → Event Management. Or click <strong>Sync from NewsBreak</strong> to auto-import all events from every ad account on your token.
       {% endif %}
@@ -301,10 +301,10 @@ document.getElementById('btn-sync-events').addEventListener('click', async () =>
   const endpoint = platform === 'smartnews' ? '/api/smartnews/sync-events' : '/api/newsbreak/sync-events';
   btn.disabled = true;
   const oldText = btn.textContent;
-  btn.textContent = platform === 'smartnews' ? 'Loading…' : 'Syncing…';
+  btn.textContent = 'Syncing…';
   status.style.display = 'block';
   status.textContent = platform === 'smartnews'
-    ? 'Seeding SmartNews built-in conversion events…'
+    ? 'Seeding built-in events and pulling pixels from every ad account…'
     : 'Fetching events from every ad account on your token…';
   try {
     const r = await fetch(endpoint, { method: 'POST' });
@@ -312,7 +312,8 @@ document.getElementById('btn-sync-events').addEventListener('click', async () =>
     if (!r.ok) throw new Error(data.error || 'sync failed');
     let msg;
     if (platform === 'smartnews') {
-      msg = `Seeded ${data.added} built-in event(s), updated ${data.updated}.`;
+      const accSummary = (data.accounts || []).map(a => `${a.name}: ${a.imported}`).join(' · ') || 'no ad accounts returned pixels';
+      msg = `Seeded ${data.added} new event(s), updated ${data.updated}. Imported ${data.pixels_added || 0} new pixel(s), updated ${data.pixels_updated || 0}. (${accSummary})`;
     } else {
       const accSummary = (data.accounts || []).map(a => `${a.name}: ${a.imported}`).join(' · ') || 'no accounts returned events';
       msg = `Imported ${data.added} new event(s), updated ${data.updated}, plus ${data.pixels_added || 0} new pixel(s). (${accSummary})`;

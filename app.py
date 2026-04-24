@@ -1001,13 +1001,21 @@ def api_newsbreak_sync_events():
 
 @app.route("/api/smartnews/sync-events", methods=["POST"])
 def api_smartnews_sync_events():
-    """Seed the SmartNews built-in conversion event keys into the local catalog."""
+    """Seed SmartNews built-in conversion events *and* import pixels from every ad account.
+
+    SmartNews v3 exposes a real pixel list per ad account (``/ad_accounts/{id}/pixels``)
+    — we call that here for every account the operator can see so the Offers
+    screen's pixel dropdown isn't empty. Built-in conversion events (purchase,
+    addToCart, viewContent, …) are also seeded on the same click since they're
+    account-independent.
+    """
     if _active_platform() != "smartnews":
         return jsonify({"error": "Switch to SmartNews to seed built-in events"}), 400
     adapter = _adapter()
     if not adapter:
         return jsonify({"error": "unauthorized"}), 401
 
+    # -------- Built-in conversion events (shared across accounts) --------
     existing = {e.get("tracking_id"): e for e in storage.list_events(platform="smartnews") if e.get("tracking_id")}
     added = 0
     updated = 0
@@ -1038,7 +1046,79 @@ def api_smartnews_sync_events():
             added += 1
         existing[tid] = {**(prior or {}), **merged}
 
-    return jsonify({"ok": True, "added": added, "updated": updated, "errors": []})
+    # -------- Pixels (per ad account via SmartNews v3) --------
+    existing_pixels = {
+        str(p.get("pixel_id")): p
+        for p in storage.list_pixels(platform="smartnews")
+        if p.get("pixel_id")
+    }
+    pixels_added = 0
+    pixels_updated = 0
+    per_account: list = []
+    errors: list = []
+
+    try:
+        raw_accounts = adapter.get_accounts() or []
+    except Exception as e:  # pragma: no cover - network failure
+        app.logger.warning("smartnews sync: get_accounts failed err=%s", e)
+        raw_accounts = []
+        errors.append({"ad_account_id": "-", "error": f"get_accounts: {e}"})
+
+    for acc in raw_accounts:
+        acc_id = str(acc.get("id") or acc.get("ad_account_id") or "")
+        acc_name = acc.get("name") or acc.get("ad_account_name") or acc_id
+        if not acc_id:
+            continue
+        try:
+            pixels = adapter.list_pixels(acc_id) or []
+        except Exception as e:  # pragma: no cover - network failure
+            errors.append({"ad_account_id": acc_id, "error": str(e)})
+            continue
+        imported = 0
+        for px in pixels:
+            pid = str(
+                px.get("pixel_tag_id")
+                or px.get("pixel_id")
+                or px.get("id")
+                or ""
+            )
+            if not pid:
+                continue
+            pname = (
+                px.get("name")
+                or px.get("pixel_tag_name")
+                or f"{acc_name} pixel {pid}"
+            )
+            prior = existing_pixels.get(pid)
+            merged = {
+                "name": pname,
+                "pixel_id": pid,
+                "ad_account_id": acc_id,
+                "ad_account_name": acc_name,
+                "source": "smartnews",
+            }
+            if prior:
+                merged["id"] = prior["id"]
+                storage.upsert_pixel(merged, platform="smartnews")
+                pixels_updated += 1
+            else:
+                storage.upsert_pixel(merged, platform="smartnews")
+                pixels_added += 1
+            existing_pixels[pid] = {**(prior or {}), **merged}
+            imported += 1
+        per_account.append({"ad_account_id": acc_id, "name": acc_name, "imported": imported})
+
+    return jsonify(
+        {
+            "ok": True,
+            "added": added,
+            "updated": updated,
+            "pixels_added": pixels_added,
+            "pixels_updated": pixels_updated,
+            "accounts": per_account,
+            "errors": errors,
+        }
+    )
 
 
 @app.route("/api/smartnews/pixels/<account_id>")

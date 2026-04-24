@@ -24,6 +24,18 @@ from . import analyzer, image_gen, prompt_gen
 logger = logging.getLogger(__name__)
 
 
+# Platform → target creative aspect ratio. SmartNews v3 accepts square
+# (1:1) and 16:9 images; NewsBreak's native feed shows 16:9 landscape.
+_PLATFORM_ASPECT = {
+    "smartnews": "1:1",
+    "newsbreak": "16:9",
+}
+
+
+def _aspect_for_platform(platform: str) -> str:
+    return _PLATFORM_ASPECT.get((platform or "").strip().lower(), "1:1")
+
+
 def _load_offer(offer_id: str, *, platform: str) -> Optional[Dict[str, Any]]:
     for o in storage.list_offers(platform=platform):
         if str(o.get("id")) == str(offer_id) or str(o.get("offer_id")) == str(offer_id):
@@ -107,6 +119,8 @@ def generate_ads(
     if offer is None:
         raise ValueError(f"Offer not found: offer_id={offer_id} platform={platform}")
 
+    aspect = _aspect_for_platform(platform)
+
     insights = analyzer.analyze_offer(
         str(offer_id),
         platform=platform,
@@ -144,17 +158,15 @@ def generate_ads(
             cand = candidates_index[sid]
             base = prompt_gen.generate_prompts(
                 offer, insights, count=1, style_mix=[sid if sid in catalog_index else "product_showcase"],
-                seed=None,
+                seed=None, aspect=aspect,
             )[0]
             tpl = (cand.get("prompt_template") or "").strip()
             if tpl:
-                prompt_text = tpl
-                if not prompt_text.rstrip().endswith(prompt_gen.SQUARE_SUFFIX):
-                    prompt_text = prompt_text.rstrip(".") + ". " + prompt_gen.SQUARE_SUFFIX
-                base["prompt"] = prompt_text
+                base["prompt"] = prompt_gen._retune_aspect(tpl, aspect)
             base["style_id"] = sid
             base["style_name"] = cand.get("name") or sid
             base["is_candidate"] = True
+            base["aspect"] = aspect
             prompts.append(base)
         else:
             base = prompt_gen.generate_prompts(
@@ -163,6 +175,7 @@ def generate_ads(
                 count=1,
                 style_mix=[sid] if sid in catalog_index else None,
                 seed=None,
+                aspect=aspect,
             )[0]
             base["is_candidate"] = False
             prompts.append(base)
@@ -173,6 +186,7 @@ def generate_ads(
             prompts,
             model=model_image,
             fallback=fallback,
+            aspect=aspect,
         )
         for i, row in enumerate(rendered):
             row["is_candidate"] = prompts[i].get("is_candidate", False)
@@ -184,6 +198,7 @@ def generate_ads(
             "gen_id": gen_id,
             "offer_id": str(offer_id),
             "platform": platform,
+            "aspect": aspect,
             "model_image": model_image,
             "model_analyzer": model_analyzer or analyzer.DEFAULT_ANALYZER_MODEL,
             "prompts": [p["prompt"] for p in prompts],
@@ -201,6 +216,7 @@ def generate_ads(
         "gen_id": gen_id,
         "offer_id": str(offer_id),
         "platform": platform,
+        "aspect": aspect,
         "prompts": prompts,
         "images": images,
         "insights": insights,

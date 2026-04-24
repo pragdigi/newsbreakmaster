@@ -260,12 +260,14 @@
         <pre>${escapeHtml(p.prompt)}</pre></details>
       `).join('');
     }
+    const aspect = (body.aspect || '1:1');
+    const aspectCss = aspect === '16:9' ? '16 / 9' : (aspect === '9:16' ? '9 / 16' : '1 / 1');
     body.images.forEach((img, i) => {
       const tile = document.createElement('div');
       tile.className = 'studio-tile' + (img.is_candidate ? ' is-candidate' : '');
       if (img.b64) {
         tile.innerHTML = `
-          <img src="data:${img.mime || 'image/png'};base64,${img.b64}" alt="${escapeHtml(img.style_name || '')}" />
+          <img src="data:${img.mime || 'image/png'};base64,${img.b64}" alt="${escapeHtml(img.style_name || '')}" style="aspect-ratio:${aspectCss}" />
           <div class="studio-tile-meta">
             <strong>${escapeHtml(img.style_name || img.style_id || '')}</strong>
             ${img.is_candidate ? '<span class="chip experimental">experimental</span>' : ''}
@@ -550,7 +552,7 @@
   box-shadow: 0 0 0 1px rgba(236,72,153,0.35);
 }
 .studio-tile img {
-  display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover;
+  display: block; width: 100%; aspect-ratio: var(--tile-aspect, 1 / 1); object-fit: cover;
   background: #0f1419;
 }
 .studio-tile-meta {

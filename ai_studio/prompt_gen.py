@@ -21,6 +21,34 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 SQUARE_SUFFIX = "Square format."
+LANDSCAPE_SUFFIX = "16:9 landscape format, wide horizontal composition."
+
+
+def _suffix_for_aspect(aspect: str) -> str:
+    """Return the prompt suffix appropriate for the target aspect ratio.
+
+    Only ``1:1`` (square) and ``16:9`` (landscape) are supported today —
+    anything else falls back to square so we never emit an ambiguous prompt.
+    """
+    norm = (aspect or "").strip().lower().replace(" ", "")
+    if norm in ("16:9", "landscape", "169"):
+        return LANDSCAPE_SUFFIX
+    return SQUARE_SUFFIX
+
+
+def _retune_aspect(prompt: str, aspect: str) -> str:
+    """Swap any trailing aspect sentinel (square/landscape) with the one that
+    matches ``aspect``. Idempotent — safe to call on already-tuned prompts.
+    """
+    suffix = _suffix_for_aspect(aspect)
+    text = prompt.rstrip()
+    for sentinel in (SQUARE_SUFFIX, LANDSCAPE_SUFFIX):
+        if text.endswith(sentinel):
+            text = text[: -len(sentinel)].rstrip().rstrip(".")
+            break
+    if not text.endswith("."):
+        text = text + "."
+    return text + " " + suffix
 
 
 @dataclass
@@ -319,6 +347,7 @@ def generate_prompts(
     count: int = 10,
     style_mix: Optional[Sequence[str]] = None,
     seed: Optional[int] = None,
+    aspect: str = "1:1",
 ) -> List[Dict[str, Any]]:
     """Return ``count`` prompts, one per style (cycling if count > 10).
 
@@ -368,8 +397,7 @@ def generate_prompts(
             "cta_color": style.default_cta_color,
         }
         prompt = style.template(ctx).strip()
-        if not prompt.endswith(SQUARE_SUFFIX):
-            prompt = prompt.rstrip(".") + ". " + SQUARE_SUFFIX
+        prompt = _retune_aspect(prompt, aspect)
         out.append(
             {
                 "style_id": style.id,
@@ -378,6 +406,7 @@ def generate_prompts(
                 "cta_label": ctx["cta_label"],
                 "cta_color": ctx["cta_color"],
                 "angle": angle,
+                "aspect": aspect,
             }
         )
     # Mild shuffle on seed to avoid the UI always starting with "product_showcase".
@@ -393,4 +422,5 @@ __all__ = [
     "StyleDefinition",
     "generate_prompts",
     "SQUARE_SUFFIX",
+    "LANDSCAPE_SUFFIX",
 ]

@@ -42,6 +42,34 @@ DEFAULT_TIMEOUT = int(os.environ.get("AD_STUDIO_IMAGE_TIMEOUT", "90"))
 ALIAS_NANO = {"nano-banana-2", "nano-banana", "gemini", "gemini-image"}
 ALIAS_GPT = {"gpt-image-2", "gpt-image", "openai", "openai-image"}
 
+# Aspect-ratio → provider-specific size settings.
+#   Gemini "aspectRatio" accepts "1:1", "16:9", "9:16", "4:3", "3:4".
+#   OpenAI Images (gpt-image-*) accepts "1024x1024", "1792x1024", "1024x1792".
+_ASPECT_NANO = {
+    "1:1": "1:1",
+    "16:9": "16:9",
+    "9:16": "9:16",
+    "4:3": "4:3",
+    "3:4": "3:4",
+}
+_ASPECT_GPT_SIZE = {
+    "1:1": "1024x1024",
+    "16:9": "1792x1024",
+    "9:16": "1024x1792",
+    # 4:3 / 3:4 aren't natively supported by gpt-image; bucket to nearest.
+    "4:3": "1792x1024",
+    "3:4": "1024x1792",
+}
+
+
+def _normalize_aspect(aspect: Optional[str]) -> str:
+    a = (aspect or "1:1").strip().lower().replace(" ", "")
+    if a in ("landscape", "169"):
+        return "16:9"
+    if a in ("square", "11"):
+        return "1:1"
+    return a if a in _ASPECT_NANO else "1:1"
+
 
 class ImageGenerationError(RuntimeError):
     """Raised when both primary and fallback providers fail."""
@@ -51,7 +79,12 @@ class ImageGenerationError(RuntimeError):
 # Provider calls
 # ----------------------------------------------------------------------
 
-def _call_nano_banana(prompt: str, *, timeout: int = DEFAULT_TIMEOUT) -> Tuple[str, str]:
+def _call_nano_banana(
+    prompt: str,
+    *,
+    timeout: int = DEFAULT_TIMEOUT,
+    aspect: str = "1:1",
+) -> Tuple[str, str]:
     """Call Gemini Flash Image (Nano Banana 2). Returns (b64, mime)."""
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_GENAI_API_KEY")
     if not api_key:
@@ -71,7 +104,7 @@ def _call_nano_banana(prompt: str, *, timeout: int = DEFAULT_TIMEOUT) -> Tuple[s
         "generationConfig": {
             "responseModalities": ["IMAGE", "TEXT"],
             "imageConfig": {
-                "aspectRatio": "1:1",
+                "aspectRatio": _ASPECT_NANO.get(_normalize_aspect(aspect), "1:1"),
                 "imageSize": "1K",
             },
         },
@@ -107,7 +140,12 @@ def _call_nano_banana(prompt: str, *, timeout: int = DEFAULT_TIMEOUT) -> Tuple[s
     raise ImageGenerationError(f"Nano Banana returned no image (reason={block})")
 
 
-def _call_gpt_image(prompt: str, *, timeout: int = DEFAULT_TIMEOUT) -> Tuple[str, str]:
+def _call_gpt_image(
+    prompt: str,
+    *,
+    timeout: int = DEFAULT_TIMEOUT,
+    aspect: str = "1:1",
+) -> Tuple[str, str]:
     """Call OpenAI Images API (gpt-image-2). Returns (b64, mime)."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -118,7 +156,7 @@ def _call_gpt_image(prompt: str, *, timeout: int = DEFAULT_TIMEOUT) -> Tuple[str
         "model": GPT_IMAGE_MODEL,
         "prompt": prompt,
         "n": 1,
-        "size": "1024x1024",
+        "size": _ASPECT_GPT_SIZE.get(_normalize_aspect(aspect), "1024x1024"),
     }
     resp = requests.post(
         url,
@@ -173,10 +211,13 @@ def _render_one(
     primary: str,
     fallback: bool,
     timeout: int,
+    aspect: str = "1:1",
 ) -> Dict[str, Any]:
     """Render a single prompt dict with cross-model fallback."""
     prompt_text = prompt["prompt"]
-    providers: List[Tuple[str, Callable[[str], Tuple[str, str]]]] = []
+    # Per-prompt aspect override (set by prompt_gen) takes precedence.
+    effective_aspect = _normalize_aspect(prompt.get("aspect") or aspect)
+    providers: List[Tuple[str, Callable[..., Tuple[str, str]]]] = []
     if primary == "nano":
         providers.append(("nano-banana-2", _call_nano_banana))
         if fallback:
@@ -190,7 +231,7 @@ def _render_one(
     for model_name, fn in providers:
         started = time.time()
         try:
-            b64, mime = fn(prompt_text, timeout=timeout)  # type: ignore[call-arg]
+            b64, mime = fn(prompt_text, timeout=timeout, aspect=effective_aspect)
             elapsed_ms = int((time.time() - started) * 1000)
             return {
                 "style_id": prompt.get("style_id"),
@@ -200,6 +241,7 @@ def _render_one(
                 "mime": mime,
                 "model": model_name,
                 "ms": elapsed_ms,
+                "aspect": effective_aspect,
                 "cta_label": prompt.get("cta_label"),
                 "cta_color": prompt.get("cta_color"),
                 "angle": prompt.get("angle"),
@@ -217,6 +259,7 @@ def _render_one(
         "mime": None,
         "model": None,
         "ms": 0,
+        "aspect": effective_aspect,
         "error": "; ".join(errors) or "unknown error",
         "cta_label": prompt.get("cta_label"),
         "cta_color": prompt.get("cta_color"),
@@ -231,6 +274,7 @@ def render_batch(
     parallel: int = DEFAULT_PARALLEL,
     fallback: bool = True,
     timeout: int = DEFAULT_TIMEOUT,
+    aspect: str = "1:1",
 ) -> List[Dict[str, Any]]:
     """Render a batch of prompts in parallel.
 
@@ -264,6 +308,7 @@ def render_batch(
                 primary=primary,
                 fallback=fallback,
                 timeout=timeout,
+                aspect=aspect,
             ): i
             for i, p in enumerate(prompt_list)
         }

@@ -1761,6 +1761,7 @@ def api_studio_generate():
         "gen_id": result["gen_id"],
         "offer_id": result["offer_id"],
         "platform": result["platform"],
+        "aspect": result.get("aspect", "1:1"),
         "allocation": result["allocation"],
         "prompts": [
             {
@@ -1783,6 +1784,7 @@ def api_studio_generate():
                 "mime": img.get("mime"),
                 "model": img.get("model"),
                 "ms": img.get("ms"),
+                "aspect": img.get("aspect"),
                 "error": img.get("error"),
             }
             for img in result["images"]

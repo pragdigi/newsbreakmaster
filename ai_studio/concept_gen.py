@@ -372,8 +372,9 @@ Hard rules:
    edge-touching glyphs and we lose the first / last letter. State this
    safe-area requirement explicitly in the prompt you write for each
    slot (e.g. "All text sits with at least 8% padding from every edge").
-10. Do not emit placeholder tokens like {headline}, {cta_label}, {brand},
-    or {angle} in the final prompt — write the actual ad copy literally.
+10. Do not emit placeholder tokens like {{headline}}, {{cta_label}},
+    {{brand}}, or {{angle}} in the final prompt — write the actual ad
+    copy literally.
 
 Return a SINGLE JSON object with this exact shape and nothing else:
 

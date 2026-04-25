@@ -136,7 +136,81 @@ _STYLE_BRIEFS: Dict[str, str] = {
         "circles, squares, hexagons, hand-drawn). Coloured CTA pill at the "
         "bottom. Soft background colour, generous whitespace."
     ),
+    # --- native-first briefs -------------------------------------------
+    "news_feed_story": (
+        "NewsBreak / local-news feed article card mock-up. A small thumbnail "
+        "(candid everyday scene), a short serif-style headline, a gray meta "
+        "line with publisher + time + read count, and a 2-line preview snippet. "
+        "Include minimal feed chrome (scroll bar, share + comment icons). Must "
+        "read like an organic reader-submitted story, NEVER as a sponsored ad. "
+        "No CTA button. No brand logos."
+    ),
+    "reddit_style_post": (
+        "Reddit post mock-up (r/AskOldPeople / r/Supplements / r/longevity / "
+        "etc. — pick one that fits). Upvote counter, subreddit header with "
+        "user handle + timestamp, bold dark headline, 2 lines of body text in "
+        "a humble first-person voice, upvote/comment/share controls at the "
+        "bottom. No CTA button — the image feels like a genuine organic post."
+    ),
+    "forum_thread": (
+        "Old-school patient-support / hobby forum thread (HealthBoards, "
+        "Reddit pre-2015, PhpBB). Breadcrumbs at top, bold thread title as "
+        "the headline, then 2–3 stacked replies with avatar thumbnails, "
+        "display names, post counts, and short testimonial copy. Feels dated "
+        "and community-run, not glossy. No CTA button."
+    ),
+    "x_tweet_embed": (
+        "Twitter / X post mock-up on a light-gray card. Verified expert-style "
+        "profile (doctor, researcher, nutritionist, coach — vary), headline "
+        "as the tweet body, a thread indicator, plus engagement metrics "
+        "(reposts, quotes, likes, bookmarks — use realistic numbers, vary "
+        "across the batch). No CTA button — should look like someone "
+        "screenshotted a viral tweet."
+    ),
+    "local_news_alert": (
+        "Mobile push-notification card for a local news app. Tiny app icon, "
+        "app name, timestamp, a 2-line notification body where the headline "
+        "is the main title and the second line teases the story. Subtle "
+        "rounded drop-shadow on a faint phone-home-screen background. Must "
+        "read as a legitimate news alert, not an ad."
+    ),
 }
+
+
+# --- Per-platform voice briefs ---------------------------------------
+# Appended to the user prompt so the LLM biases each concept toward the
+# ad network where it'll actually run. Keeps visual briefs the same, but
+# shifts the *register* of copy and framing.
+_PLATFORM_VOICE: Dict[str, str] = {
+    "newsbreak": (
+        "NewsBreak is a US local-news feed app. Its readers are 45–70+, "
+        "suburban/rural, mobile-first, skimming articles during quiet "
+        "moments. The ads that work here look like organic news cards or "
+        "reader stories — NOT like polished Meta / Instagram ads. Favour "
+        "muted editorial palettes, serif headlines, small reporter-style "
+        "bylines, and first-person framing. De-prioritise glossy studio "
+        "product shots and neon-bright graphic design."
+    ),
+    "smartnews": (
+        "SmartNews is a curated news-app feed (heavy US + JP usage). Its "
+        "readers scroll a tight news stream, so ads must match the tonal "
+        "register of a news teaser or magazine article. Favour clean "
+        "editorial layouts, concise serif / humanist sans headlines, and "
+        "third-person reportage voice. Avoid hard-sell direct-response "
+        "typography and avoid anything that screams 'ad'."
+    ),
+    "meta": (
+        "Meta (Facebook / Instagram) users are mobile, feed-scrolling, and "
+        "trained to ignore ads-that-look-like-ads. Favour UGC-style phone "
+        "photography, handwritten text, caption overlays, and content that "
+        "looks like a friend's post. Bold colour accents are welcome."
+    ),
+}
+
+
+def _platform_voice(platform: Optional[str]) -> str:
+    key = (platform or "").strip().lower()
+    return _PLATFORM_VOICE.get(key, _PLATFORM_VOICE["newsbreak"])
 
 
 SYSTEM_PROMPT = (
@@ -302,6 +376,7 @@ def _build_user_prompt(
     aspect: str,
     recent_prompts: Sequence[str],
     references: Sequence[Dict[str, Any]] = (),
+    platform: Optional[str] = None,
 ) -> str:
     insights = insights or {}
     angles = insights.get("suggested_angles") or []
@@ -325,12 +400,18 @@ def _build_user_prompt(
         f"{refs_text}\n"
     ) if references else ""
 
+    voice_text = _platform_voice(platform)
+
     return f"""Offer: {offer.get('name') or '(unnamed)'}
 Brand: {offer.get('brand_name') or '(none)'}
 Default headline: {offer.get('headline') or '(none)'}
 Default body: {offer.get('body') or '(none)'}
 Default CTA: {offer.get('cta') or 'Learn More'}
 Landing URL: {offer.get('landing_url') or '(none)'}
+
+Target platform: {(platform or 'newsbreak').lower()}
+Platform voice brief — every concept must match this register:
+{voice_text}
 
 Winner-derived insights for this offer:
 - top_hooks: {", ".join(map(str, hooks)) or '(none)'}
@@ -632,6 +713,7 @@ def generate_concepts(
         aspect=aspect,
         recent_prompts=recent_prompts or [],
         references=references,
+        platform=platform,
     )
 
     preference = (model or DEFAULT_CONCEPT_MODEL).lower()

@@ -54,6 +54,11 @@ from rules_engine import (
 from scheduler import run_scheduled_rules, start_scheduler
 
 try:
+    from agent_api import bp as _agent_bp
+except ImportError:  # pragma: no cover
+    _agent_bp = None
+
+try:
     import config as _cfg
 except ImportError:
     _cfg = None
@@ -70,6 +75,9 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 
 storage.ensure_dirs()
+
+if _agent_bp is not None:
+    app.register_blueprint(_agent_bp)
 
 
 def _user_id() -> str:

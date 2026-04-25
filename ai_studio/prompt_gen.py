@@ -298,6 +298,79 @@ def _tpl_listicle(ctx: Dict[str, Any]) -> str:
     )
 
 
+# --- Native-first styles (added for better platform blend) -----------
+
+def _tpl_news_feed_story(ctx: Dict[str, Any]) -> str:
+    angle = ctx["angle"]
+    brand = ctx.get("brand_name") or "a local resident"
+    return (
+        f"A smartphone screen mock-up showing a NewsBreak-style local news feed article card. Top of "
+        f"the card has a small thumbnail (candid photo of a middle-aged person in a kitchen or living "
+        f"room) and a small serif headline that reads \"{angle}\". Below the headline a gray metadata "
+        f"line reads \"Local News · 2h ago · 14.2k reads\". Further down a 2-line preview snippet "
+        f"mentions {brand} in a matter-of-fact tone. Faint vertical scroll-bar on the right edge. "
+        f"Background is off-white with subtle news-feed chrome (share icon, comment bubble, small "
+        f"thumbs-up). All text sits with at least 8% padding from every edge. The whole composition "
+        f"feels like a reader-submitted local story, NOT a sponsored ad. {SQUARE_SUFFIX}"
+    )
+
+
+def _tpl_reddit_style_post(ctx: Dict[str, Any]) -> str:
+    angle = ctx["angle"]
+    return (
+        f"A Reddit-style post mock-up on an off-white background. Top row: small orange Reddit-style "
+        f"upvote arrow, a subreddit tag reading \"r/AskOldPeople · Posted by u/quiet_garden_48 · 5h\", "
+        f"and a three-dot menu icon. Bold dark headline below reads \"{angle}\". Two lines of body "
+        f"text mention a personal, first-hand discovery in a humble, curious tone. Bottom bar shows "
+        f"\"842 upvotes\", \"207 comments\", \"Share\", and \"Save\" controls in muted gray. No "
+        f"logos, no CTA button — the image should feel like an organic post someone would screenshot "
+        f"and send a friend. Text has at least 8% margin from every edge. {SQUARE_SUFFIX}"
+    )
+
+
+def _tpl_forum_thread(ctx: Dict[str, Any]) -> str:
+    angle = ctx["angle"]
+    return (
+        f"A web-forum thread mock-up on a light gray background with a plain sans-serif font. "
+        f"Top header bar reads \"HealthBoards › Wellness & Recovery › Thread\". Bold navy thread title "
+        f"reads \"{angle}\". Below are three stacked replies: \"Margaret_54\" (avatar: small blue "
+        f"circle, icon of flower) writes 2 lines about her own experience; \"RetiredRN_Pat\" (avatar: "
+        f"green circle with stethoscope icon) adds a short confirming reply; \"GrampsMike\" (avatar: "
+        f"gray circle) writes a one-line thank-you. Each reply shows a post-count badge and a tiny "
+        f"timestamp. The visual should look like a real old-school patient-support forum, not a "
+        f"modern glossy ad. All text at least 8% from every edge. {SQUARE_SUFFIX}"
+    )
+
+
+def _tpl_x_tweet_embed(ctx: Dict[str, Any]) -> str:
+    angle = ctx["angle"]
+    return (
+        f"A Twitter/X post mock-up embedded on a soft light-gray card. Top row: round profile photo "
+        f"of a middle-aged man with a neutral smile, display name \"Dr. Ray Holden\", handle "
+        f"\"@drrayholden\", and a small blue verified checkmark. Post body text in black sans-serif "
+        f"reads: \"{angle}\" on two lines, followed by a single thoughtful follow-up sentence and a "
+        f"soft \"🧵\" thread indicator. Below the post a muted metric row shows \"2:14 PM · Feb 18, "
+        f"2026\", \"1,284 Reposts\", \"612 Quotes\", \"9,203 Likes\", \"184 Bookmarks\". Under that a "
+        f"reply, repost, like, and share icon row. White card background with a subtle 1 px border. "
+        f"No CTA button. Text has at least 8% margin from every edge. {SQUARE_SUFFIX}"
+    )
+
+
+def _tpl_local_news_alert(ctx: Dict[str, Any]) -> str:
+    angle = ctx["angle"]
+    return (
+        f"A mobile news-alert card mock-up designed to look exactly like a push notification from a "
+        f"local news app. Top-left: small square app icon (stylised news building silhouette in "
+        f"crimson). App name \"Local Desk\" in bold 12pt, timestamp \"now\" in 10pt gray to the "
+        f"right. The alert title in 16pt semi-bold dark navy reads \"{angle}\". A smaller 13pt gray "
+        f"sub-line reads \"Tap to read the full story from Local Desk Health.\". The card has a "
+        f"subtle rounded-corner drop-shadow on a pale gray phone-home-screen background with a "
+        f"faint clock widget blurred in the upper portion. No CTA button, no brand logo — it must "
+        f"read as a genuine news alert, not an ad. All text sits at least 8% from every edge. "
+        f"{SQUARE_SUFFIX}"
+    )
+
+
 STYLE_CATALOG: List[StyleDefinition] = [
     StyleDefinition(
         id="product_showcase",
@@ -398,6 +471,57 @@ STYLE_CATALOG: List[StyleDefinition] = [
         default_cta_color="#2563EB",
         emotional_fit=["curiosity", "authority/trust"],
         template=_tpl_listicle,
+    ),
+    # --- native-first styles ---------------------------------------------
+    StyleDefinition(
+        id="news_feed_story",
+        name="News-Feed Story Card",
+        description="NewsBreak-style local-news article card mock-up (organic, not sponsored).",
+        visual_cues=["news-feed card", "local-news chrome", "reader-submitted feel"],
+        default_cta_label="Read Story",
+        default_cta_color="#1F2937",
+        emotional_fit=["authority/trust", "curiosity", "social proof"],
+        template=_tpl_news_feed_story,
+    ),
+    StyleDefinition(
+        id="reddit_style_post",
+        name="Reddit-Style Post",
+        description="Organic r/AskOldPeople-style post mock-up, no CTA.",
+        visual_cues=["Reddit chrome", "subreddit header", "upvote counter"],
+        default_cta_label="Read Post",
+        default_cta_color="#FF4500",
+        emotional_fit=["social proof", "curiosity"],
+        template=_tpl_reddit_style_post,
+    ),
+    StyleDefinition(
+        id="forum_thread",
+        name="Old-School Forum Thread",
+        description="Patient-support forum thread with stacked testimonial replies.",
+        visual_cues=["forum breadcrumbs", "avatar replies", "thread title"],
+        default_cta_label="Read Thread",
+        default_cta_color="#1E3A8A",
+        emotional_fit=["social proof", "authority/trust"],
+        template=_tpl_forum_thread,
+    ),
+    StyleDefinition(
+        id="x_tweet_embed",
+        name="X / Twitter Embed",
+        description="Verified-expert tweet mock-up with engagement metrics, no CTA.",
+        visual_cues=["verified check", "tweet metrics", "thread indicator"],
+        default_cta_label="View Post",
+        default_cta_color="#0F172A",
+        emotional_fit=["authority/trust", "social proof"],
+        template=_tpl_x_tweet_embed,
+    ),
+    StyleDefinition(
+        id="local_news_alert",
+        name="Local News Push Alert",
+        description="Push-notification card that reads as a genuine local news alert.",
+        visual_cues=["push notification", "app icon", "timestamp badge"],
+        default_cta_label="Read Alert",
+        default_cta_color="#DC2626",
+        emotional_fit=["fear/urgency", "authority/trust"],
+        template=_tpl_local_news_alert,
     ),
 ]
 

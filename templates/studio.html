@@ -52,9 +52,10 @@
         </select>
       </div>
       <div class="nb-form-row">
-        <label for="gen-research-ratio">Research mix (candidates %)</label>
-        <input type="range" id="gen-research-ratio" min="0" max="60" step="5" value="30" />
-        <output id="gen-research-ratio-out">30%</output>
+        <label for="gen-research-ratio" title="What % of this batch should come from experimental candidate styles vs. the proven catalog.">Research mix (candidates %)</label>
+        <input type="range" id="gen-research-ratio" min="0" max="80" step="5" value="40" />
+        <output id="gen-research-ratio-out">40%</output>
+        <span class="nb-muted nb-small" id="gen-research-ratio-hint">~4 of 10 slots will be experimental</span>
       </div>
       <div class="nb-form-row">
         <button type="submit" class="nb-btn primary">Generate</button>
@@ -124,6 +125,15 @@
 
   <!-- ============ RESEARCH =========== -->
   <div class="nb-tab-panel" data-panel="research" hidden>
+    <section class="nb-card" id="recent-discoveries-card">
+      <h3>Recent discoveries (last 24h)</h3>
+      <p class="nb-muted">
+        New style candidates added by the nightly scheduler or a manual run.
+        Promote to bake into the catalog; archive to kill.
+      </p>
+      <div id="recent-discoveries"></div>
+    </section>
+
     <section class="nb-card">
       <h3>Candidate catalog</h3>
       <p class="nb-muted">
@@ -225,7 +235,18 @@
 
   const ratio = document.getElementById('gen-research-ratio');
   const ratioOut = document.getElementById('gen-research-ratio-out');
-  ratio.addEventListener('input', () => ratioOut.textContent = ratio.value + '%');
+  const ratioHint = document.getElementById('gen-research-ratio-hint');
+  const countInput = document.getElementById('gen-count');
+  function updateRatioHint() {
+    const pct = parseFloat(ratio.value || '0');
+    const count = parseInt(countInput.value, 10) || 10;
+    const slots = Math.round((pct / 100) * count);
+    ratioOut.textContent = pct + '%';
+    if (ratioHint) ratioHint.textContent = `~${slots} of ${count} slots will be experimental`;
+  }
+  ratio.addEventListener('input', updateRatioHint);
+  if (countInput) countInput.addEventListener('input', updateRatioHint);
+  updateRatioHint();
 
   const form = document.getElementById('studio-gen-form');
   const grid = document.getElementById('gen-grid');
@@ -415,41 +436,75 @@
     `;
   }
 
+  function candidateCardHtml(c) {
+    const created = c.created_at || '';
+    const whenShort = created ? new Date(created).toLocaleString() : '';
+    return `
+      <div class="nb-card candidate-card">
+        <header>
+          <strong>${escapeHtml(c.name || c.style_id)}</strong>
+          <span class="chip ${escapeHtml(c.status || 'candidate')}">${escapeHtml(c.status || 'candidate')}</span>
+          <span class="chip">${escapeHtml(c.source || '')}</span>
+          ${whenShort ? `<span class="nb-muted nb-small" style="margin-left:auto">${escapeHtml(whenShort)}</span>` : ''}
+        </header>
+        <p>${escapeHtml(c.description || '')}</p>
+        <dl class="candidate-stats">
+          <dt>Trials</dt><dd>${c.trials || 0}</dd>
+          <dt>Wins</dt><dd>${c.wins || 0}</dd>
+          <dt>CPA</dt><dd>${c.cpa ? '$' + Number(c.cpa).toFixed(2) : '—'}</dd>
+        </dl>
+        <div class="nb-form-row">
+          <button type="button" class="nb-btn small" data-act="promote" data-id="${escapeHtml(c.style_id)}">Promote</button>
+          <button type="button" class="nb-btn small" data-act="archive" data-id="${escapeHtml(c.style_id)}">Archive</button>
+        </div>
+      </div>`;
+  }
+
+  function wireCandidateActions(scope) {
+    scope.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
+      const act = b.dataset.act, id = b.dataset.id;
+      await fetch('/api/studio/research/' + act, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ style_id: id }),
+      });
+      loadResearch();
+    }));
+  }
+
   async function loadResearch() {
     const res = await fetch('/api/studio/research/candidates');
     const body = await res.json();
     const host = document.getElementById('research-candidates');
+    const recentHost = document.getElementById('recent-discoveries');
     const cands = (body.candidates || []).filter(c => !String(c.style_id || '').startsWith('catalog:'));
+
+    // --- Recent discoveries (last 24h) ---------------------------------
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    const recent = cands
+      .filter(c => c.created_at && Date.parse(c.created_at) >= cutoff)
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+    if (recentHost) {
+      if (!recent.length) {
+        recentHost.innerHTML = '<em class="nb-muted">No new candidates in the last 24 hours. The nightly scheduler runs at 05:30 UTC.</em>';
+      } else {
+        recentHost.innerHTML = recent.map(candidateCardHtml).join('');
+        wireCandidateActions(recentHost);
+      }
+    }
+
+    // --- Full candidate catalog (sorted: candidate → testing → promoted → archived) ---
     if (!cands.length) {
       host.innerHTML = '<em class="nb-muted">No candidates yet — run a discovery mode below.</em>';
     } else {
-      host.innerHTML = cands.map(c => `
-        <div class="nb-card candidate-card">
-          <header>
-            <strong>${escapeHtml(c.name || c.style_id)}</strong>
-            <span class="chip ${escapeHtml(c.status || 'candidate')}">${escapeHtml(c.status || 'candidate')}</span>
-            <span class="chip">${escapeHtml(c.source || '')}</span>
-          </header>
-          <p>${escapeHtml(c.description || '')}</p>
-          <dl class="candidate-stats">
-            <dt>Trials</dt><dd>${c.trials || 0}</dd>
-            <dt>Wins</dt><dd>${c.wins || 0}</dd>
-            <dt>CPA</dt><dd>${c.cpa ? '$' + Number(c.cpa).toFixed(2) : '—'}</dd>
-          </dl>
-          <div class="nb-form-row">
-            <button type="button" class="nb-btn small" data-act="promote" data-id="${escapeHtml(c.style_id)}">Promote</button>
-            <button type="button" class="nb-btn small" data-act="archive" data-id="${escapeHtml(c.style_id)}">Archive</button>
-          </div>
-        </div>
-      `).join('');
-      host.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
-        const act = b.dataset.act, id = b.dataset.id;
-        await fetch('/api/studio/research/' + act, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ style_id: id }),
-        });
-        loadResearch();
-      }));
+      const order = { 'candidate': 0, 'testing': 1, 'promoted': 2, 'archived': 3 };
+      cands.sort((a, b) => {
+        const oa = order[a.status || 'candidate'] ?? 9;
+        const ob = order[b.status || 'candidate'] ?? 9;
+        if (oa !== ob) return oa - ob;
+        return (Date.parse(b.created_at || 0) || 0) - (Date.parse(a.created_at || 0) || 0);
+      });
+      host.innerHTML = cands.map(candidateCardHtml).join('');
+      wireCandidateActions(host);
     }
 
     try {

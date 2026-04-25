@@ -176,12 +176,54 @@ def _adapters_for_platform(platform: str):
         yield adapter, uid
 
 
-def run_ad_studio_nightly() -> None:
-    """Nightly AI Ad Studio maintenance: refresh winners + discover styles + reconcile lifecycle.
+def run_ad_studio_nightly(*, mode: str = "full") -> None:
+    """AI Ad Studio maintenance: refresh winners + discover styles + reconcile lifecycle.
 
     Runs across every platform with configured credentials. Each hook is
     isolated behind try/except so a single failure doesn't kill the others.
+
+    ``mode``:
+      * ``"full"``  — runs the full nightly pass (winners + discover + lifecycle).
+      * ``"scout"`` — runs only the discovery pass (cheap, ~15s/offer). Used by
+        the every-6h scout job so the AI keeps scanning GetHookd / brainstorming
+        new style angles per saved offer in the background, without re-pulling
+        the full winners report on each tick.
     """
+    if mode == "scout":
+        for platform in PLATFORMS:
+            for adapter, uid in _adapters_for_platform(platform):
+                try:
+                    from ai_studio.research import discover_all
+
+                    discovered = discover_all(
+                        platform=platform,
+                        scan_all_offers=True,
+                        keywords_per_offer=int(
+                            os.environ.get("AD_STUDIO_SCOUT_KEYWORDS_PER_OFFER", "3")
+                        ),
+                        gethookd_limit_per_offer=int(
+                            os.environ.get("AD_STUDIO_SCOUT_GETHOOKD_LIMIT", "20")
+                        ),
+                        brainstorm_count=int(
+                            os.environ.get("AD_STUDIO_SCOUT_BRAINSTORM_COUNT", "2")
+                        ),
+                    )
+                    logger.info(
+                        "ai_studio.scout platform=%s uid=%s modes=%s candidates=%s",
+                        platform,
+                        uid,
+                        list(discovered.keys()),
+                        sum(len(v or []) for v in discovered.values()),
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "ai_studio.scout failed platform=%s uid=%s: %s",
+                        platform,
+                        uid,
+                        e,
+                    )
+        return
+
     for platform in PLATFORMS:
         for adapter, uid in _adapters_for_platform(platform):
             # 1) Winners refresher — produces winners.json and flips
@@ -205,11 +247,20 @@ def run_ad_studio_nightly() -> None:
                 )
 
             # 2) Research discovery — scan catalog for candidate styles
-            #    across every available mode.
+            #    across every available mode. ``scan_all_offers=True`` makes
+            #    the nightly pass derive search keywords per saved offer and
+            #    call GetHookd / brainstorm for each, instead of running
+            #    with an empty query.
             try:
                 from ai_studio.research import discover_all
 
-                discovered = discover_all(adapter, platform=platform)
+                discovered = discover_all(
+                    platform=platform,
+                    scan_all_offers=True,
+                    keywords_per_offer=int(os.environ.get("AD_STUDIO_NIGHTLY_KEYWORDS_PER_OFFER", "5")),
+                    gethookd_limit_per_offer=int(os.environ.get("AD_STUDIO_NIGHTLY_GETHOOKD_LIMIT", "40")),
+                    brainstorm_count=int(os.environ.get("AD_STUDIO_NIGHTLY_BRAINSTORM_COUNT", "3")),
+                )
                 logger.info(
                     "ai_studio.research platform=%s uid=%s modes=%s candidates=%s",
                     platform,
@@ -263,11 +314,25 @@ def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
         id="ai_studio_nightly",
         replace_existing=True,
     )
+    # Every-N-hour scout pass — keeps GetHookd + brainstorm sweeping for new
+    # ad concepts per saved offer in the background. Defaults to every 6h
+    # which matches the user's original ask. Set AD_STUDIO_SCOUT_HOURS=0 to
+    # disable.
+    scout_hours = int(os.environ.get("AD_STUDIO_SCOUT_HOURS", "6"))
+    if scout_hours > 0:
+        sched.add_job(
+            lambda: run_ad_studio_nightly(mode="scout"),
+            "interval",
+            hours=scout_hours,
+            id="ai_studio_scout",
+            replace_existing=True,
+        )
     sched.start()
     _scheduler = sched
     logger.info(
-        "Scheduler started: rules every %s min + AI studio nightly (all platforms)",
+        "Scheduler started: rules every %s min + AI studio nightly + scout every %sh (all platforms)",
         interval_minutes,
+        scout_hours if scout_hours > 0 else "off",
     )
     return sched
 

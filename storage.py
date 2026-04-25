@@ -669,3 +669,97 @@ def list_research_runs(*, platform: str = DEFAULT_PLATFORM, limit: int = 200) ->
     if limit > 0:
         return out[-limit:]
     return out
+
+
+# ---------------------------------------------------------------------------
+# Managed-agent job queue
+# ---------------------------------------------------------------------------
+#
+# Tiny jsonl-backed queue consumed by ``agent_api.drain-queue`` / external
+# cron. Each line is one job row; status transitions rewrite the whole
+# file in-place (same pattern as ``update_generation``).
+
+
+def _agent_queue_file(platform: str) -> str:
+    return os.path.join(_catalog_dir(platform), "agent_queue.jsonl")
+
+
+def append_agent_job(entry: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
+    path = _agent_queue_file(platform)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        **entry,
+        "platform": _norm_platform(platform),
+        "enqueued_at": entry.get("enqueued_at") or now,
+    }
+    if not row.get("job_id"):
+        row["job_id"] = str(uuid.uuid4())
+    if not row.get("status"):
+        row["status"] = "queued"
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, default=str) + "\n")
+    return row
+
+
+def list_agent_jobs(
+    *,
+    platform: str = DEFAULT_PLATFORM,
+    status: Optional[str] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    path = _agent_queue_file(platform)
+    if not os.path.exists(path):
+        return []
+    out: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if status and str(row.get("status")) != status:
+                continue
+            out.append(row)
+    if limit > 0:
+        return out[-limit:]
+    return out
+
+
+def update_agent_job(
+    job_id: str,
+    patch: Dict[str, Any],
+    *,
+    platform: str = DEFAULT_PLATFORM,
+) -> Optional[Dict[str, Any]]:
+    path = _agent_queue_file(platform)
+    if not os.path.exists(path):
+        return None
+    rows: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    updated: Optional[Dict[str, Any]] = None
+    for i, r in enumerate(rows):
+        if str(r.get("job_id")) == str(job_id):
+            merged = {**r, **patch, "updated_at": datetime.now(timezone.utc).isoformat()}
+            rows[i] = merged
+            updated = merged
+            break
+    if updated is None:
+        return None
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, default=str) + "\n")
+    shutil.move(tmp, path)
+    return updated

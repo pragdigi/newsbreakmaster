@@ -793,14 +793,133 @@ def discover_from_uploads(
 # Fan-out
 # ----------------------------------------------------------------------
 
+# ----------------------------------------------------------------------
+# 5. Keyword derivation (for automated nightly discovery)
+# ----------------------------------------------------------------------
+
+_KEYWORD_PROMPT = """You are generating short search queries for an ad-library scraper (GetHookd).
+
+Goal: return 5 short, distinct search strings that would surface high-performing competitor
+direct-response ads in the same market/vertical as the offer below. Think like a media buyer —
+each query should target a specific angle, ingredient, mechanism, symptom, or audience.
+
+Offer:
+  name: {name}
+  brand: {brand}
+  headline: {headline}
+  body: {body}
+  category hints: {categories}
+
+Rules:
+  - Each query is 2-5 words, lowercase, no punctuation.
+  - No brand names that are unique to this offer.
+  - Mix generic vertical terms (e.g. "tinnitus supplement") with pain-point and mechanism phrasing.
+  - Avoid duplicates or paraphrases.
+
+Return STRICT JSON:
+{{ "queries": ["q1", "q2", "q3", "q4", "q5"] }}
+"""
+
+
+# Cheap heuristic fallback when no LLM is available.
+_STOPWORDS = {
+    "the", "a", "an", "of", "for", "to", "in", "on", "and", "or", "but",
+    "with", "without", "is", "it", "that", "this", "be", "as", "at", "by",
+    "can", "your", "you", "from", "will", "are", "our", "us", "we",
+}
+
+
+def _heuristic_keywords(offer: Dict[str, Any], count: int = 5) -> List[str]:
+    """Extract simple multi-word phrases from the offer copy."""
+    blob = " ".join(
+        [
+            str(offer.get("name") or ""),
+            str(offer.get("brand_name") or ""),
+            str(offer.get("headline") or ""),
+            str(offer.get("body") or offer.get("description") or ""),
+            " ".join(offer.get("categories") or []) if isinstance(offer.get("categories"), list) else "",
+        ]
+    ).lower()
+    words = re.findall(r"[a-z][a-z\-]{2,}", blob)
+    words = [w for w in words if w not in _STOPWORDS]
+    # Grab 2-word phrases first (more search-useful), then singles.
+    phrases: List[str] = []
+    seen: set = set()
+    for i in range(len(words) - 1):
+        ph = f"{words[i]} {words[i+1]}"
+        if ph not in seen and len(ph) >= 6:
+            phrases.append(ph)
+            seen.add(ph)
+        if len(phrases) >= count:
+            break
+    if len(phrases) < count:
+        for w in words:
+            if w not in seen and len(w) >= 5:
+                phrases.append(w)
+                seen.add(w)
+            if len(phrases) >= count:
+                break
+    return phrases[:count] or [str(offer.get("name") or "").strip() or "health supplement"]
+
+
+def derive_keywords_for_offer(
+    offer: Dict[str, Any],
+    *,
+    count: int = 5,
+    use_llm: bool = True,
+) -> List[str]:
+    """Produce ``count`` short search queries for GetHookd based on an offer.
+
+    Uses Gemini first, then Claude, then a pure regex fallback so the
+    nightly scheduler never silently skips an offer just because an API key
+    is missing.
+    """
+    if use_llm and (GEMINI_API_KEY or ANTHROPIC_API_KEY):
+        prompt = _KEYWORD_PROMPT.format(
+            name=offer.get("name") or "",
+            brand=offer.get("brand_name") or offer.get("name") or "",
+            headline=offer.get("headline") or "",
+            body=(offer.get("body") or offer.get("description") or "")[:600],
+            categories=", ".join(offer.get("categories") or [])
+            if isinstance(offer.get("categories"), list)
+            else "(none)",
+        )
+        raw = _call_gemini_text(prompt) or _call_claude_text(prompt)
+        parsed = _extract_json(raw) or {}
+        qs = parsed.get("queries") if isinstance(parsed, dict) else None
+        if isinstance(qs, list) and qs:
+            cleaned = [re.sub(r"\s+", " ", str(q)).strip().lower() for q in qs if str(q).strip()]
+            cleaned = [q for q in cleaned if 2 <= len(q.split()) <= 6][:count]
+            if cleaned:
+                return cleaned
+    return _heuristic_keywords(offer, count=count)
+
+
 def discover_all(
     platform: str,
     *,
     offer_id: Optional[str] = None,
     gethookd_keywords: Optional[Sequence[str]] = None,
     gethookd_filters: Optional[Dict[str, Any]] = None,
+    scan_all_offers: bool = False,
+    keywords_per_offer: int = 5,
+    gethookd_limit_per_offer: int = 40,
+    brainstorm_count: int = 3,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Run every available discovery mode for ``platform`` and return per-mode results."""
+    """Run every available discovery mode for ``platform`` and return per-mode results.
+
+    Modes
+    -----
+    cluster_winners : always runs (cross-platform).
+    gethookd :
+        * if ``gethookd_keywords`` explicit → single-query run.
+        * elif ``offer_id`` → derives keywords for that offer.
+        * elif ``scan_all_offers`` → iterates every offer on the platform,
+          derives keywords, and clusters the merged competitor pool.
+    brainstorm :
+        * runs for ``offer_id`` when given.
+        * runs for every offer when ``scan_all_offers=True``.
+    """
     results: Dict[str, List[Dict[str, Any]]] = {
         "cluster_winners": [],
         "gethookd": [],
@@ -811,23 +930,87 @@ def discover_all(
         results["cluster_winners"] = discover_from_winners(platform)
     except Exception as exc:  # noqa: BLE001
         logger.warning("discover_from_winners failed: %s", exc)
+
+    offers_to_scan: List[Dict[str, Any]] = []
+    if offer_id:
+        for o in storage.list_offers(platform=platform):
+            if str(o.get("id")) == str(offer_id):
+                offers_to_scan = [o]
+                break
+    elif scan_all_offers:
+        offers_to_scan = list(storage.list_offers(platform=platform) or [])
+
+    # ---- GetHookd -----------------------------------------------------
     try:
         if GETHOOKD_API_KEY:
-            results["gethookd"] = discover_from_gethookd(
-                platform=platform,
-                keywords=gethookd_keywords or [],
-                filters=gethookd_filters,
-            )
+            if gethookd_keywords:
+                results["gethookd"].extend(
+                    discover_from_gethookd(
+                        platform=platform,
+                        keywords=gethookd_keywords,
+                        filters=gethookd_filters,
+                    )
+                )
+            elif offers_to_scan:
+                for o in offers_to_scan:
+                    try:
+                        derived = derive_keywords_for_offer(o, count=keywords_per_offer)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "derive_keywords_for_offer failed for offer=%s: %s",
+                            o.get("id"),
+                            exc,
+                        )
+                        derived = _heuristic_keywords(o, count=keywords_per_offer)
+                    if not derived:
+                        continue
+                    logger.info(
+                        "gethookd keywords for offer=%s (%s): %s",
+                        o.get("id"),
+                        o.get("name"),
+                        derived,
+                    )
+                    try:
+                        rows = discover_from_gethookd(
+                            platform=platform,
+                            keywords=derived,
+                            filters=gethookd_filters,
+                            limit=gethookd_limit_per_offer,
+                        )
+                        results["gethookd"].extend(rows)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "discover_from_gethookd failed for offer=%s: %s",
+                            o.get("id"),
+                            exc,
+                        )
+            else:
+                # No offers and no explicit keywords — run an empty sweep
+                # (mostly useful in tests / first boot before offers exist).
+                results["gethookd"] = discover_from_gethookd(
+                    platform=platform,
+                    keywords=[],
+                    filters=gethookd_filters,
+                )
     except Exception as exc:  # noqa: BLE001
         logger.warning("discover_from_gethookd failed: %s", exc)
+
+    # ---- Brainstorm ---------------------------------------------------
     try:
-        if offer_id:
-            for o in storage.list_offers(platform=platform):
-                if str(o.get("id")) == str(offer_id):
-                    results["brainstorm"] = discover_from_brainstorm(o, platform=platform)
-                    break
+        for o in offers_to_scan:
+            try:
+                results["brainstorm"].extend(
+                    discover_from_brainstorm(o, platform=platform, count=brainstorm_count)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "discover_from_brainstorm failed for offer=%s: %s",
+                    o.get("id"),
+                    exc,
+                )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("discover_from_brainstorm failed: %s", exc)
+        logger.warning("brainstorm loop crashed: %s", exc)
+
     # uploads are never run implicitly — always user-triggered.
     return results
 
@@ -838,5 +1021,6 @@ __all__ = [
     "discover_from_brainstorm",
     "discover_from_uploads",
     "discover_all",
+    "derive_keywords_for_offer",
     "normalize_gethookd_ad",
 ]

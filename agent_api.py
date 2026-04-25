@@ -420,6 +420,152 @@ def agent_run_scout():
     return jsonify({"ok": True, "ts": _iso_now(), "mode": "scout"})
 
 
+@bp.route("/run-public-scout", methods=["POST"])
+def agent_run_public_scout():
+    """Run one in-process public-libraries scout (Meta Ad Library + TikTok).
+
+    No GetHookd dependency — pulls competitor ads directly from public
+    libraries and clusters them into style candidates. Body (optional):
+
+        {
+          "platform": "newsbreak" | "smartnews",
+          "offer_id": "...",        # restrict to one offer
+          "scan_all_offers": true,  # default true
+          "country": "US",
+          "sources": ["meta", "tiktok"],
+          "keywords_per_offer": 4,
+          "limit_per_query": 20
+        }
+    """
+    err = _guard()
+    if err is not None:
+        return err
+    data = request.get_json(silent=True) or {}
+    platform_filter = (data.get("platform") or request.args.get("platform") or "").strip().lower()
+    targets = [normalize_platform(platform_filter)] if platform_filter else list(PLATFORMS)
+    offer_id = str(data.get("offer_id") or "").strip() or None
+    scan_all = bool(data.get("scan_all_offers", True))
+    country = str(data.get("country") or "US").upper()
+    sources = data.get("sources") or ["meta", "tiktok"]
+    keywords_per_offer = int(data.get("keywords_per_offer") or 4)
+    limit_per_query = int(data.get("limit_per_query") or 20)
+
+    summary: Dict[str, Any] = {}
+    try:
+        from ai_studio.research import discover_public as _public
+
+        for p in targets:
+            try:
+                discovered = _public.discover_all_public(
+                    platform=p,
+                    offer_id=offer_id,
+                    scan_all_offers=scan_all,
+                    keywords_per_offer=keywords_per_offer,
+                    limit_per_query=limit_per_query,
+                    country=country,
+                    sources=sources,
+                )
+                summary[p] = {
+                    "candidates": sum(len(v or []) for v in discovered.values()),
+                    "modes": list(discovered.keys()),
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("agent_api: run-public-scout failed for %s", p)
+                summary[p] = {"error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("agent_api: run-public-scout import failure")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"ok": True, "ts": _iso_now(), "platforms": summary})
+
+
+@bp.route("/run-scholar", methods=["POST"])
+def agent_run_scholar():
+    """Run the Copywriting Scholar against one or all offers.
+
+    Body:
+      {
+        "platform": "newsbreak" | "smartnews",
+        "offer_id": "...",        # restrict to one offer
+        "scan_all_offers": true,  # default true if no offer_id
+        "count_per_offer": 3,
+        "lens_id": "schwartz_awareness"  # optional override
+      }
+    """
+    err = _guard()
+    if err is not None:
+        return err
+    data = request.get_json(silent=True) or {}
+    platform_filter = (data.get("platform") or request.args.get("platform") or "").strip().lower()
+    targets = [normalize_platform(platform_filter)] if platform_filter else list(PLATFORMS)
+    offer_id = str(data.get("offer_id") or "").strip() or None
+    scan_all = bool(data.get("scan_all_offers", offer_id is None))
+    count_per_offer = int(data.get("count_per_offer") or 3)
+    lens_id = (data.get("lens_id") or "").strip() or None
+
+    summary: Dict[str, Any] = {}
+    try:
+        from ai_studio.research import scholar as _scholar
+
+        for p in targets:
+            try:
+                if lens_id and offer_id:
+                    offer = next(
+                        (o for o in storage.list_offers(platform=p)
+                         if str(o.get("id")) == str(offer_id)),
+                        None,
+                    )
+                    if not offer:
+                        summary[p] = {"error": f"offer {offer_id} not found"}
+                        continue
+                    emitted, lens = _scholar.study_offer(
+                        offer,
+                        platform=p,
+                        count=count_per_offer,
+                        lens_id=lens_id,
+                    )
+                    summary[p] = {"candidates": len(emitted), "lens": lens.id}
+                else:
+                    discovered = _scholar.study_all(
+                        platform=p,
+                        offer_id=offer_id,
+                        scan_all_offers=scan_all,
+                        count_per_offer=count_per_offer,
+                    )
+                    summary[p] = {
+                        "candidates": sum(len(v or []) for v in discovered.values()),
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("agent_api: run-scholar failed for %s", p)
+                summary[p] = {"error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("agent_api: run-scholar import failure")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"ok": True, "ts": _iso_now(), "platforms": summary})
+
+
+@bp.route("/lenses", methods=["GET"])
+def agent_list_lenses():
+    """List the Copywriting Scholar's available framework lenses."""
+    err = _guard()
+    if err is not None:
+        return err
+    from ai_studio.research import scholar as _scholar
+
+    return jsonify(
+        {
+            "lenses": [
+                {
+                    "id": l.id,
+                    "name": l.name,
+                    "kind": l.kind,
+                    "scaffold": l.scaffold,
+                }
+                for l in _scholar.LENSES
+            ]
+        }
+    )
+
+
 @bp.route("/queue", methods=["GET"])
 def agent_list_queue():
     err = _guard()

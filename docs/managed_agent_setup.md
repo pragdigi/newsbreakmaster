@@ -38,26 +38,83 @@ The signed endpoints live at:
 * `POST /api/agent/schedule-generation`
 * `GET  /api/agent/queue`
 * `POST /api/agent/drain-queue`
-* `POST /api/agent/run-scout`
+* `POST /api/agent/run-scout`             — GetHookd + brainstorm scout
+* `POST /api/agent/run-public-scout`      — Meta Ad Library + TikTok Creative Center scout
+* `POST /api/agent/run-scholar`           — Copywriting Scholar (Opus + Gemini)
+* `GET  /api/agent/lenses`                — list Scholar's framework lenses
 * `GET  /api/agent/sign-example`
 
 Base URL: `https://newsbreakmaster.onrender.com`
 
 ---
 
-## 2. Built-in scout (no external agent required)
+## 2. Built-in scouts (no external agent required)
 
-The Flask app's APScheduler runs `run_ad_studio_nightly(mode="scout")` every
+Three independent in-process schedulers run by default. Each writes into
+`storage/catalog/<platform>/style_candidates.json` and surfaces in the
+Studio UI under **Research → Recent discoveries (last 24h)**.
+
+### 2.1 GetHookd scout
+APScheduler runs `run_ad_studio_nightly(mode="scout")` every
 `AD_STUDIO_SCOUT_HOURS` hours (default 6). Each tick:
 
 1. Iterates every saved offer.
 2. Derives 3 search keywords per offer with the LLM.
 3. Hits GetHookd `/explore` for each keyword.
 4. Runs an LLM brainstorm pass.
-5. Writes new style candidates into `storage/catalog/<platform>/style_candidates.json`.
-6. Surfaces them in the Studio UI under **Research → Recent discoveries (last 24h)**.
+5. Writes new style candidates as `source="scrape"` / `source="brainstorm"`.
 
-To turn it off, set `AD_STUDIO_SCOUT_HOURS=0` on Render.
+Disable with `AD_STUDIO_SCOUT_HOURS=0`.
+
+### 2.2 Public-libraries scout (Agent #2)
+APScheduler runs `run_public_scout()` every `AD_STUDIO_PUBLIC_SCOUT_HOURS`
+hours (default 12). No API token needed. Each tick:
+
+1. Iterates every saved offer.
+2. Derives 3 search keywords per offer with the LLM.
+3. Hits `facebook.com/ads/library` and TikTok Creative Center directly
+   (HTTP scrape, browser User-Agent).
+4. Sends merged ad pool to the LLM for clustering into NEW style templates.
+5. Writes new style candidates as `source="public_scout"` with
+   `anchor_platform: meta | tiktok | mixed` in source_meta.
+
+Tune with:
+* `AD_STUDIO_PUBLIC_SCOUT_HOURS` (default 12)
+* `AD_STUDIO_PUBLIC_SCOUT_KEYWORDS_PER_OFFER` (default 3)
+* `AD_STUDIO_PUBLIC_SCOUT_LIMIT_PER_QUERY` (default 20)
+* `AD_STUDIO_PUBLIC_SCOUT_COUNTRY` (default `US`)
+* `AD_STUDIO_PUBLIC_SCOUT_SOURCES` (default `meta,tiktok`)
+* `FB_AD_LIBRARY_TOKEN` *(optional — falls back to Graph API when set)*
+
+Disable with `AD_STUDIO_PUBLIC_SCOUT_HOURS=0`.
+
+### 2.3 Copywriting Scholar (Agent #3)
+APScheduler runs `run_scholar_scout()` every `AD_STUDIO_SCHOLAR_HOURS`
+hours (default 12). Pure LLM — no scraping. Each tick:
+
+1. Iterates every saved offer.
+2. Picks ONE framework lens per offer (rotates: Schwartz, Halbert/Kennedy,
+   Cialdini, PAS/AIDA, Sugarman, Ogilvy, contrarian-proof, native-feed
+   curiosity, pattern-disrupt visual, specific-emotion hook).
+3. Calls Claude Opus 4.7 (primary) → Gemini 3.1 Pro (fallback) with a deep
+   system prompt grounded in the chosen framework.
+4. Emits 3 framework-grounded style candidates per offer per run as
+   `source="scholar"` with `lens_id` and `framework_note` in source_meta.
+5. Anti-repetition: skips lenses already used for an offer in the last 8 runs.
+
+Tune with:
+* `AD_STUDIO_SCHOLAR_HOURS` (default 12)
+* `AD_STUDIO_SCHOLAR_COUNT` (default 3 per offer per run)
+* `AD_STUDIO_SCHOLAR_PRIMARY` (default `claude-opus-4-7`)
+* `AD_STUDIO_SCHOLAR_FALLBACK` (default `gemini-3.1-pro-preview`)
+* `AD_STUDIO_SCHOLAR_MAX_TOKENS` (default 4000)
+
+Disable with `AD_STUDIO_SCHOLAR_HOURS=0`. To trigger on demand, POST to
+`/api/agent/run-scholar`. List available lenses via `GET /api/agent/lenses`.
+
+All three scouts feed the SAME `style_candidates.json`. The bandit rotates
+across all of them — newly-discovered styles get a cold-start boost +
+zero recency penalty, so fresh ideas surface in your next batches.
 
 You can also trigger one pass on-demand:
 

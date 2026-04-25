@@ -176,6 +176,83 @@ def _adapters_for_platform(platform: str):
         yield adapter, uid
 
 
+def run_public_scout() -> None:
+    """Per-offer Meta Ad Library + TikTok Creative Center sweep.
+
+    Independent of GetHookd. Runs across every platform with configured
+    credentials. Cheap per tick — pure HTTP scrape + one LLM clustering call
+    per offer.
+    """
+    for platform in PLATFORMS:
+        for adapter, uid in _adapters_for_platform(platform):
+            try:
+                from ai_studio.research import discover_public
+
+                discovered = discover_public.discover_all_public(
+                    platform=platform,
+                    scan_all_offers=True,
+                    keywords_per_offer=int(
+                        os.environ.get("AD_STUDIO_PUBLIC_SCOUT_KEYWORDS_PER_OFFER", "3")
+                    ),
+                    limit_per_query=int(
+                        os.environ.get("AD_STUDIO_PUBLIC_SCOUT_LIMIT_PER_QUERY", "20")
+                    ),
+                    country=os.environ.get("AD_STUDIO_PUBLIC_SCOUT_COUNTRY", "US").upper(),
+                    sources=[
+                        s.strip().lower()
+                        for s in os.environ.get(
+                            "AD_STUDIO_PUBLIC_SCOUT_SOURCES", "meta,tiktok"
+                        ).split(",")
+                        if s.strip()
+                    ],
+                )
+                logger.info(
+                    "ai_studio.public_scout platform=%s uid=%s candidates=%s",
+                    platform,
+                    uid,
+                    sum(len(v or []) for v in discovered.values()),
+                )
+            except Exception as e:
+                logger.exception(
+                    "ai_studio.public_scout failed platform=%s uid=%s: %s",
+                    platform,
+                    uid,
+                    e,
+                )
+
+
+def run_scholar_scout() -> None:
+    """Per-offer Copywriting Scholar pass.
+
+    LLM-only — no scraping. Picks one framework lens per offer per run
+    (rotating across past lenses) and emits ``count_per_offer`` style
+    candidates grounded in that framework.
+    """
+    for platform in PLATFORMS:
+        for adapter, uid in _adapters_for_platform(platform):
+            try:
+                from ai_studio.research import scholar as _scholar
+
+                discovered = _scholar.study_all(
+                    platform=platform,
+                    scan_all_offers=True,
+                    count_per_offer=int(os.environ.get("AD_STUDIO_SCHOLAR_COUNT", "3")),
+                )
+                logger.info(
+                    "ai_studio.scholar platform=%s uid=%s candidates=%s",
+                    platform,
+                    uid,
+                    sum(len(v or []) for v in discovered.values()),
+                )
+            except Exception as e:
+                logger.exception(
+                    "ai_studio.scholar failed platform=%s uid=%s: %s",
+                    platform,
+                    uid,
+                    e,
+                )
+
+
 def run_ad_studio_nightly(*, mode: str = "full") -> None:
     """AI Ad Studio maintenance: refresh winners + discover styles + reconcile lifecycle.
 
@@ -327,12 +404,43 @@ def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
             id="ai_studio_scout",
             replace_existing=True,
         )
+
+    # Public-libraries scout — Meta Ad Library + TikTok Creative Center.
+    # Runs alongside the GetHookd scout so each pulls a different supply
+    # of competitor ads. Default 12h, set AD_STUDIO_PUBLIC_SCOUT_HOURS=0
+    # to disable.
+    public_hours = int(os.environ.get("AD_STUDIO_PUBLIC_SCOUT_HOURS", "12"))
+    if public_hours > 0:
+        sched.add_job(
+            run_public_scout,
+            "interval",
+            hours=public_hours,
+            id="ai_studio_public_scout",
+            replace_existing=True,
+        )
+
+    # Copywriting Scholar — LLM-only deep-research agent. Cycles through
+    # frameworks per offer per run. Default 12h, set
+    # AD_STUDIO_SCHOLAR_HOURS=0 to disable. (Set higher than the scout
+    # cadence to keep Opus token spend predictable.)
+    scholar_hours = int(os.environ.get("AD_STUDIO_SCHOLAR_HOURS", "12"))
+    if scholar_hours > 0:
+        sched.add_job(
+            run_scholar_scout,
+            "interval",
+            hours=scholar_hours,
+            id="ai_studio_scholar",
+            replace_existing=True,
+        )
+
     sched.start()
     _scheduler = sched
     logger.info(
-        "Scheduler started: rules every %s min + AI studio nightly + scout every %sh (all platforms)",
+        "Scheduler started: rules every %sm + nightly + scout/%sh + public/%sh + scholar/%sh",
         interval_minutes,
         scout_hours if scout_hours > 0 else "off",
+        public_hours if public_hours > 0 else "off",
+        scholar_hours if scholar_hours > 0 else "off",
     )
     return sched
 

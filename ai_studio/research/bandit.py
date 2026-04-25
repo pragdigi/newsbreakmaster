@@ -32,6 +32,11 @@ MAX_CANDIDATE_RATIO = float(os.environ.get("AD_STUDIO_BANDIT_CANDIDATE_MAX", "0.
 CATALOG_PRIOR_ALPHA = float(os.environ.get("AD_STUDIO_BANDIT_CATALOG_ALPHA", "3"))
 CATALOG_PRIOR_BETA = float(os.environ.get("AD_STUDIO_BANDIT_CATALOG_BETA", "2"))
 
+# Multiplicative damping per recent appearance: arm_score *= (1 - PENALTY * recent_count).
+# Anchors rotation: a style picked twice in the last 30 batches gets ~10% damped,
+# a style picked 5 times gets ~25% damped. New / unused styles see no damping at all.
+RECENCY_PENALTY = float(os.environ.get("AD_STUDIO_BANDIT_RECENCY_PENALTY", "0.05"))
+
 
 def _recent_allocation_counts(platform: str, *, window: int = FLOOR_WINDOW) -> Dict[str, int]:
     """Count how often each style_id appeared in the last ``window`` generations."""
@@ -156,28 +161,51 @@ def allocate(
             }
         )
 
-    candidate_slots_used = 0
+    candidate_slots_used = sum(1 for p in floor_picks if p.get("is_candidate"))
     picks: List[Dict[str, Any]] = list(floor_picks)
+    picked_ids: set = {p["style_id"] for p in floor_picks if p.get("style_id")}
+    total_arm_count = len(arms)
 
-    # Sample with replacement — same style can win multiple slots if strong.
-    # Enforce candidate budget cap by re-sampling if it would exceed.
+    # Sample with rotation pressure:
+    #   1. Apply a recency penalty per arm based on how often it appeared in the
+    #      last FLOOR_WINDOW batches → biases toward ideas/concepts we haven't
+    #      shipped recently.
+    #   2. Within a single batch, never pick the same style twice while there
+    #      are still unused styles available — every slot draws a distinct
+    #      arm until the pool is exhausted.
     safety = 0
-    while len(picks) < n and safety < n * 20:
+    while len(picks) < n and safety < n * 30:
         safety += 1
-        scored = [
-            (
-                _sample_beta(arm["alpha"], arm["beta"], rng),
-                arm,
-            )
-            for arm in arms
-        ]
+        # Once every arm has been picked at least once in this batch, allow
+        # repeats again (so a 12-slot batch over a 5-arm pool still fills).
+        allow_repeats = len(picked_ids) >= total_arm_count
+        scored: List[tuple] = []
+        for arm in arms:
+            sid = arm["style_id"]
+            if not allow_repeats and sid in picked_ids:
+                continue
+            sample = _sample_beta(arm["alpha"], arm["beta"], rng)
+            recent_count = int(recent.get(sid, 0))
+            penalty = max(0.0, min(0.95, RECENCY_PENALTY * recent_count))
+            sample *= (1.0 - penalty)
+            scored.append((sample, arm))
+        if not scored:
+            break
         scored.sort(key=lambda x: x[0], reverse=True)
+        progressed = False
         for _, arm in scored:
             if arm["is_candidate"] and candidate_slots_used >= max_candidate_slots:
                 continue
             picks.append({"style_id": arm["style_id"], "is_candidate": arm["is_candidate"]})
+            picked_ids.add(arm["style_id"])
             if arm["is_candidate"]:
                 candidate_slots_used += 1
+            progressed = True
+            break
+        if not progressed:
+            # Every scored arm was vetoed (typically: all candidates and the
+            # candidate budget is full). Bail out — the sanity fallback below
+            # will fill remaining slots from the catalog.
             break
     # Sanity fallback
     while len(picks) < n:

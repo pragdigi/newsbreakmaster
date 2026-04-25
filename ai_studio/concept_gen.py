@@ -57,7 +57,9 @@ CLAUDE_CONCEPT_MODEL = os.environ.get(
 )
 
 # How many of the most recent prompts to feed back as "do not repeat".
-RECENT_PROMPT_MEMORY = 30
+# 60 ≈ the last six 10-slot batches; large enough to dampen drift toward
+# repeated scenes, small enough to keep the LLM context tight.
+RECENT_PROMPT_MEMORY = int(os.environ.get("AD_STUDIO_CONCEPT_MEMORY", "60"))
 
 # How many winner creatives to attach as visual references in the LLM call.
 # Too few = no signal, too many = bloats latency / cost / breaks Claude image

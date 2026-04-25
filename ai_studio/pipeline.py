@@ -139,6 +139,7 @@ def _allocate_styles(
                 candidates=candidates,
                 n=count,
                 research_ratio=research_ratio,
+                platform=platform,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("bandit.allocate failed, falling back to catalog-only: %s", exc)

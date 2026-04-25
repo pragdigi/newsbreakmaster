@@ -263,6 +263,11 @@ def _basic_auth_ok() -> bool:
 def _require_basic_auth():
     if request.path.startswith("/static"):
         return None
+    # Managed-agent surface uses its own HMAC-SHA256 signed-request auth
+    # (see agent_api.py). Wrapping it in Basic Auth too would force every
+    # caller to share a browser password, defeating the point of HMAC.
+    if request.path.startswith("/api/agent/"):
+        return None
     if _basic_auth_ok():
         return None
     return Response(

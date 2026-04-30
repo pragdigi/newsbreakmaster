@@ -311,9 +311,19 @@
     <div class="nb-defaults-panel">
       <div class="nb-defaults-title">Defaults <span class="nb-muted">(changes here propagate to every ad instantly)</span></div>
       <div class="nb-row-3">
-        <input type="text" id="sn-default-headline" class="nb-input" placeholder="Default headline (10–25 chars)" minlength="10" maxlength="25">
-        <input type="text" id="sn-default-description" class="nb-input" placeholder="Default description (10–90 chars)" minlength="10" maxlength="90">
+        <input type="text" id="sn-default-headline" class="nb-input" placeholder="Default headline (10–70 chars)" minlength="10" maxlength="70">
+        <input type="text" id="sn-default-description" class="nb-input" placeholder="Default description (10–180 chars)" minlength="10" maxlength="180">
         <input type="url"  id="sn-default-landing" class="nb-input" placeholder="Default landing URL (overrides the field above)">
+      </div>
+      <div style="margin-top:8px;">
+        <input type="text" id="sn-default-utm" class="nb-input" placeholder="UTM parameters (e.g. src={campaign_id}&amp;utm_medium={ad_account_id}&amp;sku={ad_id})">
+        <div class="nb-hint">
+          Appended to every landing URL on submit. SmartNews macros like
+          <code>{campaign_id}</code>, <code>{ad_account_id}</code>, <code>{ad_group_id}</code>,
+          <code>{ad_id}</code>, <code>{click_id}</code> are passed through unchanged for
+          server-side substitution. Leave blank to skip. Don't include the leading
+          <code>?</code> or <code>&amp;</code>.
+        </div>
       </div>
     </div>
 
@@ -573,19 +583,32 @@
         }
       }
 
+      // Trim trailing junk that frequently sneaks into a pasted landing URL
+      // (`=` from a half-pasted UTM, stray `?`/`&`, trailing slash, whitespace).
+      // Heals existing bad offer records the moment they're applied.
+      function _cleanLanding(u){
+        return String(u || '')
+          .trim()
+          .replace(/[?&=]+$/, '')
+          .replace(/\/+$/, function(m){ return m.length > 1 ? '/' : '/'; });
+      }
+      var cleanLanding = _cleanLanding(o.landing_url);
+
       // Sponsor + landing
       var sponsorEl = document.querySelector('input[name="sponsored_name"]');
       if (sponsorEl && o.brand_name) sponsorEl.value = o.brand_name;
       var landingEl = document.querySelector('input[name="landing_page_url"]');
-      if (landingEl && o.landing_url) landingEl.value = o.landing_url;
+      if (landingEl && cleanLanding) landingEl.value = cleanLanding;
 
       // Default ad copy (cascades into every creative card)
       var defH = document.getElementById('sn-default-headline');
       var defD = document.getElementById('sn-default-description');
       var defL = document.getElementById('sn-default-landing');
+      var defU = document.getElementById('sn-default-utm');
       if (defH && o.headline) defH.value = o.headline;
       if (defD && o.body) defD.value = o.body;
-      if (defL && o.landing_url) defL.value = o.landing_url;
+      if (defL && cleanLanding) defL.value = cleanLanding;
+      if (defU && o.utm_parameters) defU.value = o.utm_parameters;
       // Fire input so the dropzone applies the defaults to existing cards.
       [defH, defD, defL].forEach(function(el){
         if (el) el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -666,7 +689,22 @@
     var defH       = document.getElementById('sn-default-headline');
     var defD       = document.getElementById('sn-default-description');
     var defL       = document.getElementById('sn-default-landing');
+    var defU       = document.getElementById('sn-default-utm');
     if (!form || !dropzone || !fileInput || !grid) return;
+
+    // String concat — never URL-encode. SmartNews substitutes its macros
+    // ({campaign_id}, {ad_id}, …) server-side and breaks if the braces are
+    // percent-escaped. Skips if the URL already carries the same UTM tail
+    // so a hand-edited per-card URL doesn't get double-appended.
+    function appendUtm(url, utm){
+      var clean = String(url || '')
+        .trim()
+        .replace(/[?&=]+$/, '');
+      var u = String(utm || '').trim().replace(/^[?&]+/, '').replace(/[?&]+$/, '');
+      if (!clean || !u) return clean;
+      if (clean.indexOf(u) !== -1) return clean;
+      return clean + (clean.indexOf('?') !== -1 ? '&' : '?') + u;
+    }
 
     var items = []; // { file, ad_name, headline, description, landing_url, url }
     var prevDefaults = { h: '', d: '', l: '' };
@@ -707,8 +745,8 @@
         '</div>' +
         '<div class="nb-creative-fields">' +
           '<input type="text" data-role="ad_name" class="nb-input" placeholder="Ad name (optional)" value="' + esc(it.ad_name) + '">' +
-          '<input type="text" data-role="headline" class="nb-input" minlength="10" maxlength="25" required placeholder="Headline (10–25 chars)" value="' + esc(it.headline) + '">' +
-          '<input type="text" data-role="description" class="nb-input" minlength="10" maxlength="90" required placeholder="Description (10–90 chars)" value="' + esc(it.description) + '">' +
+          '<input type="text" data-role="headline" class="nb-input" minlength="10" maxlength="70" required placeholder="Headline (10–70 chars)" value="' + esc(it.headline) + '">' +
+          '<input type="text" data-role="description" class="nb-input" minlength="10" maxlength="180" required placeholder="Description (10–180 chars)" value="' + esc(it.description) + '">' +
           '<input type="url"  data-role="landing_url" class="nb-input" placeholder="Landing URL (blank = use default above)" value="' + esc(it.landing_url) + '">' +
         '</div>';
 
@@ -804,7 +842,7 @@
         return;
       }
 
-      // SmartNews v3 enforces: headline 10–25 chars, description 10–90 chars.
+      // SmartNews v3 enforces: headline 10–70 chars, description 10–180 chars.
       // The per-card inputs carry minlength, but the submit path serializes
       // from the JS state array into hidden inputs, bypassing native
       // validation — so we check explicitly here to surface a clean message.
@@ -812,11 +850,11 @@
       items.forEach(function(it, i){
         var h = (it.headline || '').trim();
         var d = (it.description || '').trim();
-        if (!h || h.length < 10 || h.length > 25) {
-          invalid.push('Ad ' + (i + 1) + ': headline must be 10–25 chars (got ' + h.length + ')');
+        if (!h || h.length < 10 || h.length > 70) {
+          invalid.push('Ad ' + (i + 1) + ': headline must be 10–70 chars (got ' + h.length + ')');
         }
-        if (!d || d.length < 10 || d.length > 90) {
-          invalid.push('Ad ' + (i + 1) + ': description must be 10–90 chars (got ' + d.length + ')');
+        if (!d || d.length < 10 || d.length > 180) {
+          invalid.push('Ad ' + (i + 1) + ': description must be 10–180 chars (got ' + d.length + ')');
         }
       });
       if (invalid.length) {
@@ -830,6 +868,8 @@
       var holder = document.createElement('div');
       holder.style.display = 'none';
       holder.setAttribute('data-sn-dropzone-generated', '1');
+
+      var utmTail = (defU && defU.value || '').trim();
 
       items.forEach(function(it, i){
         // Hidden file input carrying this card's image as creative_<i>
@@ -856,7 +896,7 @@
         addHidden('ad_name_' + i,          it.ad_name);
         addHidden('headline_' + i,         it.headline);
         addHidden('description_' + i,      it.description);
-        addHidden('landing_url_' + i,      it.landing_url);
+        addHidden('landing_url_' + i,      appendUtm(it.landing_url, utmTail));
       });
 
       form.appendChild(holder);

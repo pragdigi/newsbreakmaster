@@ -458,8 +458,8 @@ def smartnews_bulk_launch(
     # We validate every ad's copy *before* creating the campaign so a typo
     # never leaves an empty campaign+ad-group stranded in SmartNews. Image
     # uploads and API writes only start once every ad's text fields are known
-    # good against SmartNews v3 image-creative limits (headline 10-25,
-    # description 10-90, sponsored_name/landing required).
+    # good against SmartNews v3 image-creative limits (headline 10-70,
+    # description 10-180, sponsored_name/landing required).
     preflight_errors: List[Dict[str, Any]] = []
     default_landing_pf = (form.get("landing_page_url") or "").strip()
     default_sponsored_pf = (form.get("sponsored_name") or "").strip()
@@ -477,14 +477,14 @@ def smartnews_bulk_launch(
             pf_errs.append("headline required")
         elif len(headline) < 10:
             pf_errs.append(f"headline too short ({len(headline)}<10 chars)")
-        elif len(headline) > 25:
-            pf_errs.append(f"headline too long ({len(headline)}>25 chars)")
+        elif len(headline) > 70:
+            pf_errs.append(f"headline too long ({len(headline)}>70 chars)")
         if not description:
             pf_errs.append("description required")
         elif len(description) < 10:
             pf_errs.append(f"description too short ({len(description)}<10 chars)")
-        elif len(description) > 90:
-            pf_errs.append(f"description too long ({len(description)}>90 chars)")
+        elif len(description) > 180:
+            pf_errs.append(f"description too long ({len(description)}>180 chars)")
         if not sponsored:
             pf_errs.append("sponsored_name required")
         if not landing:
@@ -601,8 +601,8 @@ def smartnews_bulk_launch(
         sponsored = (form.get(f"sponsored_name_{idx}") or default_sponsored).strip()
 
         # SmartNews v3 image-creative text limits (from the ads schema):
-        #   headline    : 10–25 chars
-        #   description : 10–90 chars
+        #   headline    : 10–70 chars
+        #   description : 10–180 chars
         # Validate before we burn a POST and upload bytes so the operator
         # sees a clean "Ad 1 description too short" rather than a
         # per-field 422 after the image round-trip.
@@ -611,14 +611,14 @@ def smartnews_bulk_launch(
             field_errors.append("headline required")
         elif len(headline) < 10:
             field_errors.append(f"headline too short ({len(headline)}<10 chars)")
-        elif len(headline) > 25:
-            field_errors.append(f"headline too long ({len(headline)}>25 chars)")
+        elif len(headline) > 70:
+            field_errors.append(f"headline too long ({len(headline)}>70 chars)")
         if not description:
             field_errors.append("description required")
         elif len(description) < 10:
             field_errors.append(f"description too short ({len(description)}<10 chars)")
-        elif len(description) > 90:
-            field_errors.append(f"description too long ({len(description)}>90 chars)")
+        elif len(description) > 180:
+            field_errors.append(f"description too long ({len(description)}>180 chars)")
         if not sponsored:
             field_errors.append("sponsored_name required")
         if not landing:

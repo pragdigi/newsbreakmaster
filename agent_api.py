@@ -36,7 +36,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, jsonify, request, send_from_directory
 
 import storage
 from platforms import DEFAULT_PLATFORM, PLATFORMS, normalize_platform
@@ -289,6 +289,116 @@ def agent_list_generations():
         logger.exception("agent_api: list_generations failed: %s", exc)
         return jsonify({"error": str(exc)}), 500
     return jsonify({"platform": platform, "generations": rows, "count": len(rows)})
+
+
+# ---------------------------------------------------------------------------
+# Prebuilt-ad library — cross-app read surface so a sister app (the
+# metamaster Meta launcher) can pick the same 1:1 / 16:9 ads we've
+# already paid the image-API cost to render and launch them on Meta too.
+# Read-only; consumption stays in newsbreakmaster's own UI.
+# ---------------------------------------------------------------------------
+
+
+def _library_filename_safe(name: str) -> Optional[str]:
+    """Reject any filename component that would let a caller escape the
+    library_images directory (path traversal / hidden files)."""
+    if not name:
+        return None
+    base = os.path.basename(str(name))
+    if base in ("", ".", "..") or base.startswith(".") or "/" in base or "\\" in base:
+        return None
+    return base
+
+
+@bp.route("/library", methods=["GET"])
+def agent_list_library():
+    """List prebuilt library items.
+
+    Query parameters:
+      - ``platform``         (default: every known platform)
+      - ``offer_id``         (optional filter)
+      - ``aspect``           (optional filter, e.g. ``1:1``, ``16:9``)
+      - ``include_consumed`` (default false — only show items still
+                              available to launch with)
+      - ``limit``            (default 200, max 1000)
+
+    Each row carries a ``download_url`` that's the unsigned PATH (not a
+    full URL) the caller hits with valid agent headers to fetch the
+    image bytes. Returning a path keeps the caller free to map host /
+    scheme however they want (proxy, CDN, local cache, etc.).
+    """
+    err = _guard()
+    if err is not None:
+        return err
+
+    platform_filter = (request.args.get("platform") or "").strip().lower()
+    targets = (
+        [normalize_platform(platform_filter)]
+        if platform_filter
+        else list(PLATFORMS)
+    )
+    offer_id = (request.args.get("offer_id") or "").strip() or None
+    aspect_filter = (request.args.get("aspect") or "").strip() or None
+    include_consumed = (request.args.get("include_consumed") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    limit = max(1, min(int(request.args.get("limit", type=int) or 200), 1000))
+
+    out: List[Dict[str, Any]] = []
+    for p in targets:
+        try:
+            rows = storage.list_library_items(
+                platform=p,
+                offer_id=offer_id,
+                include_consumed=include_consumed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("agent_api: list_library_items(%s) failed: %s", p, exc)
+            continue
+        for row in rows:
+            if aspect_filter and str(row.get("aspect") or "") != aspect_filter:
+                continue
+            filename = _library_filename_safe(row.get("filename"))
+            if not filename:
+                # Skip stale rows (e.g. the rendering failed mid-flight
+                # before the row was patched with a filename).
+                continue
+            item = dict(row)
+            item["platform"] = p
+            item["download_url"] = (
+                f"/api/agent/library/image/{p}/{filename}"
+            )
+            out.append(item)
+
+    out.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return jsonify(
+        {
+            "items": out[:limit],
+            "count": min(len(out), limit),
+            "total": len(out),
+            "platforms": targets,
+        }
+    )
+
+
+@bp.route("/library/image/<platform>/<path:filename>", methods=["GET"])
+def agent_library_image(platform: str, filename: str):
+    """Serve raw library image bytes. HMAC-signed like the rest of the
+    agent surface so we don't accidentally expose a public bucket."""
+    err = _guard()
+    if err is not None:
+        return err
+    safe_platform = normalize_platform(platform)
+    safe_name = _library_filename_safe(filename)
+    if not safe_name:
+        return jsonify({"error": "invalid filename"}), 400
+    directory = storage.library_image_dir(safe_platform)
+    full = os.path.join(directory, safe_name)
+    if not os.path.exists(full):
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(directory, safe_name)
 
 
 # ---------------------------------------------------------------------------

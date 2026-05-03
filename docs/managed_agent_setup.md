@@ -42,7 +42,20 @@ The signed endpoints live at:
 * `POST /api/agent/run-public-scout`      — Meta Ad Library + TikTok Creative Center scout
 * `POST /api/agent/run-scholar`           — Copywriting Scholar (Opus + Gemini)
 * `GET  /api/agent/lenses`                — list Scholar's framework lenses
+* `GET  /api/agent/library`               — list prebuilt-ad library items (cross-app)
+* `GET  /api/agent/library/image/<platform>/<filename>` — stream raw library image bytes
 * `GET  /api/agent/sign-example`
+
+> The `/api/agent/library*` pair is what the **`metamaster` "Pick from
+> AI Studio library"** button hits to launch our prebuilt 1:1 SmartNews
+> ads (and 16:9 NewsBreak ads) on Meta. To wire the picker on the
+> metamaster side, set:
+>
+> | metamaster env var | matches |
+> | --- | --- |
+> | `STUDIO_LIBRARY_BASE_URL` | this service's public URL |
+> | `STUDIO_LIBRARY_AGENT_KEY` | `AGENT_PUBLIC_KEY` |
+> | `STUDIO_LIBRARY_AGENT_SECRET` | `AGENT_SHARED_SECRET` |
 
 Base URL: `https://newsbreakmaster.onrender.com`
 

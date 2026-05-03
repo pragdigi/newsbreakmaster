@@ -103,6 +103,10 @@
       </label>
       <span class="nb-muted nb-small">Winners are shared across SmartNews &amp; NewsBreak so the analyzer learns from one large database.</span>
     </div>
+    <div class="studio-grid-toolbar" id="winners-grid-toolbar" hidden>
+      <span id="winners-grid-summary" class="nb-muted nb-small"></span>
+      <button type="button" id="winners-download-all" class="nb-btn small" disabled>Download all images</button>
+    </div>
     <table class="nb-table" id="winners-table">
       <thead>
         <tr>
@@ -114,6 +118,7 @@
           <th>CPA</th>
           <th>Score</th>
           <th>Marked</th>
+          <th aria-label="Download"></th>
         </tr>
       </thead>
       <tbody></tbody>
@@ -524,6 +529,63 @@
     }
   });
 
+  // Stash the most recent winners list so the toolbar's "Download all"
+  // button doesn't have to re-query the API. Mirrors the lastBatch
+  // pattern used by the Generate tab.
+  let lastWinners = [];
+
+  function winnerImageSrc(w) {
+    return w.local_image_url || w.image_url || '';
+  }
+
+  function winnerDownloadName(w, i) {
+    const safe = (s) => String(s || '').replace(/[^a-z0-9._-]+/gi, '-').slice(0, 40);
+    const headlinePart = safe(w.headline || w.ad_id || 'winner');
+    const offerPart = safe(w.offer_id || 'offer');
+    const src = winnerImageSrc(w).split('?')[0];
+    const m = src.match(/\.(jpe?g|png|webp|gif)$/i);
+    const ext = (m ? m[1].toLowerCase() : 'jpg').replace('jpeg', 'jpg');
+    return `winner_${offerPart}_${i + 1}_${headlinePart}.${ext}`;
+  }
+
+  // Same-origin URLs honour the <a download> attribute directly. Cross-
+  // origin URLs (platform CDNs) ignore `download` and just navigate, so
+  // for those we fetch the bytes ourselves and trigger the download via
+  // a blob: URL. Returns true on success so the bulk loop knows whether
+  // to count/wait between iterations.
+  async function downloadWinnerImage(w, i) {
+    const src = winnerImageSrc(w);
+    if (!src) return false;
+    const filename = winnerDownloadName(w, i);
+    const sameOrigin = src.startsWith('/') || src.startsWith(window.location.origin);
+    try {
+      let href = src;
+      let needsRevoke = false;
+      if (!sameOrigin) {
+        const r = await fetch(src, { mode: 'cors' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const blob = await r.blob();
+        href = URL.createObjectURL(blob);
+        needsRevoke = true;
+      }
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      if (needsRevoke) {
+        // Give the browser a tick to start the download before revoking.
+        setTimeout(() => URL.revokeObjectURL(href), 4000);
+      }
+      return true;
+    } catch (err) {
+      console.warn('downloadWinnerImage failed for', src, err);
+      return false;
+    }
+  }
+
   async function loadWinners() {
     const scopeEl = document.getElementById('winners-scope');
     const scope = (scopeEl && scopeEl.value) || 'all';
@@ -532,10 +594,11 @@
     const tbody = document.querySelector('#winners-table tbody');
     tbody.innerHTML = '';
     const rows = (body.winners || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
-    rows.forEach(w => {
+    lastWinners = rows;
+    rows.forEach((w, i) => {
       const m = w.metrics || {};
       const tr = document.createElement('tr');
-      const imgSrc = w.local_image_url || w.image_url || '';
+      const imgSrc = winnerImageSrc(w);
       const srcPlat = w.source_platform || '';
       const badgeLabel = srcPlat === 'smartnews' ? 'SN' : (srcPlat === 'newsbreak' ? 'NB' : '—');
       const badgeColor = srcPlat === 'smartnews' ? '#2e6bff' : (srcPlat === 'newsbreak' ? '#ff5a1f' : '#888');
@@ -546,6 +609,9 @@
                <path fill="currentColor" d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2Zm-2-1H5l3.5-4.5l2.5 3l3.5-4.5L19 18ZM8 9.5A1.5 1.5 0 1 1 6.5 8A1.5 1.5 0 0 1 8 9.5Z"/>
              </svg>
            </span>`;
+      const dlButton = imgSrc
+        ? `<button type="button" class="nb-btn small winner-download-btn" data-winner-idx="${i}" title="Download this winner image">⬇ Download</button>`
+        : `<span class="nb-muted nb-small" title="No image cached for this winner">—</span>`;
       tr.innerHTML = `
         <td><div class="winner-cell">${winnerThumb}
           <div><strong>${escapeHtml(w.headline || '')}</strong><br/>
@@ -556,9 +622,45 @@
         <td>${m.conversions || 0}</td>
         <td>${m.cpa ? '$' + Number(m.cpa).toFixed(2) : '—'}</td>
         <td>${w.score || ''}</td>
-        <td><small>${w.marked_at || ''}</small></td>`;
+        <td><small>${w.marked_at || ''}</small></td>
+        <td class="winner-row-actions">${dlButton}</td>`;
       tbody.appendChild(tr);
     });
+
+    // Wire per-row download buttons.
+    tbody.querySelectorAll('.winner-download-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.dataset.winnerIdx, 10);
+        const w = lastWinners[idx];
+        if (!w) return;
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '⌛ Downloading…';
+        const ok = await downloadWinnerImage(w, idx);
+        btn.disabled = false;
+        btn.textContent = ok ? '✓ Downloaded' : '⚠ Failed';
+        setTimeout(() => { btn.textContent = original; }, 2000);
+      });
+    });
+
+    // Toolbar: counts + bulk download.
+    const toolbar = document.getElementById('winners-grid-toolbar');
+    const summary = document.getElementById('winners-grid-summary');
+    const dlAll = document.getElementById('winners-download-all');
+    const downloadable = rows.filter(winnerImageSrc).length;
+    if (summary) {
+      summary.textContent = rows.length
+        ? `${downloadable} of ${rows.length} winners have images cached`
+        : '';
+    }
+    if (dlAll) {
+      dlAll.disabled = downloadable === 0;
+      dlAll.textContent = downloadable
+        ? `Download all images (${downloadable})`
+        : 'Download all images';
+    }
+    if (toolbar) toolbar.hidden = rows.length === 0;
+
     const status = document.getElementById('winners-status');
     if (status) {
       const counts = rows.reduce((acc, w) => {
@@ -574,6 +676,33 @@
   document.addEventListener('DOMContentLoaded', () => {
     const scopeEl = document.getElementById('winners-scope');
     if (scopeEl) scopeEl.addEventListener('change', loadWinners);
+
+    const dlAll = document.getElementById('winners-download-all');
+    if (dlAll) {
+      dlAll.addEventListener('click', async () => {
+        if (!lastWinners.length) return;
+        const downloadable = lastWinners
+          .map((w, i) => ({ w, i, src: winnerImageSrc(w) }))
+          .filter(x => !!x.src);
+        if (!downloadable.length) return;
+        const original = dlAll.textContent;
+        dlAll.disabled = true;
+        let ok = 0;
+        for (let n = 0; n < downloadable.length; n++) {
+          const { w, i } = downloadable[n];
+          dlAll.textContent = `Downloading ${n + 1} / ${downloadable.length}…`;
+          if (await downloadWinnerImage(w, i)) ok++;
+          // Small gap so Chrome doesn't downgrade the burst into a single
+          // "download multiple files" prompt or block subsequent downloads.
+          await new Promise(r => setTimeout(r, 220));
+        }
+        dlAll.textContent = `✓ Downloaded ${ok} / ${downloadable.length}`;
+        setTimeout(() => {
+          dlAll.disabled = false;
+          dlAll.textContent = original;
+        }, 2500);
+      });
+    }
   });
 
   document.getElementById('winners-refresh').addEventListener('click', async () => {
@@ -1075,6 +1204,10 @@
   background: #0f1419; border: 1px dashed #2d3a4d;
   color: #475569;
 }
+.winner-row-actions { text-align: right; white-space: nowrap; }
+.winner-download-btn { padding: .25rem .55rem; font-size: .75rem; }
+#winners-grid-toolbar { margin: 14px 0 6px; }
+#winners-grid-toolbar #winners-grid-summary { margin-right: auto; }
 
 /* ===== Research tab toolbar / multi-select ===== */
 .research-toolbar-header {

@@ -155,7 +155,21 @@
         <div class="research-counts" id="research-counts"></div>
       </header>
 
-      <div class="research-toolbar">
+      <div class="research-mode-toggle" role="tablist" aria-label="Research view mode">
+        <button type="button" class="chip-filter active" data-research-mode="ideas" role="tab" aria-selected="true">
+          💡 Style ideas
+          <span class="research-mode-count" id="research-mode-ideas-count"></span>
+        </button>
+        <button type="button" class="chip-filter" data-research-mode="library" role="tab" aria-selected="false">
+          🖼️ Prebuilt images
+          <span class="research-mode-count" id="research-mode-library-count"></span>
+        </button>
+        <span class="nb-muted nb-small research-mode-help" id="research-mode-help">
+          Discovered ad styles waiting to be promoted into the catalog.
+        </span>
+      </div>
+
+      <div class="research-toolbar" data-mode-only="ideas">
         <div class="research-filter-group" data-filter="status">
           <span class="research-filter-label">Status:</span>
           <button type="button" class="chip-filter active" data-status="">All</button>
@@ -187,7 +201,32 @@
         </div>
       </div>
 
-      <div class="research-bulk-bar" id="research-bulk-bar">
+      <div class="research-toolbar" data-mode-only="library" hidden>
+        <div class="research-filter-group" data-filter="library-offer">
+          <span class="research-filter-label">Offer:</span>
+          <select id="library-offer-filter" class="studio-thin-input" style="width:auto;">
+            <option value="">All offers</option>
+          </select>
+        </div>
+        <div class="research-filter-group" data-filter="library-aspect">
+          <span class="research-filter-label">Aspect:</span>
+          <button type="button" class="chip-filter active" data-aspect="">All</button>
+          <button type="button" class="chip-filter" data-aspect="1:1">1:1</button>
+          <button type="button" class="chip-filter" data-aspect="16:9">16:9</button>
+          <button type="button" class="chip-filter" data-aspect="9:16">9:16</button>
+        </div>
+        <div class="research-filter-group">
+          <label class="nb-check nb-small">
+            <input type="checkbox" id="library-include-consumed" /> Include consumed
+          </label>
+        </div>
+        <div class="research-filter-group" style="margin-left:auto;">
+          <button type="button" id="library-refresh" class="nb-btn small">🔄 Refresh</button>
+          <button type="button" id="library-download-all" class="nb-btn small" disabled>Download all visible</button>
+        </div>
+      </div>
+
+      <div class="research-bulk-bar" id="research-bulk-bar" data-mode-only="ideas">
         <label class="nb-check"><input type="checkbox" id="research-select-all" /> <span>Select all visible</span></label>
         <span id="research-selected-count" class="nb-muted nb-small">0 selected</span>
         <span class="research-bulk-spacer"></span>
@@ -195,7 +234,8 @@
         <button type="button" class="nb-btn small" id="research-bulk-archive">Archive selected</button>
       </div>
 
-      <div id="research-candidates" class="research-grid"></div>
+      <div id="research-candidates" class="research-grid" data-mode-only="ideas"></div>
+      <div id="research-library" class="library-grid" data-mode-only="library" hidden></div>
     </section>
 
     <section class="nb-card">
@@ -921,6 +961,7 @@
     const body = await res.json();
     researchAll = (body.candidates || []).filter(c => !String(c.style_id || '').startsWith('catalog:'));
     applyResearchFilters();
+    if (typeof updateLibraryCounts === 'function') updateLibraryCounts();
     try {
       const auth = await (await fetch('/api/studio/research/gethookd/authcheck')).json();
       const credits = auth?.payload?.remaining_credits;
@@ -928,6 +969,241 @@
       if (dest) dest.textContent = credits != null ? `${credits} GetHookd credits left` : '';
     } catch (_) {}
   }
+
+  // ------------------------------------------------------------------
+  // Research → Prebuilt images mode (browse the on-disk ad library)
+  // ------------------------------------------------------------------
+  let researchMode = 'ideas';      // 'ideas' | 'library'
+  let libraryAll = [];
+  let libraryVisible = [];
+  const libraryFilters = { offer: '', aspect: '', includeConsumed: false };
+  let libraryFirstFetchDone = false;
+
+  function setResearchMode(mode) {
+    researchMode = mode;
+    document.querySelectorAll('.research-mode-toggle [data-research-mode]').forEach(b => {
+      const active = b.dataset.researchMode === mode;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-selected', String(active));
+    });
+    document.querySelectorAll('[data-mode-only]').forEach(el => {
+      el.hidden = el.dataset.modeOnly !== mode;
+    });
+    const help = document.getElementById('research-mode-help');
+    if (help) {
+      help.textContent = mode === 'library'
+        ? 'Prebuilt ad images sitting in the library, ready to launch on the active platform.'
+        : 'Discovered ad styles waiting to be promoted into the catalog.';
+    }
+    if (mode === 'library' && !libraryFirstFetchDone) loadLibrary();
+  }
+
+  async function loadLibrary() {
+    libraryFirstFetchDone = true;
+    const host = document.getElementById('research-library');
+    if (host) host.innerHTML = '<em class="nb-muted">Loading library…</em>';
+    try {
+      const params = new URLSearchParams();
+      if (libraryFilters.includeConsumed) params.set('include_consumed', 'true');
+      const res = await fetch('/api/studio/library/list?' + params.toString());
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+      libraryAll = body.items || [];
+      refreshLibraryOfferDropdown();
+      applyLibraryFilters();
+      updateLibraryCounts();
+    } catch (e) {
+      if (host) host.innerHTML = `<em class="nb-muted">Failed to load library: ${escapeHtml(String(e))}</em>`;
+    }
+  }
+
+  function refreshLibraryOfferDropdown() {
+    const sel = document.getElementById('library-offer-filter');
+    if (!sel) return;
+    const prev = sel.value || libraryFilters.offer || '';
+    const offers = {};
+    libraryAll.forEach(it => {
+      const k = String(it.offer_id || '');
+      if (!k) return;
+      offers[k] = (offers[k] || 0) + 1;
+    });
+    const opts = Object.entries(offers).sort((a, b) => b[1] - a[1])
+      .map(([oid, n]) => `<option value="${escapeHtml(oid)}">${escapeHtml(oid)} (${n})</option>`)
+      .join('');
+    sel.innerHTML = `<option value="">All offers (${libraryAll.length})</option>` + opts;
+    if (prev) sel.value = prev;
+  }
+
+  function applyLibraryFilters() {
+    const { offer, aspect } = libraryFilters;
+    let rows = libraryAll.slice();
+    if (offer) rows = rows.filter(it => String(it.offer_id || '') === offer);
+    if (aspect) rows = rows.filter(it => String(it.aspect || '') === aspect);
+    rows.sort((a, b) => (Date.parse(b.created_at || 0) || 0) - (Date.parse(a.created_at || 0) || 0));
+    libraryVisible = rows;
+    renderLibraryGrid();
+  }
+
+  function libraryTileHtml(it) {
+    const ts = it.created_at ? Date.parse(it.created_at) : 0;
+    const whenShort = ts ? formatRelativeShort(ts) : '';
+    const whenFull = ts ? new Date(ts).toLocaleString() : '';
+    const aspect = it.aspect || '?';
+    const aspectCss = aspect === '16:9' ? '16 / 9'
+                    : aspect === '9:16' ? '9 / 16'
+                    : '1 / 1';
+    const isConsumed = !!it.consumed_at;
+    return `
+      <div class="studio-tile is-library${isConsumed ? ' is-consumed' : ''}" data-library-id="${escapeHtml(it.library_id)}">
+        <div class="library-tile-img" style="--tile-aspect:${aspectCss};">
+          <img src="${escapeHtml(it.image_url || '')}" alt="${escapeHtml(it.style_name || '')}" loading="lazy" />
+          <span class="library-tile-aspect-chip">${escapeHtml(aspect)}</span>
+          ${isConsumed ? '<span class="library-tile-consumed-chip" title="Already consumed by a Generate batch">consumed</span>' : ''}
+        </div>
+        <div class="studio-tile-meta">
+          <strong title="${escapeHtml(it.style_name || it.style_id || '')}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;display:inline-block;">
+            ${escapeHtml(it.style_name || it.style_id || 'Untitled')}
+          </strong>
+          <span class="nb-muted nb-small" title="${escapeHtml(whenFull)}">${escapeHtml(it.offer_id || '')} · ${escapeHtml(whenShort)}</span>
+        </div>
+        <div class="studio-tile-actions">
+          <a class="nb-btn small" href="${escapeHtml(it.image_url || '')}"
+             download="library_${escapeHtml((it.style_id || it.library_id))}.png">
+            ⬇ Download
+          </a>
+          <button type="button" class="nb-btn small" data-act="library-send" data-library-id="${escapeHtml(it.library_id)}">
+            Send to launch
+          </button>
+        </div>
+      </div>`;
+  }
+
+  function renderLibraryGrid() {
+    const host = document.getElementById('research-library');
+    if (!host) return;
+    if (!libraryVisible.length) {
+      host.innerHTML = `<em class="nb-muted">No prebuilt images match these filters. ${libraryAll.length ? '' : 'Run a top-up from the Generate tab to seed the library.'}</em>`;
+    } else {
+      host.innerHTML = libraryVisible.map(libraryTileHtml).join('');
+    }
+    wireLibraryRow(host);
+    const dlAll = document.getElementById('library-download-all');
+    if (dlAll) {
+      dlAll.disabled = libraryVisible.length === 0;
+      dlAll.textContent = libraryVisible.length
+        ? `Download all visible (${libraryVisible.length})`
+        : 'Download all visible';
+    }
+  }
+
+  function wireLibraryRow(scope) {
+    scope.querySelectorAll('[data-act="library-send"]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.libraryId;
+        const item = libraryAll.find(x => x.library_id === id);
+        if (!item || !item.image_url) return;
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '⌛ Sending…';
+        try {
+          const blob = await (await fetch(item.image_url)).blob();
+          const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+          const styleSlug = (item.style_name || item.style_id || item.library_id)
+            .toString().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+          const filename = `library-${item.offer_id || 'offer'}-${styleSlug}.${ext}`;
+          const file = new File([blob], filename, { type: blob.type || 'image/png' });
+          if (window.opener && window.opener.adStudioDrop) {
+            window.opener.adStudioDrop(file, item.library_id);
+            btn.textContent = '✓ Sent';
+          } else {
+            // Fall back to sessionStorage so the launch page can pick it
+            // up on cold load (same pattern the Generate tab uses).
+            const reader = new FileReader();
+            reader.onload = () => {
+              sessionStorage.setItem('studio_queue_lib_' + item.library_id, JSON.stringify({
+                gen_id: item.library_id,
+                b64: String(reader.result || '').split(',')[1] || '',
+                mime: blob.type || 'image/png',
+                name: filename,
+              }));
+              btn.textContent = 'Queued — open Bulk launch';
+            };
+            reader.readAsDataURL(blob);
+          }
+        } catch (e) {
+          btn.textContent = '⚠ Failed';
+        } finally {
+          btn.disabled = false;
+          setTimeout(() => { btn.textContent = original; }, 2200);
+        }
+      });
+    });
+  }
+
+  function updateLibraryCounts() {
+    const dest = document.getElementById('research-mode-library-count');
+    if (dest) dest.textContent = libraryAll.length ? ` (${libraryAll.length})` : '';
+    const ideasDest = document.getElementById('research-mode-ideas-count');
+    if (ideasDest) ideasDest.textContent = researchAll.length ? ` (${researchAll.length})` : '';
+  }
+
+  // Wire the mode toggle.
+  document.querySelectorAll('.research-mode-toggle [data-research-mode]').forEach(btn => {
+    btn.addEventListener('click', () => setResearchMode(btn.dataset.researchMode));
+  });
+
+  // Library filter wiring.
+  const libraryOfferEl = document.getElementById('library-offer-filter');
+  if (libraryOfferEl) libraryOfferEl.addEventListener('change', () => {
+    libraryFilters.offer = libraryOfferEl.value || '';
+    applyLibraryFilters();
+  });
+  document.querySelectorAll('[data-filter="library-aspect"] .chip-filter').forEach(b => {
+    b.addEventListener('click', () => {
+      libraryFilters.aspect = b.dataset.aspect || '';
+      document
+        .querySelectorAll('[data-filter="library-aspect"] .chip-filter')
+        .forEach(x => x.classList.toggle('active', x === b));
+      applyLibraryFilters();
+    });
+  });
+  const libIncEl = document.getElementById('library-include-consumed');
+  if (libIncEl) libIncEl.addEventListener('change', () => {
+    libraryFilters.includeConsumed = libIncEl.checked;
+    loadLibrary();
+  });
+  const libRefreshEl = document.getElementById('library-refresh');
+  if (libRefreshEl) libRefreshEl.addEventListener('click', loadLibrary);
+
+  const libDlAllEl = document.getElementById('library-download-all');
+  if (libDlAllEl) libDlAllEl.addEventListener('click', async () => {
+    if (!libraryVisible.length) return;
+    const original = libDlAllEl.textContent;
+    libDlAllEl.disabled = true;
+    for (let i = 0; i < libraryVisible.length; i++) {
+      const it = libraryVisible[i];
+      if (!it.image_url) continue;
+      libDlAllEl.textContent = `Downloading ${i + 1} / ${libraryVisible.length}…`;
+      const a = document.createElement('a');
+      a.href = it.image_url;
+      a.download = `library_${it.style_id || it.library_id}.png`;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      await new Promise(r => setTimeout(r, 220));
+    }
+    libDlAllEl.textContent = original;
+    libDlAllEl.disabled = false;
+  });
+
+  // Default to ideas mode + pre-fetch library count for the toggle badge
+  // (so users can see "🖼 Prebuilt images (20)" without clicking).
+  setResearchMode('ideas');
+  fetch('/api/studio/library/list')
+    .then(r => r.ok ? r.json() : { items: [] })
+    .then(b => { libraryAll = b.items || []; updateLibraryCounts(); })
+    .catch(() => {});
 
   // Wire the filter chips, sort dropdown, search input, and bulk bar once.
   document.querySelectorAll('.research-filter-group[data-filter] .chip-filter').forEach(btn => {
@@ -1214,6 +1490,60 @@
   display: flex; align-items: flex-start; gap: 1rem;
   margin-bottom: .75rem;
 }
+.research-mode-toggle {
+  display: flex; flex-wrap: wrap; gap: .35rem .6rem; align-items: center;
+  margin-bottom: 10px;
+}
+.research-mode-toggle .chip-filter {
+  padding: .35rem .9rem; font-size: .85rem;
+}
+.research-mode-toggle .research-mode-count {
+  opacity: .85; font-variant-numeric: tabular-nums;
+}
+.research-mode-help {
+  margin-left: .5rem; flex: 1; min-width: 200px;
+}
+
+/* ---- Library mode (gallery of prebuilt images) ---------------------- */
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+.library-tile-img {
+  position: relative;
+  background: #0f1419;
+  aspect-ratio: var(--tile-aspect, 1 / 1);
+  overflow: hidden;
+}
+.library-tile-img img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.library-tile-aspect-chip,
+.library-tile-consumed-chip {
+  position: absolute; top: 6px;
+  padding: .15rem .45rem; border-radius: 999px;
+  font-size: .65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+.library-tile-aspect-chip {
+  left: 6px;
+  background: rgba(15, 20, 25, 0.7);
+  color: #cbd5e1;
+  border: 1px solid rgba(148,163,184,0.35);
+}
+.library-tile-consumed-chip {
+  right: 6px;
+  background: rgba(245, 158, 11, 0.85);
+  color: #1f2937;
+}
+.studio-tile.is-library.is-consumed { opacity: .55; }
+.studio-tile.is-library.is-consumed:hover { opacity: 1; }
+
 .research-counts {
   display: flex; flex-wrap: wrap; gap: .25rem;
   margin-left: auto; align-items: flex-start;

@@ -221,6 +221,29 @@ def run_public_scout() -> None:
                 )
 
 
+def run_studio_library_topup() -> None:
+    """Daily prebuilt-ad library topup.
+
+    For every saved offer on every platform, render any missing images
+    until the library has ``AD_STUDIO_LIBRARY_TARGET_PER_OFFER`` ready.
+    Tied to the same env hour/minute as the nightly winners pass by
+    default (see scheduler.start_scheduler).
+
+    The library is the cache that powers the "instant Generate" feel in
+    the AI Studio UI: when the user clicks Generate, we drain from this
+    library FIFO and only render fresh images for the gap.
+    """
+    try:
+        from ai_studio import library as _library
+
+        target = int(os.environ.get("AD_STUDIO_LIBRARY_TARGET_PER_OFFER", "10"))
+        model_image = os.environ.get("AD_STUDIO_LIBRARY_MODEL_IMAGE", "nano-banana-2")
+        summary = _library.topup_all(target_per_offer=target, model_image=model_image)
+        logger.info("ai_studio.library_topup summary=%s", summary)
+    except Exception as e:
+        logger.exception("ai_studio.library_topup failed: %s", e)
+
+
 def run_scholar_scout() -> None:
     """Per-offer Copywriting Scholar pass.
 
@@ -433,14 +456,44 @@ def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
             replace_existing=True,
         )
 
+    # Prebuilt-ad library topup — daily at AD_STUDIO_LIBRARY_HOUR/MINUTE
+    # UTC (default 06:15, well after the nightly winners refresh so the
+    # library can ride on freshly-updated insights). Set
+    # AD_STUDIO_LIBRARY_HOURS to 0 to disable the daily cron, or to a
+    # positive number to switch to interval-mode (e.g. 6 = every 6h).
+    library_hours = int(os.environ.get("AD_STUDIO_LIBRARY_HOURS", "0"))
+    if library_hours > 0:
+        sched.add_job(
+            run_studio_library_topup,
+            "interval",
+            hours=library_hours,
+            id="ai_studio_library_topup",
+            replace_existing=True,
+        )
+        library_schedule_label = f"every {library_hours}h"
+    else:
+        sched.add_job(
+            run_studio_library_topup,
+            "cron",
+            hour=int(os.environ.get("AD_STUDIO_LIBRARY_HOUR", "6")),
+            minute=int(os.environ.get("AD_STUDIO_LIBRARY_MINUTE", "15")),
+            id="ai_studio_library_topup",
+            replace_existing=True,
+        )
+        library_schedule_label = (
+            f"daily {os.environ.get('AD_STUDIO_LIBRARY_HOUR', '6')}:"
+            f"{os.environ.get('AD_STUDIO_LIBRARY_MINUTE', '15')} UTC"
+        )
+
     sched.start()
     _scheduler = sched
     logger.info(
-        "Scheduler started: rules every %sm + nightly + scout/%sh + public/%sh + scholar/%sh",
+        "Scheduler started: rules every %sm + nightly + scout/%sh + public/%sh + scholar/%sh + library %s",
         interval_minutes,
         scout_hours if scout_hours > 0 else "off",
         public_hours if public_hours > 0 else "off",
         scholar_hours if scholar_hours > 0 else "off",
+        library_schedule_label,
     )
     return sched
 

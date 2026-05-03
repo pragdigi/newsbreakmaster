@@ -1601,6 +1601,7 @@ def api_offers_delete(item_id):
 try:
     from ai_studio import analyzer as _studio_analyzer
     from ai_studio import image_gen as _studio_image_gen
+    from ai_studio import library as _studio_library
     from ai_studio import pipeline as _studio_pipeline
     from ai_studio import winners as _studio_winners
     from ai_studio.research import (
@@ -1747,6 +1748,51 @@ def api_studio_insights(offer_id):
     return jsonify({"insights": insights})
 
 
+def _library_row_to_image_payload(row, *, platform):
+    """Build the same {b64, mime, model, ...} shape :func:`generate_ads`
+    returns, but for an item drained from the prebuilt library.
+
+    We expose the file via ``/studio/library-image/...`` (``url`` field)
+    instead of inlining base64 — keeps the JSON payload small when the
+    operator clicks Generate and we drain 10 items at once.
+    """
+    filename = row.get("filename") or ""
+    url = ""
+    if filename:
+        url = url_for(
+            "library_image",
+            platform=row.get("platform") or platform,
+            filename=filename,
+        )
+    return {
+        "style_id": row.get("style_id"),
+        "style_name": row.get("style_name"),
+        "is_candidate": bool(row.get("is_candidate")),
+        "url": url,
+        "mime": row.get("mime") or "image/png",
+        "model": row.get("model"),
+        "ms": row.get("ms"),
+        "aspect": row.get("aspect"),
+        "error": None,
+        "from_library": True,
+        "library_id": row.get("library_id"),
+    }
+
+
+def _library_row_to_prompt_payload(row):
+    """Mirror the ``prompts`` field shape from ``generate_ads``."""
+    return {
+        "style_id": row.get("style_id"),
+        "style_name": row.get("style_name"),
+        "is_candidate": bool(row.get("is_candidate")),
+        "prompt": row.get("prompt"),
+        "cta_label": None,
+        "cta_color": None,
+        "angle": row.get("headline"),
+        "from_library": True,
+    }
+
+
 @app.route("/api/studio/generate", methods=["POST"])
 def api_studio_generate():
     guard = _studio_required()
@@ -1767,39 +1813,68 @@ def api_studio_generate():
     except (TypeError, ValueError):
         research_ratio = None
 
-    try:
-        result = _studio_pipeline.generate_ads(
-            offer_id,
-            platform=platform,
-            count=count,
-            model_image=model_image,
-            model_analyzer=model_analyzer,
-            style_mix=style_mix,
-            research_ratio=research_ratio,
-        )
-    except Exception as exc:  # noqa: BLE001
-        app.logger.exception("studio/generate failed")
-        return jsonify({"error": str(exc)}), 500
+    use_library = bool(data.get("use_library", True))
 
-    thin = {
-        "gen_id": result["gen_id"],
-        "offer_id": result["offer_id"],
-        "platform": result["platform"],
-        "aspect": result.get("aspect", "1:1"),
-        "allocation": result["allocation"],
-        "prompts": [
-            {
-                "style_id": p.get("style_id"),
-                "style_name": p.get("style_name"),
-                "is_candidate": p.get("is_candidate"),
-                "prompt": p.get("prompt"),
-                "cta_label": p.get("cta_label"),
-                "cta_color": p.get("cta_color"),
-                "angle": p.get("angle"),
+    # ------------------------------------------------------------------
+    # Step 1: drain the prebuilt library FIFO. This makes the user-facing
+    # "Generate" button feel near-instant when the daily topup has had a
+    # chance to run. We still fall through to fresh rendering for the
+    # gap if there aren't enough library items.
+    # ------------------------------------------------------------------
+    library_rows = []
+    if use_library and not style_mix:
+        try:
+            library_rows = storage.consume_library_items(
+                offer_id, count, platform=platform
+            )
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("studio/generate: library drain failed: %s", exc)
+
+    fresh_count = max(0, count - len(library_rows))
+    fresh_result = None
+    if fresh_count > 0:
+        try:
+            fresh_result = _studio_pipeline.generate_ads(
+                offer_id,
+                platform=platform,
+                count=fresh_count,
+                model_image=model_image,
+                model_analyzer=model_analyzer,
+                style_mix=style_mix,
+                research_ratio=research_ratio,
+            )
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("studio/generate failed")
+            # If we already drained library items but fresh failed, hand
+            # back what we have so the operator isn't blocked. Otherwise
+            # surface the real error.
+            if not library_rows:
+                return jsonify({"error": str(exc)}), 500
+            fresh_result = {
+                "gen_id": str(uuid.uuid4()),
+                "offer_id": str(offer_id),
+                "platform": platform,
+                "aspect": library_rows[0].get("aspect", "1:1"),
+                "allocation": [],
+                "prompts": [],
+                "images": [],
             }
-            for p in result["prompts"]
-        ],
-        "images": [
+
+    # Compose payload: library items first, fresh renders after.
+    base = fresh_result or {
+        "gen_id": str(uuid.uuid4()),
+        "offer_id": str(offer_id),
+        "platform": platform,
+        "aspect": (library_rows[0].get("aspect") if library_rows else "1:1"),
+        "allocation": [],
+        "prompts": [],
+        "images": [],
+    }
+
+    images_payload = [_library_row_to_image_payload(r, platform=platform) for r in library_rows]
+    prompts_payload = [_library_row_to_prompt_payload(r) for r in library_rows]
+    for img, prompt in zip(base["images"], base["prompts"]):
+        images_payload.append(
             {
                 "style_id": img.get("style_id"),
                 "style_name": img.get("style_name"),
@@ -1810,11 +1885,97 @@ def api_studio_generate():
                 "ms": img.get("ms"),
                 "aspect": img.get("aspect"),
                 "error": img.get("error"),
+                "from_library": False,
             }
-            for img in result["images"]
-        ],
+        )
+        prompts_payload.append(
+            {
+                "style_id": prompt.get("style_id"),
+                "style_name": prompt.get("style_name"),
+                "is_candidate": prompt.get("is_candidate"),
+                "prompt": prompt.get("prompt"),
+                "cta_label": prompt.get("cta_label"),
+                "cta_color": prompt.get("cta_color"),
+                "angle": prompt.get("angle"),
+                "from_library": False,
+            }
+        )
+
+    thin = {
+        "gen_id": base["gen_id"],
+        "offer_id": str(offer_id),
+        "platform": platform,
+        "aspect": base.get("aspect", "1:1"),
+        "allocation": base.get("allocation", []),
+        "prompts": prompts_payload,
+        "images": images_payload,
+        "library_consumed": len(library_rows),
+        "freshly_rendered": len(base.get("images") or []),
     }
     return jsonify(thin)
+
+
+# ---- Prebuilt library -------------------------------------------------
+
+
+@app.route("/api/studio/library/status", methods=["GET"])
+def api_studio_library_status():
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    platform = normalize_platform(request.args.get("platform") or _active_platform())
+    counts = storage.library_counts(platform=platform)
+    return jsonify(
+        {
+            "active_platform": platform,
+            "counts": counts,
+            "target_per_offer": _studio_library.DEFAULT_TARGET_PER_OFFER,
+        }
+    )
+
+
+@app.route("/api/studio/library/topup", methods=["POST"])
+def api_studio_library_topup():
+    """On-demand topup for one offer × active platform.
+
+    Lets the operator force a topup right before clicking Generate
+    (instead of waiting for the daily cron). Capped per-call by
+    AD_STUDIO_LIBRARY_MAX_BATCH so a stuck button can't run away.
+    """
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    data = request.get_json(force=True, silent=True) or {}
+    offer_id = str(data.get("offer_id") or "").strip()
+    if not offer_id:
+        return jsonify({"error": "offer_id required"}), 400
+    platform = normalize_platform(data.get("platform") or _active_platform())
+    model_image = (data.get("model_image") or "nano-banana-2").strip()
+    target = data.get("target")
+    try:
+        target = int(target) if target is not None else None
+    except (TypeError, ValueError):
+        target = None
+    try:
+        result = _studio_library.topup_offer(
+            offer_id,
+            platform=platform,
+            target=target,
+            model_image=model_image,
+        )
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("studio/library/topup failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(result)
+
+
+@app.route("/studio/library-image/<platform>/<path:filename>")
+def library_image(platform, filename):
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    directory = storage.library_image_dir(platform)
+    return send_from_directory(directory, filename)
 
 
 @app.route("/api/studio/link-launch", methods=["POST"])

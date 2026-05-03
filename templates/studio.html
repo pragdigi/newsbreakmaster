@@ -58,6 +58,14 @@
         <span class="nb-muted nb-small" id="gen-research-ratio-hint">~4 of 10 slots will be experimental</span>
       </div>
       <div class="nb-form-row">
+        <label class="nb-check" title="Drains the daily-prebuilt library first so generation feels instant. Disable to always render fresh.">
+          <input type="checkbox" id="gen-use-library" checked />
+          <span>Use prebuilt library first</span>
+        </label>
+        <span id="library-status" class="nb-muted nb-small">Library: checking…</span>
+        <button type="button" id="library-topup-btn" class="nb-btn small" title="Render and stash N images to disk for the active offer × platform — for next time.">Top up now</button>
+      </div>
+      <div class="nb-form-row">
         <button type="submit" class="nb-btn primary">Generate</button>
         <span id="gen-status" class="nb-muted"></span>
       </div>
@@ -68,6 +76,10 @@
       <div id="gen-insights-body"></div>
     </div>
 
+    <div class="studio-grid-toolbar" id="gen-grid-toolbar" hidden>
+      <span id="gen-grid-summary" class="nb-muted nb-small"></span>
+      <button type="button" id="gen-grid-download-all" class="nb-btn small">Download all images</button>
+    </div>
     <div id="gen-grid" class="studio-grid"></div>
   </div>
 
@@ -125,34 +137,72 @@
 
   <!-- ============ RESEARCH =========== -->
   <div class="nb-tab-panel" data-panel="research" hidden>
-    <section class="nb-card" id="recent-discoveries-card">
-      <h3>Recent discoveries (last 24h)</h3>
-      <p class="nb-muted">
-        New style candidates added by the nightly scheduler or a manual run.
-        Promote to bake into the catalog; archive to kill.
-      </p>
-      <div id="recent-discoveries"></div>
+    <section class="nb-card">
+      <header class="research-toolbar-header">
+        <div>
+          <h3 style="margin:0;">Candidate library</h3>
+          <p class="nb-muted nb-small" style="margin:.15rem 0 0;">
+            Experimental ad styles discovered by the research module.
+            Filter, multi-select and bulk-promote — promoted styles graduate into the catalog and start
+            getting allocated by the bandit on the next generation.
+          </p>
+        </div>
+        <div class="research-counts" id="research-counts"></div>
+      </header>
+
+      <div class="research-toolbar">
+        <div class="research-filter-group" data-filter="status">
+          <span class="research-filter-label">Status:</span>
+          <button type="button" class="chip-filter active" data-status="">All</button>
+          <button type="button" class="chip-filter" data-status="candidate">Candidate</button>
+          <button type="button" class="chip-filter" data-status="testing">Testing</button>
+          <button type="button" class="chip-filter" data-status="promoted">Promoted</button>
+          <button type="button" class="chip-filter" data-status="archived">Archived</button>
+        </div>
+        <div class="research-filter-group" data-filter="source">
+          <span class="research-filter-label">Source:</span>
+          <button type="button" class="chip-filter active" data-source="">All</button>
+          <button type="button" class="chip-filter" data-source="cluster_winners">Cluster</button>
+          <button type="button" class="chip-filter" data-source="gethookd">GetHookd</button>
+          <button type="button" class="chip-filter" data-source="brainstorm">Brainstorm</button>
+          <button type="button" class="chip-filter" data-source="meta">Meta lib</button>
+          <button type="button" class="chip-filter" data-source="tiktok">TikTok</button>
+          <button type="button" class="chip-filter" data-source="scholar">Scholar</button>
+          <button type="button" class="chip-filter" data-source="upload">Upload</button>
+        </div>
+        <div class="research-filter-group">
+          <span class="research-filter-label">Sort:</span>
+          <select id="research-sort" class="studio-thin-input" style="width:auto;">
+            <option value="newest">Newest first</option>
+            <option value="status">Status (candidate → archived)</option>
+            <option value="source">Source name</option>
+            <option value="trials">Most-tested</option>
+          </select>
+          <input type="search" id="research-search" class="studio-thin-input" style="width:160px;" placeholder="Search name / desc…">
+        </div>
+      </div>
+
+      <div class="research-bulk-bar" id="research-bulk-bar">
+        <label class="nb-check"><input type="checkbox" id="research-select-all" /> <span>Select all visible</span></label>
+        <span id="research-selected-count" class="nb-muted nb-small">0 selected</span>
+        <span class="research-bulk-spacer"></span>
+        <button type="button" class="nb-btn small" id="research-bulk-promote">Promote selected</button>
+        <button type="button" class="nb-btn small" id="research-bulk-archive">Archive selected</button>
+      </div>
+
+      <div id="research-candidates" class="research-grid"></div>
     </section>
 
     <section class="nb-card">
-      <h3>Candidate catalog</h3>
-      <p class="nb-muted">
-        Experimental ad styles discovered by the research module. Approved
-        styles graduate into the main catalog; failures get archived.
-      </p>
-      <div id="research-candidates"></div>
-    </section>
-
-    <section class="nb-card">
-      <h3>Discovery controls</h3>
+      <h3>Discover more candidates</h3>
       <div class="nb-form-row">
         <button type="button" class="nb-btn" data-discover="cluster_winners">Cluster our winners</button>
-        <span class="nb-muted">Finds clusters of winning ads that don't match the catalog.</span>
+        <span class="nb-muted nb-small">Finds clusters of winning ads that don't match the catalog.</span>
       </div>
       <div class="nb-form-row">
         <input type="text" id="research-keywords" placeholder="GetHookd keywords (comma-separated)" />
         <button type="button" class="nb-btn" data-discover="gethookd">Search GetHookd</button>
-        <span id="gethookd-credits" class="nb-muted"></span>
+        <span id="gethookd-credits" class="nb-muted nb-small"></span>
       </div>
       <div class="nb-form-row">
         <select id="research-brainstorm-offer">
@@ -252,6 +302,67 @@
   const grid = document.getElementById('gen-grid');
   const statusEl = document.getElementById('gen-status');
 
+  // ------------------------------------------------------------------
+  // Library status — refreshed when the offer changes and after each
+  // generate / topup. Lets the operator see how many prebuilt images
+  // are queued for the active (offer × platform) before clicking Generate.
+  // ------------------------------------------------------------------
+  const libStatusEl = document.getElementById('library-status');
+  const libUseCheckbox = document.getElementById('gen-use-library');
+  const libTopupBtn = document.getElementById('library-topup-btn');
+  const offerSel = document.getElementById('gen-offer');
+
+  async function refreshLibraryStatus() {
+    if (!libStatusEl) return;
+    const offerId = offerSel ? offerSel.value : '';
+    libStatusEl.textContent = offerId ? 'Library: …' : 'Library: pick an offer';
+    if (!offerId) return;
+    try {
+      const res = await fetch('/api/studio/library/status?offer_id=' + encodeURIComponent(offerId));
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'status failed');
+      const active = body.active_platform || '';
+      const c = (body.counts || {})[offerId] || 0;
+      const target = body.target_per_offer || 10;
+      libStatusEl.textContent = `Library: ${c}/${target} prebuilt for this offer on ${active}`;
+      libStatusEl.classList.toggle('nb-warn', c === 0);
+    } catch (err) {
+      libStatusEl.textContent = 'Library: ' + err.message;
+    }
+  }
+  if (offerSel) offerSel.addEventListener('change', refreshLibraryStatus);
+  refreshLibraryStatus();
+
+  if (libTopupBtn) {
+    libTopupBtn.addEventListener('click', async () => {
+      const offerId = offerSel ? offerSel.value : '';
+      if (!offerId) { libStatusEl.textContent = 'Library: pick an offer first'; return; }
+      const model = document.getElementById('gen-model').value;
+      libStatusEl.textContent = 'Library: topping up…';
+      libTopupBtn.disabled = true;
+      try {
+        const res = await fetch('/api/studio/library/topup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ offer_id: offerId, model_image: model }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || 'topup failed');
+        libStatusEl.textContent = `Library: added ${body.added || 0}, ${body.total || 0} ready`;
+      } catch (err) {
+        libStatusEl.textContent = 'Library: ' + err.message;
+      } finally {
+        libTopupBtn.disabled = false;
+        refreshLibraryStatus();
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Generate flow
+  // ------------------------------------------------------------------
+  let lastBatch = null;
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const offerId = document.getElementById('gen-offer').value;
@@ -259,8 +370,12 @@
     const count = parseInt(document.getElementById('gen-count').value, 10) || 10;
     const model = document.getElementById('gen-model').value;
     const researchRatio = parseFloat(ratio.value) / 100;
-    statusEl.textContent = 'Generating… this takes 30-60s depending on the models.';
+    const useLibrary = libUseCheckbox ? libUseCheckbox.checked : true;
+    statusEl.textContent = useLibrary
+      ? 'Generating — pulling from library, then rendering any gap…'
+      : 'Generating fresh — this takes 30-60s depending on the models.';
     grid.innerHTML = '';
+    document.getElementById('gen-grid-toolbar').hidden = true;
     try {
       const res = await fetch('/api/studio/generate', {
         method: 'POST',
@@ -270,18 +385,41 @@
           count,
           model_image: model,
           research_ratio: researchRatio,
+          use_library: useLibrary,
         })
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || 'generate failed');
       renderBatch(body);
-      statusEl.textContent = 'Batch ' + body.gen_id.slice(0, 8) + ' ready. Drop any tile into a launch.';
+      const libCount = (body.images || []).filter(i => i.from_library).length;
+      const freshCount = (body.images || []).length - libCount;
+      statusEl.textContent =
+        'Batch ' + (body.gen_id || '').slice(0, 8) +
+        ` ready · ${libCount} from library · ${freshCount} freshly rendered.`;
+      refreshLibraryStatus();
     } catch (err) {
       statusEl.textContent = 'Error: ' + err.message;
     }
   });
 
+  function imageSrcFor(img) {
+    // Library-served tiles come back with `url` (disk-served path); fresh
+    // renders come back with `b64` (in-memory base64). We don't have to
+    // care which on the UI side — just use whichever the server populated.
+    if (img.b64) return `data:${img.mime || 'image/png'};base64,${img.b64}`;
+    if (img.url) return img.url;
+    return '';
+  }
+
+  function downloadFilenameFor(batch, img, i) {
+    const safe = (s) => String(s || '').replace(/[^a-z0-9._-]+/gi, '-').slice(0, 40);
+    const stylePart = safe(img.style_name || img.style_id || 'ad');
+    const ext = (img.mime && img.mime.includes('jpeg')) ? 'jpg' : 'png';
+    return `${(batch.gen_id || 'batch').slice(0, 8)}_${i + 1}_${stylePart}.${ext}`;
+  }
+
   function renderBatch(body) {
+    lastBatch = body;
     const card = document.getElementById('gen-insights');
     const body_ = document.getElementById('gen-insights-body');
     if (body.prompts && body.prompts.length) {
@@ -295,22 +433,34 @@
     const aspectCss = aspect === '16:9' ? '16 / 9' : (aspect === '9:16' ? '9 / 16' : '1 / 1');
     body.images.forEach((img, i) => {
       const tile = document.createElement('div');
-      tile.className = 'studio-tile' + (img.is_candidate ? ' is-candidate' : '');
-      if (img.b64) {
+      tile.className = 'studio-tile' + (img.is_candidate ? ' is-candidate' : '') + (img.from_library ? ' is-library' : '');
+      const src = imageSrcFor(img);
+      const dlName = downloadFilenameFor(body, img, i);
+      if (src) {
         tile.innerHTML = `
-          <img src="data:${img.mime || 'image/png'};base64,${img.b64}" alt="${escapeHtml(img.style_name || '')}" style="aspect-ratio:${aspectCss}" />
+          <img src="${src}" alt="${escapeHtml(img.style_name || '')}" style="aspect-ratio:${aspectCss}" />
           <div class="studio-tile-meta">
             <strong>${escapeHtml(img.style_name || img.style_id || '')}</strong>
             ${img.is_candidate ? '<span class="chip experimental">experimental</span>' : ''}
-            <span class="nb-muted">${escapeHtml(img.model || '')} · ${img.ms||0}ms</span>
+            ${img.from_library ? '<span class="chip library">library</span>' : ''}
+            <span class="nb-muted">${escapeHtml(img.model || '')} · ${img.ms || 0}ms</span>
           </div>
           <div class="studio-tile-actions">
             <button type="button" class="nb-btn small" data-send="launch" data-gen="${body.gen_id}" data-idx="${i}">Send to launch</button>
-            <a class="nb-btn small" href="data:${img.mime || 'image/png'};base64,${img.b64}" download="${body.gen_id}-${i}.png">Download</a>
+            <a class="nb-btn small" href="${src}" download="${escapeHtml(dlName)}" data-download-tile>Download</a>
           </div>
         `;
       } else {
-        tile.innerHTML = `<div class="studio-tile-error">Error: ${escapeHtml(img.error || 'no image')}</div>`;
+        tile.innerHTML = `
+          <div class="studio-tile-empty" style="aspect-ratio:${aspectCss}">
+            <svg viewBox="0 0 24 24" width="38" height="38" aria-hidden="true">
+              <path fill="currentColor" d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2Zm-2-1H5l3.5-4.5l2.5 3l3.5-4.5L19 18ZM8 9.5A1.5 1.5 0 1 1 6.5 8A1.5 1.5 0 0 1 8 9.5Z"/>
+              <path fill="none" stroke="currentColor" stroke-width="1.7" d="M3 3l18 18"/>
+            </svg>
+            <strong>Generation failed</strong>
+            <small>${escapeHtml(img.error || 'No image returned by either provider.')}</small>
+          </div>
+        `;
       }
       grid.appendChild(tile);
     });
@@ -319,24 +469,60 @@
       btn.addEventListener('click', async () => {
         const idx = parseInt(btn.dataset.idx, 10);
         const image = body.images[idx];
-        if (!image || !image.b64) return;
-        const blob = await (await fetch(`data:${image.mime};base64,${image.b64}`)).blob();
-        const file = new File([blob], `${body.gen_id}-${idx}.png`, { type: image.mime || 'image/png' });
+        const src = imageSrcFor(image);
+        if (!image || !src) return;
+        const blob = await (await fetch(src)).blob();
+        const file = new File([blob], downloadFilenameFor(body, image, idx), { type: image.mime || 'image/png' });
         if (window.opener && window.opener.adStudioDrop) {
           window.opener.adStudioDrop(file, body.gen_id);
           btn.textContent = 'Sent ✓';
         } else {
-          sessionStorage.setItem('studio_queue_' + idx, JSON.stringify({
-            gen_id: body.gen_id,
-            b64: image.b64,
-            mime: image.mime,
-            name: file.name,
-          }));
-          btn.textContent = 'Queued — open Bulk launch';
+          // Persist via blob URL so the launch page can recover it across
+          // a cold load (sessionStorage can't hold ArrayBuffer cleanly).
+          const reader = new FileReader();
+          reader.onload = () => {
+            sessionStorage.setItem('studio_queue_' + idx, JSON.stringify({
+              gen_id: body.gen_id,
+              b64: String(reader.result || '').split(',')[1] || '',
+              mime: image.mime || 'image/png',
+              name: file.name,
+            }));
+            btn.textContent = 'Queued — open Bulk launch';
+          };
+          reader.readAsDataURL(blob);
         }
       });
     });
+
+    // Toolbar: show summary + wire "Download all"
+    const toolbar = document.getElementById('gen-grid-toolbar');
+    const summary = document.getElementById('gen-grid-summary');
+    const okCount = body.images.filter(i => imageSrcFor(i)).length;
+    if (summary) summary.textContent = `${okCount}/${body.images.length} images ready`;
+    if (toolbar) toolbar.hidden = false;
   }
+
+  // "Download all" — sequential synthetic clicks. No zip lib (keeps the
+  // download payload identical to a per-tile click), small spacing so
+  // browsers don't suppress repeated downloads as a popup attack.
+  document.getElementById('gen-grid-download-all').addEventListener('click', async () => {
+    if (!lastBatch || !lastBatch.images || !lastBatch.images.length) return;
+    for (let i = 0; i < lastBatch.images.length; i++) {
+      const img = lastBatch.images[i];
+      const src = imageSrcFor(img);
+      if (!src) continue;
+      const a = document.createElement('a');
+      a.href = src;
+      a.download = downloadFilenameFor(lastBatch, img, i);
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Small gap — Chrome treats >5 download events in a tight loop as a
+      // single "download multiple files" prompt instead of one-by-one.
+      await new Promise(r => setTimeout(r, 220));
+    }
+  });
 
   async function loadWinners() {
     const scopeEl = document.getElementById('winners-scope');
@@ -353,8 +539,15 @@
       const srcPlat = w.source_platform || '';
       const badgeLabel = srcPlat === 'smartnews' ? 'SN' : (srcPlat === 'newsbreak' ? 'NB' : '—');
       const badgeColor = srcPlat === 'smartnews' ? '#2e6bff' : (srcPlat === 'newsbreak' ? '#ff5a1f' : '#888');
+      const winnerThumb = imgSrc
+        ? `<img src="${escapeHtml(imgSrc)}" loading="lazy" alt="" />`
+        : `<span class="winner-thumb-empty" aria-label="No image cached">
+             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+               <path fill="currentColor" d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2Zm-2-1H5l3.5-4.5l2.5 3l3.5-4.5L19 18ZM8 9.5A1.5 1.5 0 1 1 6.5 8A1.5 1.5 0 0 1 8 9.5Z"/>
+             </svg>
+           </span>`;
       tr.innerHTML = `
-        <td><div class="winner-cell">${imgSrc ? `<img src="${escapeHtml(imgSrc)}" loading="lazy" />` : '<span class="nb-muted nb-small">[no image]</span>'}
+        <td><div class="winner-cell">${winnerThumb}
           <div><strong>${escapeHtml(w.headline || '')}</strong><br/>
           <small class="nb-muted">${escapeHtml(w.description || '')}</small></div></div></td>
         <td><span class="nb-pill" style="background:${badgeColor};color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;" title="${escapeHtml(srcPlat)}">${badgeLabel}</span></td>
@@ -436,15 +629,29 @@
     `;
   }
 
+  // ------------------------------------------------------------------
+  // Research tab — filterable, multi-selectable candidate library
+  // ------------------------------------------------------------------
+  let researchAll = [];           // every candidate (post-filtering of "catalog:" prefix)
+  let researchVisible = [];       // current filtered+sorted slice
+  const researchSelected = new Set();
+  const researchFilters = { status: '', source: '', sort: 'newest', search: '' };
+
   function candidateCardHtml(c) {
     const created = c.created_at || '';
     const whenShort = created ? new Date(created).toLocaleString() : '';
+    const isNew = created && (Date.parse(created) > Date.now() - 24 * 3600 * 1000);
+    const checked = researchSelected.has(c.style_id) ? ' checked' : '';
     return `
-      <div class="nb-card candidate-card">
+      <div class="nb-card candidate-card${researchSelected.has(c.style_id) ? ' is-selected' : ''}" data-style-id="${escapeHtml(c.style_id)}">
         <header>
-          <strong>${escapeHtml(c.name || c.style_id)}</strong>
+          <label class="nb-check candidate-check">
+            <input type="checkbox" data-cand-check value="${escapeHtml(c.style_id)}"${checked} />
+            <strong>${escapeHtml(c.name || c.style_id)}</strong>
+          </label>
           <span class="chip ${escapeHtml(c.status || 'candidate')}">${escapeHtml(c.status || 'candidate')}</span>
-          <span class="chip">${escapeHtml(c.source || '')}</span>
+          ${c.source ? `<span class="chip source">${escapeHtml(c.source)}</span>` : ''}
+          ${isNew ? '<span class="chip new">new</span>' : ''}
           ${whenShort ? `<span class="nb-muted nb-small" style="margin-left:auto">${escapeHtml(whenShort)}</span>` : ''}
         </header>
         <p>${escapeHtml(c.description || '')}</p>
@@ -460,60 +667,157 @@
       </div>`;
   }
 
-  function wireCandidateActions(scope) {
+  function applyResearchFilters() {
+    const { status, source, sort, search } = researchFilters;
+    const q = (search || '').trim().toLowerCase();
+    let rows = researchAll.slice();
+    if (status) rows = rows.filter(c => (c.status || 'candidate') === status);
+    if (source) rows = rows.filter(c => String(c.source || '').toLowerCase().includes(source));
+    if (q) rows = rows.filter(c =>
+      String(c.name || '').toLowerCase().includes(q) ||
+      String(c.description || '').toLowerCase().includes(q) ||
+      String(c.style_id || '').toLowerCase().includes(q)
+    );
+    if (sort === 'status') {
+      const order = { 'candidate': 0, 'testing': 1, 'promoted': 2, 'archived': 3 };
+      rows.sort((a, b) => (order[a.status || 'candidate'] ?? 9) - (order[b.status || 'candidate'] ?? 9));
+    } else if (sort === 'source') {
+      rows.sort((a, b) => String(a.source || '').localeCompare(String(b.source || '')));
+    } else if (sort === 'trials') {
+      rows.sort((a, b) => (b.trials || 0) - (a.trials || 0));
+    } else {
+      rows.sort((a, b) => (Date.parse(b.created_at || 0) || 0) - (Date.parse(a.created_at || 0) || 0));
+    }
+    researchVisible = rows;
+    renderResearchGrid();
+    renderResearchCounts();
+  }
+
+  function renderResearchGrid() {
+    const host = document.getElementById('research-candidates');
+    if (!researchVisible.length) {
+      host.innerHTML = `<em class="nb-muted">No candidates match these filters. ${researchAll.length ? '' : 'Run a discovery mode below to seed some.'}</em>`;
+    } else {
+      host.innerHTML = researchVisible.map(candidateCardHtml).join('');
+    }
+    wireCandidateRow(host);
+    syncSelectAllCheckbox();
+    updateSelectedCountLabel();
+  }
+
+  function renderResearchCounts() {
+    const host = document.getElementById('research-counts');
+    if (!host) return;
+    const counts = researchAll.reduce((acc, c) => {
+      const s = c.status || 'candidate';
+      acc[s] = (acc[s] || 0) + 1;
+      return acc;
+    }, {});
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    const recent = researchAll.filter(c => c.created_at && Date.parse(c.created_at) >= cutoff).length;
+    host.innerHTML = `
+      <span class="chip">${researchAll.length} total</span>
+      <span class="chip new">${recent} last 24h</span>
+      ${Object.entries(counts).map(([k, v]) => `<span class="chip ${escapeHtml(k)}">${v} ${escapeHtml(k)}</span>`).join('')}
+    `;
+  }
+
+  function wireCandidateRow(scope) {
     scope.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
-      const act = b.dataset.act, id = b.dataset.id;
-      await fetch('/api/studio/research/' + act, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ style_id: id }),
-      });
-      loadResearch();
+      await callResearchAction(b.dataset.act, [b.dataset.id]);
     }));
+    scope.querySelectorAll('[data-cand-check]').forEach(cb => cb.addEventListener('change', () => {
+      const id = cb.value;
+      if (cb.checked) researchSelected.add(id); else researchSelected.delete(id);
+      const card = cb.closest('.candidate-card');
+      if (card) card.classList.toggle('is-selected', cb.checked);
+      syncSelectAllCheckbox();
+      updateSelectedCountLabel();
+    }));
+  }
+
+  function syncSelectAllCheckbox() {
+    const cb = document.getElementById('research-select-all');
+    if (!cb) return;
+    const visibleIds = researchVisible.map(c => c.style_id);
+    const everySelected = visibleIds.length > 0 && visibleIds.every(id => researchSelected.has(id));
+    cb.checked = everySelected;
+    cb.indeterminate = !everySelected && visibleIds.some(id => researchSelected.has(id));
+  }
+
+  function updateSelectedCountLabel() {
+    const el = document.getElementById('research-selected-count');
+    if (el) el.textContent = `${researchSelected.size} selected`;
+  }
+
+  async function callResearchAction(act, ids) {
+    if (!ids || !ids.length) return;
+    const status = document.getElementById('research-status');
+    if (status) status.textContent = `${act === 'promote' ? 'Promoting' : 'Archiving'} ${ids.length}…`;
+    let ok = 0, errs = [];
+    for (const id of ids) {
+      try {
+        const res = await fetch('/api/studio/research/' + act, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ style_id: id }),
+        });
+        if (res.ok) ok += 1; else errs.push(`${id} (${res.status})`);
+      } catch (e) { errs.push(`${id} (${e.message})`); }
+    }
+    if (status) status.textContent = `${act === 'promote' ? 'Promoted' : 'Archived'} ${ok}/${ids.length}` + (errs.length ? ` · errors: ${errs.join(', ')}` : '');
+    researchSelected.clear();
+    loadResearch();
   }
 
   async function loadResearch() {
     const res = await fetch('/api/studio/research/candidates');
     const body = await res.json();
-    const host = document.getElementById('research-candidates');
-    const recentHost = document.getElementById('recent-discoveries');
-    const cands = (body.candidates || []).filter(c => !String(c.style_id || '').startsWith('catalog:'));
-
-    // --- Recent discoveries (last 24h) ---------------------------------
-    const cutoff = Date.now() - 24 * 3600 * 1000;
-    const recent = cands
-      .filter(c => c.created_at && Date.parse(c.created_at) >= cutoff)
-      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-    if (recentHost) {
-      if (!recent.length) {
-        recentHost.innerHTML = '<em class="nb-muted">No new candidates in the last 24 hours. The nightly scheduler runs at 05:30 UTC.</em>';
-      } else {
-        recentHost.innerHTML = recent.map(candidateCardHtml).join('');
-        wireCandidateActions(recentHost);
-      }
-    }
-
-    // --- Full candidate catalog (sorted: candidate → testing → promoted → archived) ---
-    if (!cands.length) {
-      host.innerHTML = '<em class="nb-muted">No candidates yet — run a discovery mode below.</em>';
-    } else {
-      const order = { 'candidate': 0, 'testing': 1, 'promoted': 2, 'archived': 3 };
-      cands.sort((a, b) => {
-        const oa = order[a.status || 'candidate'] ?? 9;
-        const ob = order[b.status || 'candidate'] ?? 9;
-        if (oa !== ob) return oa - ob;
-        return (Date.parse(b.created_at || 0) || 0) - (Date.parse(a.created_at || 0) || 0);
-      });
-      host.innerHTML = cands.map(candidateCardHtml).join('');
-      wireCandidateActions(host);
-    }
-
+    researchAll = (body.candidates || []).filter(c => !String(c.style_id || '').startsWith('catalog:'));
+    applyResearchFilters();
     try {
       const auth = await (await fetch('/api/studio/research/gethookd/authcheck')).json();
       const credits = auth?.payload?.remaining_credits;
-      document.getElementById('gethookd-credits').textContent =
-        credits != null ? `${credits} GetHookd credits left` : '';
+      const dest = document.getElementById('gethookd-credits');
+      if (dest) dest.textContent = credits != null ? `${credits} GetHookd credits left` : '';
     } catch (_) {}
   }
+
+  // Wire the filter chips, sort dropdown, search input, and bulk bar once.
+  document.querySelectorAll('.research-filter-group[data-filter] .chip-filter').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const group = btn.closest('[data-filter]');
+      const key = group.dataset.filter;
+      const val = btn.dataset[key] || '';
+      researchFilters[key] = val;
+      group.querySelectorAll('.chip-filter').forEach(b => b.classList.toggle('active', b === btn));
+      applyResearchFilters();
+    });
+  });
+  const researchSortEl = document.getElementById('research-sort');
+  if (researchSortEl) researchSortEl.addEventListener('change', () => {
+    researchFilters.sort = researchSortEl.value || 'newest';
+    applyResearchFilters();
+  });
+  const researchSearchEl = document.getElementById('research-search');
+  if (researchSearchEl) researchSearchEl.addEventListener('input', () => {
+    researchFilters.search = researchSearchEl.value || '';
+    applyResearchFilters();
+  });
+  const selectAllEl = document.getElementById('research-select-all');
+  if (selectAllEl) selectAllEl.addEventListener('change', () => {
+    researchVisible.forEach(c => {
+      if (selectAllEl.checked) researchSelected.add(c.style_id);
+      else researchSelected.delete(c.style_id);
+    });
+    renderResearchGrid();
+  });
+  document.getElementById('research-bulk-promote').addEventListener('click', () => {
+    callResearchAction('promote', Array.from(researchSelected));
+  });
+  document.getElementById('research-bulk-archive').addEventListener('click', () => {
+    if (researchSelected.size && !confirm(`Archive ${researchSelected.size} candidates? This kills them from the bandit pool.`)) return;
+    callResearchAction('archive', Array.from(researchSelected));
+  });
 
   document.querySelectorAll('[data-discover]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -661,6 +965,32 @@
   padding: 1rem; color: #fca5a5; font-size: .85rem;
   background: rgba(239, 68, 68, 0.08);
 }
+.studio-tile.is-library { border-color: #38bdf8; }
+.studio-tile-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: .35rem; padding: 1rem;
+  background: linear-gradient(135deg,#0f1419 25%, #131c28 25% 50%, #0f1419 50% 75%, #131c28 75%);
+  background-size: 14px 14px;
+  color: #94a3b8;
+  text-align: center;
+}
+.studio-tile-empty strong { color: #cbd5e1; font-size: .9rem; }
+.studio-tile-empty small  { color: #94a3b8; font-size: .75rem; }
+
+.studio-grid-toolbar {
+  display: flex; gap: .75rem; align-items: center; justify-content: flex-end;
+  margin: 14px 0 -4px;
+}
+.studio-grid-toolbar #gen-grid-summary { margin-right: auto; }
+
+.nb-check {
+  display: inline-flex; gap: .4rem; align-items: center;
+  color: var(--text); font-size: .9rem; cursor: pointer;
+}
+.nb-check input[type="checkbox"] { accent-color: #ef4444; }
+.nb-warn { color: #fbbf24; }
+
+#library-status { font-variant-numeric: tabular-nums; }
 
 .chip {
   display: inline-block;
@@ -693,6 +1023,62 @@
 }
 .winner-cell strong { color: var(--text); }
 .winner-cell small { color: var(--muted); }
+.winner-thumb-empty {
+  width: 48px; height: 48px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4px;
+  background: #0f1419; border: 1px dashed #2d3a4d;
+  color: #475569;
+}
+
+/* ===== Research tab toolbar / multi-select ===== */
+.research-toolbar-header {
+  display: flex; align-items: flex-start; gap: 1rem;
+  margin-bottom: .75rem;
+}
+.research-counts {
+  display: flex; flex-wrap: wrap; gap: .25rem;
+  margin-left: auto; align-items: flex-start;
+}
+.research-toolbar {
+  display: flex; flex-wrap: wrap; gap: .9rem 1.25rem; align-items: center;
+  padding: 10px 12px; margin-bottom: 10px;
+  background: #0f1419; border: 1px solid #2d3a4d; border-radius: 8px;
+}
+.research-filter-group { display: flex; gap: .35rem; align-items: center; flex-wrap: wrap; }
+.research-filter-label { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+.chip-filter {
+  background: #141c28; border: 1px solid #2d3a4d; color: var(--text);
+  padding: .25rem .65rem; border-radius: 999px; font-size: .78rem;
+  cursor: pointer;
+}
+.chip-filter:hover { border-color: #475569; }
+.chip-filter.active { background: #ef4444; border-color: #ef4444; color: #fff; }
+
+.research-bulk-bar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; gap: .75rem; align-items: center;
+  padding: 8px 12px; margin-bottom: 10px;
+  background: #141c28; border: 1px solid #2d3a4d; border-radius: 8px;
+  backdrop-filter: blur(4px);
+}
+.research-bulk-spacer { flex: 1; }
+
+.research-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+.research-grid .candidate-card { margin: 0; }
+.candidate-card { transition: border-color .12s ease, background .12s ease; }
+.candidate-card.is-selected {
+  border-color: #ef4444;
+  background: rgba(239,68,68,0.04);
+}
+.candidate-check { gap: .5rem; }
+.chip.new       { background: rgba(56,189,248,0.15); color: #7dd3fc; border-color: rgba(56,189,248,0.4); }
+.chip.library   { background: rgba(56,189,248,0.15); color: #7dd3fc; border-color: rgba(56,189,248,0.4); }
+.chip.source    { background: rgba(148,163,184,0.10); color: #cbd5e1; border-color: rgba(148,163,184,0.25); }
 
 .nb-btn.small { padding: .3rem .6rem; font-size: .78rem; }
 .nb-btn.primary, .nb-btn-primary {

@@ -397,6 +397,8 @@ def list_token_user_ids(*, platform: str = DEFAULT_PLATFORM) -> List[str]:
 #   generations.jsonl      append-only generation batch log
 #   style_candidates.json  research pool of candidate ad styles
 #   research_runs.jsonl    append-only log of discovery runs
+#   ad_library.jsonl       prebuilt-ad library log (one row per stashed image)
+#   library_images/        rendered PNGs/JPEGs for the prebuilt library
 def _winners_file(platform: str) -> str:
     return os.path.join(_catalog_dir(platform), "winners.json")
 
@@ -417,6 +419,10 @@ def _research_runs_file(platform: str) -> str:
     return os.path.join(_catalog_dir(platform), "research_runs.jsonl")
 
 
+def _library_file(platform: str) -> str:
+    return os.path.join(_catalog_dir(platform), "ad_library.jsonl")
+
+
 def winner_image_dir(platform: str = DEFAULT_PLATFORM) -> str:
     """Directory that holds cached winner creative images (one file per ad)."""
     path = os.path.join(_catalog_dir(platform), "winner_images")
@@ -427,6 +433,23 @@ def winner_image_dir(platform: str = DEFAULT_PLATFORM) -> str:
 def winner_image_path(ad_id: str, *, platform: str = DEFAULT_PLATFORM, ext: str = "jpg") -> str:
     safe = "".join(c for c in str(ad_id) if c.isalnum() or c in ("-", "_")) or "unknown"
     return os.path.join(winner_image_dir(platform), f"{safe}.{ext.lstrip('.')}")
+
+
+def library_image_dir(platform: str = DEFAULT_PLATFORM) -> str:
+    """Directory that holds rendered images for the prebuilt-ad library."""
+    path = os.path.join(_catalog_dir(platform), "library_images")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def library_image_path(filename: str, *, platform: str = DEFAULT_PLATFORM) -> str:
+    """Resolve a library image filename to its on-disk absolute path.
+
+    The filename is sanitised here so route handlers can pass user-derived
+    values without worrying about path traversal.
+    """
+    safe = "".join(c for c in str(filename) if c.isalnum() or c in ("-", "_", ".")) or "unknown"
+    return os.path.join(library_image_dir(platform), safe)
 
 
 # Winners ---------------------------------------------------------------
@@ -564,6 +587,110 @@ def list_generations(*, platform: str = DEFAULT_PLATFORM, limit: int = 500) -> L
     if limit > 0:
         return out[-limit:]
     return out
+
+
+# Prebuilt ad library (jsonl + on-disk images) -------------------------
+#
+# Each row represents ONE rendered image stashed for later use by a
+# manual /api/studio/generate call. Rows are append-only; consumption
+# rewrites the file with ``consumed_at`` stamped on the chosen rows so
+# we can keep a forensic trail of which library entries fed which launch
+# (useful for the bandit + analyzer when learning what library
+# pre-renders convert vs. fresh ones).
+def append_library_item(entry: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
+    path = _library_file(platform)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        **entry,
+        "platform": _norm_platform(platform),
+        "created_at": entry.get("created_at") or now,
+        "consumed_at": entry.get("consumed_at") or None,
+    }
+    if not row.get("library_id"):
+        row["library_id"] = str(uuid.uuid4())
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, default=str) + "\n")
+    return row
+
+
+def list_library_items(
+    *,
+    platform: str = DEFAULT_PLATFORM,
+    offer_id: Optional[str] = None,
+    include_consumed: bool = False,
+) -> List[Dict[str, Any]]:
+    path = _library_file(platform)
+    if not os.path.exists(path):
+        return []
+    out: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if offer_id is not None and str(row.get("offer_id")) != str(offer_id):
+                continue
+            if not include_consumed and row.get("consumed_at"):
+                continue
+            out.append(row)
+    return out
+
+
+def library_counts(*, platform: str = DEFAULT_PLATFORM) -> Dict[str, int]:
+    """Per-offer count of unconsumed library items for the given platform."""
+    counts: Dict[str, int] = {}
+    for row in list_library_items(platform=platform, include_consumed=False):
+        oid = str(row.get("offer_id") or "")
+        counts[oid] = counts.get(oid, 0) + 1
+    return counts
+
+
+def consume_library_items(
+    offer_id: str,
+    n: int,
+    *,
+    platform: str = DEFAULT_PLATFORM,
+) -> List[Dict[str, Any]]:
+    """Pop up to ``n`` unconsumed items for the offer, FIFO (oldest first).
+
+    Marks the chosen rows ``consumed_at=<now>`` and rewrites the jsonl
+    file in place. Returns the consumed rows so the caller can build
+    response payloads. We rewrite the entire file because the library
+    file stays small in practice (a few hundred rows max — the
+    background topup job caps total stock).
+    """
+    if n <= 0:
+        return []
+    path = _library_file(platform)
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    chosen: List[Dict[str, Any]] = []
+    now = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        if row.get("consumed_at"):
+            continue
+        if str(row.get("offer_id")) != str(offer_id):
+            continue
+        row["consumed_at"] = now
+        chosen.append(row)
+        if len(chosen) >= n:
+            break
+    if not chosen:
+        return []
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, default=str) + "\n")
+    shutil.move(tmp, path)
+    return chosen
 
 
 def update_generation(gen_id: str, patch: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Optional[Dict[str, Any]]:

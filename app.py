@@ -9,7 +9,7 @@ import secrets
 import sys
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Dict, Optional
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -1936,46 +1936,65 @@ def api_studio_library_status():
 
 @app.route("/api/studio/library/list", methods=["GET"])
 def api_studio_library_list():
-    """List the prebuilt library items for the active platform so the
-    Research → Prebuilt images mode can render them as a thumbnail
-    grid. Each row carries an ``image_url`` pointing at the existing
+    """List the prebuilt library items so the Research → Prebuilt images
+    mode can render them as a thumbnail grid.
+
+    Each row carries an ``image_url`` pointing at the existing
     /studio/library-image/<platform>/<filename> route so the browser
     can render the bytes without an extra round-trip.
+
+    Query params:
+      platform : "newsbreak" | "smartnews" | "all" (default).
+                 Empty / unknown values are treated as "all" so the
+                 browser sees every prebuilt image regardless of which
+                 ad-platform is currently selected in the session.
+      offer_id : optional exact-match filter
+      include_consumed : 1/true/yes to include rows already burned by Generate
     """
     guard = _studio_required()
     if guard is not None:
         return guard
-    platform = normalize_platform(request.args.get("platform") or _active_platform())
+    raw_platform = (request.args.get("platform") or "").strip().lower()
+    if raw_platform in ("", "all"):
+        targets = list(PLATFORMS)  # newsbreak + smartnews + …
+    else:
+        targets = [normalize_platform(raw_platform)]
     offer_id = (request.args.get("offer_id") or "").strip() or None
     include_consumed = (request.args.get("include_consumed") or "").lower() in (
         "1", "true", "yes",
     )
-    try:
-        rows = storage.list_library_items(
-            platform=platform,
-            offer_id=offer_id,
-            include_consumed=include_consumed,
-        )
-    except Exception as exc:  # noqa: BLE001
-        app.logger.exception("studio/library/list failed")
-        return jsonify({"error": str(exc)}), 500
     out = []
-    for row in rows:
-        filename = (row.get("filename") or "").strip()
-        if not filename:
-            # Stale rows where the render failed before we could patch
-            # the filename in. Skip — they have nothing to show.
+    per_platform_counts: Dict[str, int] = {}
+    for plat in targets:
+        try:
+            rows = storage.list_library_items(
+                platform=plat,
+                offer_id=offer_id,
+                include_consumed=include_consumed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("studio/library/list failed for %s", plat)
             continue
-        item = dict(row)
-        item["platform"] = platform
-        item["image_url"] = url_for(
-            "library_image", platform=platform, filename=filename
-        )
-        out.append(item)
+        kept = 0
+        for row in rows:
+            filename = (row.get("filename") or "").strip()
+            if not filename:
+                # Stale rows where the render failed before we could patch
+                # the filename in. Skip — they have nothing to show.
+                continue
+            item = dict(row)
+            item["platform"] = plat
+            item["image_url"] = url_for(
+                "library_image", platform=plat, filename=filename
+            )
+            out.append(item)
+            kept += 1
+        per_platform_counts[plat] = kept
     out.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
     return jsonify(
         {
-            "platform": platform,
+            "platforms": targets,
+            "platform_counts": per_platform_counts,
             "items": out,
             "count": len(out),
         }

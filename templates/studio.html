@@ -202,6 +202,12 @@
       </div>
 
       <div class="research-toolbar" data-mode-only="library" hidden>
+        <div class="research-filter-group" data-filter="library-platform">
+          <span class="research-filter-label">Platform:</span>
+          <button type="button" class="chip-filter active" data-platform="">All</button>
+          <button type="button" class="chip-filter" data-platform="newsbreak">NewsBreak</button>
+          <button type="button" class="chip-filter" data-platform="smartnews">SmartNews</button>
+        </div>
         <div class="research-filter-group" data-filter="library-offer">
           <span class="research-filter-label">Offer:</span>
           <select id="library-offer-filter" class="studio-thin-input" style="width:auto;">
@@ -976,7 +982,8 @@
   let researchMode = 'ideas';      // 'ideas' | 'library'
   let libraryAll = [];
   let libraryVisible = [];
-  const libraryFilters = { offer: '', aspect: '', includeConsumed: false };
+  // platform '' means "all" — the backend merges across newsbreak + smartnews.
+  const libraryFilters = { platform: '', offer: '', aspect: '', includeConsumed: false };
   let libraryFirstFetchDone = false;
 
   function setResearchMode(mode) {
@@ -1004,17 +1011,34 @@
     if (host) host.innerHTML = '<em class="nb-muted">Loading library…</em>';
     try {
       const params = new URLSearchParams();
+      // Always ask for "all" so a session locked to NewsBreak can still
+      // see SmartNews tiles. The browser-side platform chip narrows down.
+      params.set('platform', 'all');
       if (libraryFilters.includeConsumed) params.set('include_consumed', 'true');
       const res = await fetch('/api/studio/library/list?' + params.toString());
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
       libraryAll = body.items || [];
+      // Stash counts for the platform chips so we can show "(N)" badges.
+      libraryAll._platformCounts = body.platform_counts || {};
       refreshLibraryOfferDropdown();
+      refreshLibraryPlatformChips();
       applyLibraryFilters();
       updateLibraryCounts();
     } catch (e) {
       if (host) host.innerHTML = `<em class="nb-muted">Failed to load library: ${escapeHtml(String(e))}</em>`;
     }
+  }
+
+  function refreshLibraryPlatformChips() {
+    const counts = libraryAll._platformCounts || {};
+    document.querySelectorAll('[data-filter="library-platform"] .chip-filter').forEach(b => {
+      const p = b.dataset.platform || '';
+      const n = p ? (counts[p] || 0) : libraryAll.length;
+      // Strip any old count then re-append.
+      const base = b.textContent.replace(/\s*\(\d+\)\s*$/, '').trim();
+      b.textContent = `${base} (${n})`;
+    });
   }
 
   function refreshLibraryOfferDropdown() {
@@ -1035,8 +1059,9 @@
   }
 
   function applyLibraryFilters() {
-    const { offer, aspect } = libraryFilters;
+    const { platform, offer, aspect } = libraryFilters;
     let rows = libraryAll.slice();
+    if (platform) rows = rows.filter(it => String(it.platform || '') === platform);
     if (offer) rows = rows.filter(it => String(it.offer_id || '') === offer);
     if (aspect) rows = rows.filter(it => String(it.aspect || '') === aspect);
     rows.sort((a, b) => (Date.parse(b.created_at || 0) || 0) - (Date.parse(a.created_at || 0) || 0));
@@ -1053,11 +1078,16 @@
                     : aspect === '9:16' ? '9 / 16'
                     : '1 / 1';
     const isConsumed = !!it.consumed_at;
+    const platform = String(it.platform || '');
+    const platformLabel = platform === 'smartnews' ? 'SmartNews'
+                        : platform === 'newsbreak' ? 'NewsBreak'
+                        : platform;
     return `
-      <div class="studio-tile is-library${isConsumed ? ' is-consumed' : ''}" data-library-id="${escapeHtml(it.library_id)}">
+      <div class="studio-tile is-library${isConsumed ? ' is-consumed' : ''}" data-library-id="${escapeHtml(it.library_id)}" data-platform="${escapeHtml(platform)}">
         <div class="library-tile-img" style="--tile-aspect:${aspectCss};">
           <img src="${escapeHtml(it.image_url || '')}" alt="${escapeHtml(it.style_name || '')}" loading="lazy" />
           <span class="library-tile-aspect-chip">${escapeHtml(aspect)}</span>
+          ${platformLabel ? `<span class="library-tile-platform-chip platform-${escapeHtml(platform)}">${escapeHtml(platformLabel)}</span>` : ''}
           ${isConsumed ? '<span class="library-tile-consumed-chip" title="Already consumed by a Generate batch">consumed</span>' : ''}
         </div>
         <div class="studio-tile-meta">
@@ -1153,6 +1183,15 @@
   });
 
   // Library filter wiring.
+  document.querySelectorAll('[data-filter="library-platform"] .chip-filter').forEach(b => {
+    b.addEventListener('click', () => {
+      libraryFilters.platform = b.dataset.platform || '';
+      document
+        .querySelectorAll('[data-filter="library-platform"] .chip-filter')
+        .forEach(x => x.classList.toggle('active', x === b));
+      applyLibraryFilters();
+    });
+  });
   const libraryOfferEl = document.getElementById('library-offer-filter');
   if (libraryOfferEl) libraryOfferEl.addEventListener('change', () => {
     libraryFilters.offer = libraryOfferEl.value || '';
@@ -1200,9 +1239,13 @@
   // Default to ideas mode + pre-fetch library count for the toggle badge
   // (so users can see "🖼 Prebuilt images (20)" without clicking).
   setResearchMode('ideas');
-  fetch('/api/studio/library/list')
+  fetch('/api/studio/library/list?platform=all')
     .then(r => r.ok ? r.json() : { items: [] })
-    .then(b => { libraryAll = b.items || []; updateLibraryCounts(); })
+    .then(b => {
+      libraryAll = b.items || [];
+      libraryAll._platformCounts = b.platform_counts || {};
+      updateLibraryCounts();
+    })
     .catch(() => {});
 
   // Wire the filter chips, sort dropdown, search input, and bulk bar once.
@@ -1528,8 +1571,9 @@
   display: block;
 }
 .library-tile-aspect-chip,
+.library-tile-platform-chip,
 .library-tile-consumed-chip {
-  position: absolute; top: 6px;
+  position: absolute;
   padding: .15rem .45rem; border-radius: 999px;
   font-size: .65rem; font-weight: 600;
   text-transform: uppercase; letter-spacing: .04em;
@@ -1537,13 +1581,29 @@
   backdrop-filter: blur(4px);
 }
 .library-tile-aspect-chip {
-  left: 6px;
+  top: 6px; left: 6px;
   background: rgba(15, 20, 25, 0.7);
   color: #cbd5e1;
   border: 1px solid rgba(148,163,184,0.35);
 }
+.library-tile-platform-chip {
+  bottom: 6px; left: 6px;
+  background: rgba(15, 20, 25, 0.78);
+  color: #e2e8f0;
+  border: 1px solid rgba(148,163,184,0.35);
+}
+.library-tile-platform-chip.platform-newsbreak {
+  background: rgba(239, 68, 68, 0.85);
+  color: #fff;
+  border-color: rgba(239,68,68,0.9);
+}
+.library-tile-platform-chip.platform-smartnews {
+  background: rgba(56, 189, 248, 0.85);
+  color: #0f172a;
+  border-color: rgba(56,189,248,0.9);
+}
 .library-tile-consumed-chip {
-  right: 6px;
+  top: 6px; right: 6px;
   background: rgba(245, 158, 11, 0.85);
   color: #1f2937;
 }

@@ -639,20 +639,24 @@
 
   function candidateCardHtml(c) {
     const created = c.created_at || '';
-    const whenShort = created ? new Date(created).toLocaleString() : '';
-    const isNew = created && (Date.parse(created) > Date.now() - 24 * 3600 * 1000);
+    const ts = created ? Date.parse(created) : 0;
+    const whenShort = ts ? formatRelativeShort(ts) : '';
+    const whenFull = ts ? new Date(ts).toLocaleString() : '';
+    const isNew = ts && (ts > Date.now() - 24 * 3600 * 1000);
     const checked = researchSelected.has(c.style_id) ? ' checked' : '';
     return `
       <div class="nb-card candidate-card${researchSelected.has(c.style_id) ? ' is-selected' : ''}" data-style-id="${escapeHtml(c.style_id)}">
         <header>
-          <label class="nb-check candidate-check">
+          <label class="nb-check candidate-check candidate-check-name" title="${escapeHtml(c.name || c.style_id)}">
             <input type="checkbox" data-cand-check value="${escapeHtml(c.style_id)}"${checked} />
             <strong>${escapeHtml(c.name || c.style_id)}</strong>
           </label>
-          <span class="chip ${escapeHtml(c.status || 'candidate')}">${escapeHtml(c.status || 'candidate')}</span>
-          ${c.source ? `<span class="chip source">${escapeHtml(c.source)}</span>` : ''}
-          ${isNew ? '<span class="chip new">new</span>' : ''}
-          ${whenShort ? `<span class="nb-muted nb-small" style="margin-left:auto">${escapeHtml(whenShort)}</span>` : ''}
+          <span class="candidate-chips">
+            <span class="chip ${escapeHtml(c.status || 'candidate')}">${escapeHtml(c.status || 'candidate')}</span>
+            ${c.source ? `<span class="chip source">${escapeHtml(c.source)}</span>` : ''}
+            ${isNew ? '<span class="chip new">new</span>' : ''}
+          </span>
+          ${whenShort ? `<span class="candidate-when nb-muted nb-small" title="${escapeHtml(whenFull)}">${escapeHtml(whenShort)}</span>` : ''}
         </header>
         <p>${escapeHtml(c.description || '')}</p>
         <dl class="candidate-stats">
@@ -665,6 +669,20 @@
           <button type="button" class="nb-btn small" data-act="archive" data-id="${escapeHtml(c.style_id)}">Archive</button>
         </div>
       </div>`;
+  }
+
+  function formatRelativeShort(ts) {
+    const diffSec = Math.max(0, (Date.now() - ts) / 1000);
+    if (diffSec < 60) return 'just now';
+    if (diffSec < 3600) return Math.round(diffSec / 60) + 'm ago';
+    if (diffSec < 86400) return Math.round(diffSec / 3600) + 'h ago';
+    if (diffSec < 86400 * 14) return Math.round(diffSec / 86400) + 'd ago';
+    // Older than ~2 weeks: show compact "MMM D" without seconds.
+    try {
+      return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    } catch (_) {
+      return '';
+    }
   }
 
   function applyResearchFilters() {
@@ -1005,9 +1023,36 @@
 .chip.archived     { background: rgba(239,68,68,0.15);  color: #fca5a5; border-color: rgba(239,68,68,0.4); }
 .chip.testing      { background: rgba(59,130,246,0.15); color: #93c5fd; border-color: rgba(59,130,246,0.4); }
 
-.candidate-card { margin-bottom: 10px; }
+.candidate-card { margin-bottom: 10px; min-width: 0; }
 .candidate-card header {
-  display: flex; gap: .5rem; align-items: center; margin-bottom: .35rem;
+  display: flex; gap: .4rem .5rem; align-items: center; margin-bottom: .35rem;
+  flex-wrap: wrap;          /* let chips + timestamp wrap onto a 2nd line in narrow cells */
+  min-width: 0;
+}
+/* Name takes the leftover row, ellipsises when it would otherwise push the chips out. */
+.candidate-check-name {
+  flex: 1 1 auto;
+  min-width: 0;             /* unlock ellipsis inside flex */
+  display: flex; align-items: center; gap: .4rem;
+}
+.candidate-check-name strong {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0; max-width: 100%;
+  display: inline-block;
+}
+/* Chips stay grouped and never split mid-row so they always read as one unit. */
+.candidate-chips {
+  display: inline-flex; flex-wrap: wrap; gap: .25rem;
+  flex-shrink: 0;
+}
+/* Timestamp pushed right; on narrow cells flex-wrap moves it under the chips. */
+.candidate-when {
+  margin-left: auto;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-size: .72rem; opacity: .85;
 }
 .candidate-stats {
   display: grid; grid-template-columns: repeat(3, auto);
@@ -1069,7 +1114,21 @@
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 10px;
 }
-.research-grid .candidate-card { margin: 0; }
+.research-grid .candidate-card {
+  margin: 0;
+  padding: 16px;            /* tighter than the default 24px so chips/timestamp breathe in 320px cells */
+  overflow-wrap: anywhere;  /* break long unbroken style ids in the body */
+  word-break: break-word;
+}
+.research-grid .candidate-card p {
+  margin: .15rem 0 .35rem;
+  font-size: .85rem;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .candidate-card { transition: border-color .12s ease, background .12s ease; }
 .candidate-card.is-selected {
   border-color: #ef4444;

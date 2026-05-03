@@ -1494,6 +1494,12 @@
   display: flex; flex-wrap: wrap; gap: .35rem .6rem; align-items: center;
   margin-bottom: 10px;
 }
+/* The `hidden` attribute resolves to the UA rule `[hidden]{display:none}`,
+   which loses to our explicit `.research-toolbar{display:flex}` /
+   `.research-grid{display:grid}` etc. Without this override both modes
+   render at the same time and clicking the chips silently filters the
+   wrong list. */
+[data-mode-only][hidden] { display: none !important; }
 .research-mode-toggle .chip-filter {
   padding: .35rem .9rem; font-size: .85rem;
 }

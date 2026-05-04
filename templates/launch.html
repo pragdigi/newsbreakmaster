@@ -1757,18 +1757,57 @@
       genIdEl.value = body.gen_id;
 
       var files = [];
-      for (var i = 0; i < body.images.length; i++) {
+      var skipped = 0;
+      for (var i = 0; i < (body.images || []).length; i++) {
         var img = body.images[i];
-        if (!img.b64) continue;
-        var blob = await (await fetch('data:' + (img.mime || 'image/png') + ';base64,' + img.b64)).blob();
-        files.push(new File([blob], 'ai-' + body.gen_id.slice(0, 6) + '-' + i + '.png', { type: img.mime || 'image/png' }));
+        var mime = img.mime || 'image/png';
+        var blob = null;
+        try {
+          if (img.b64) {
+            // Freshly-rendered: payload carried inline as base64.
+            blob = await (await fetch('data:' + mime + ';base64,' + img.b64)).blob();
+          } else if (img.url) {
+            // Drained from the prebuilt library: payload lives on disk
+            // and we fetch it from /studio/library-image/<...>.
+            var resp = await fetch(img.url);
+            if (!resp.ok) { skipped++; continue; }
+            blob = await resp.blob();
+            mime = blob.type || mime;
+          } else {
+            skipped++;
+            continue;
+          }
+        } catch (_e) {
+          skipped++;
+          continue;
+        }
+        var ext = (mime.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        var tag = img.from_library ? 'lib' : 'ai';
+        files.push(new File(
+          [blob],
+          tag + '-' + body.gen_id.slice(0, 6) + '-' + i + '.' + ext,
+          { type: mime }
+        ));
       }
 
-      if (api && typeof api.addFiles === 'function' && files.length) {
-        api.addFiles(files, { aiBatch: true });
-        setStatus('Dropped ' + files.length + ' generated images. Batch ' + body.gen_id.slice(0, 8) + '. (Click Generate again to replace.)');
+      if (!api || typeof api.addFiles !== 'function') {
+        setStatus('Generated ' + files.length + ' images but the dropzone API is missing — reload and try again.');
+      } else if (!files.length) {
+        var libN = body.library_consumed || 0;
+        var freshN = body.freshly_rendered || 0;
+        setStatus(
+          'Generate returned 0 usable images (library=' + libN + ', fresh=' + freshN +
+          (skipped ? ', skipped=' + skipped : '') +
+          '). Top up the library or check image API keys.'
+        );
       } else {
-        setStatus('Generated ' + files.length + ' images but dropzone is not ready — reload and try again.');
+        api.addFiles(files, { aiBatch: true });
+        var libN2 = body.library_consumed || 0;
+        var freshN2 = body.freshly_rendered || 0;
+        var src = libN2 && freshN2 ? (libN2 + ' from library + ' + freshN2 + ' fresh')
+                : libN2 ? (libN2 + ' from library')
+                : (freshN2 + ' freshly rendered');
+        setStatus('Dropped ' + files.length + ' images (' + src + '). Batch ' + body.gen_id.slice(0, 8) + '. (Click Generate again to replace.)');
       }
     } catch (err) {
       setStatus('Error: ' + err.message);

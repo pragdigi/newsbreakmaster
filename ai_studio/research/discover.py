@@ -299,7 +299,7 @@ def discover_from_winners(
             description=str(cluster.get("description") or "").strip(),
             visual_cues=[str(v) for v in (cluster.get("visual_cues") or [])],
             prompt_template=str(cluster.get("prompt_template") or "").strip(),
-            source="cluster",
+            source="cluster_winners",
             source_meta={"cluster_size": len(indices), "ad_indices": indices},
         )
         saved = storage.upsert_style_candidate(cand, platform=platform)
@@ -583,7 +583,7 @@ def discover_from_gethookd(
             description=str(cluster.get("description") or "").strip(),
             visual_cues=[str(v) for v in (cluster.get("visual_cues") or [])],
             prompt_template=str(cluster.get("prompt_template") or "").strip(),
-            source="scrape",
+            source="gethookd",
             source_meta={
                 "cluster_size": len(indices),
                 "brands": brands,

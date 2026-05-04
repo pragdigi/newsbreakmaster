@@ -828,7 +828,7 @@
           </label>
           <span class="candidate-chips">
             <span class="chip ${escapeHtml(c.status || 'candidate')}">${escapeHtml(c.status || 'candidate')}</span>
-            ${c.source ? `<span class="chip source">${escapeHtml(c.source)}</span>` : ''}
+            ${c.source ? `<span class="chip source">${escapeHtml(prettySourceLabel(c))}</span>` : ''}
             ${isNew ? '<span class="chip new">new</span>' : ''}
           </span>
           ${whenShort ? `<span class="candidate-when nb-muted nb-small" title="${escapeHtml(whenFull)}">${escapeHtml(whenShort)}</span>` : ''}
@@ -860,12 +860,47 @@
     }
   }
 
+  function prettySourceLabel(c) {
+    const raw = String(c.source || '').toLowerCase();
+    const anchor = String((c.source_meta || {}).anchor_platform || '').toLowerCase();
+    if (raw === 'scrape' || raw === 'gethookd') return 'GetHookd';
+    if (raw === 'cluster' || raw === 'cluster_winners') return 'Cluster';
+    if (raw === 'public_scout') {
+      if (anchor === 'meta') return 'Meta lib';
+      if (anchor === 'tiktok') return 'TikTok';
+      return 'Public scout';
+    }
+    if (raw === 'meta') return 'Meta lib';
+    if (raw === 'tiktok') return 'TikTok';
+    if (raw === 'brainstorm') return 'Brainstorm';
+    if (raw === 'scholar') return 'Scholar';
+    if (raw === 'upload') return 'Upload';
+    return c.source;
+  }
+
+  function candidateMatchesSource(c, chip) {
+    const raw = String(c.source || '').toLowerCase();
+    const anchor = String((c.source_meta || {}).anchor_platform || '').toLowerCase();
+    switch (chip) {
+      case 'gethookd':
+        return raw === 'gethookd' || raw === 'scrape';
+      case 'cluster_winners':
+        return raw === 'cluster_winners' || raw === 'cluster';
+      case 'meta':
+        return raw === 'meta' || (raw === 'public_scout' && (anchor === 'meta' || anchor === 'mixed'));
+      case 'tiktok':
+        return raw === 'tiktok' || (raw === 'public_scout' && (anchor === 'tiktok' || anchor === 'mixed'));
+      default:
+        return raw.includes(chip);
+    }
+  }
+
   function applyResearchFilters() {
     const { status, source, sort, search } = researchFilters;
     const q = (search || '').trim().toLowerCase();
     let rows = researchAll.slice();
     if (status) rows = rows.filter(c => (c.status || 'candidate') === status);
-    if (source) rows = rows.filter(c => String(c.source || '').toLowerCase().includes(source));
+    if (source) rows = rows.filter(c => candidateMatchesSource(c, source));
     if (q) rows = rows.filter(c =>
       String(c.name || '').toLowerCase().includes(q) ||
       String(c.description || '').toLowerCase().includes(q) ||
@@ -898,9 +933,29 @@
     updateSelectedCountLabel();
   }
 
+  function refreshSourceChipCounts() {
+    const tally = { cluster_winners: 0, gethookd: 0, brainstorm: 0, meta: 0, tiktok: 0, scholar: 0, upload: 0 };
+    for (const c of researchAll) {
+      for (const k of Object.keys(tally)) {
+        if (candidateMatchesSource(c, k)) tally[k]++;
+      }
+    }
+    document.querySelectorAll('.research-filter-group[data-filter="source"] .chip-filter').forEach(btn => {
+      const key = btn.dataset.source;
+      const baseLabel = btn.dataset.baseLabel || btn.textContent.replace(/\s*\(\d+\)\s*$/, '').trim();
+      btn.dataset.baseLabel = baseLabel;
+      if (!key) {
+        btn.textContent = `${baseLabel} (${researchAll.length})`;
+      } else {
+        btn.textContent = `${baseLabel} (${tally[key] ?? 0})`;
+      }
+    });
+  }
+
   function renderResearchCounts() {
     const host = document.getElementById('research-counts');
     if (!host) return;
+    refreshSourceChipCounts();
     const counts = researchAll.reduce((acc, c) => {
       const s = c.status || 'candidate';
       acc[s] = (acc[s] || 0) + 1;

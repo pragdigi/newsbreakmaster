@@ -38,6 +38,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 
+from . import _scraper_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -411,7 +413,20 @@ def fetch(
         prefer_graph = bool(META_TOKEN)
 
     rows: List[Dict[str, Any]] = []
-    if prefer_graph and META_TOKEN:
+
+    # Headless-browser scraper service wins when configured — bare HTTP
+    # scrapes get 403'd by Facebook's bot detection in production.
+    if _scraper_client.is_configured():
+        try:
+            scraped = _scraper_client.fetch_meta(
+                [query], country=country, limit_per_query=limit, timeout=max(timeout, 90)
+            )
+            if scraped:
+                rows = scraped[:limit]
+        except _scraper_client.ScraperUnavailable as exc:
+            logger.warning("meta_ad_library: scraper service failed for %r: %s", query, exc)
+
+    if not rows and prefer_graph and META_TOKEN:
         rows = _scrape_graph_api(query, country=country, limit=limit, timeout=timeout)
 
     if not rows:
@@ -422,10 +437,11 @@ def fetch(
 
     if not rows:
         logger.info(
-            "meta_ad_library: 0 cards for query=%r country=%s (token=%s)",
+            "meta_ad_library: 0 cards for query=%r country=%s (token=%s, scraper=%s)",
             query,
             country,
             "yes" if META_TOKEN else "no",
+            "yes" if _scraper_client.is_configured() else "no",
         )
     return rows
 
@@ -442,9 +458,34 @@ def fetch_many(
 
     De-duplicates by ``id`` and trims to ``limit_per_query * len(queries)``
     so a single noisy query can't dominate the result set.
+
+    When the scraper service is configured we send all queries in one
+    POST (the service handles its own per-query iteration with a warm
+    browser pool), avoiding the per-call jitter penalty.
     """
     seen: set = set()
     out: List[Dict[str, Any]] = []
+
+    # Fast path: batch through the scraper service.
+    if _scraper_client.is_configured():
+        try:
+            scraped = _scraper_client.fetch_meta(
+                list(queries),
+                country=country,
+                limit_per_query=limit_per_query,
+                timeout=max(timeout * 2, 120),
+            )
+            if scraped:
+                for r in scraped:
+                    rid = r.get("id")
+                    if not rid or rid in seen:
+                        continue
+                    seen.add(rid)
+                    out.append(r)
+                return out
+        except _scraper_client.ScraperUnavailable as exc:
+            logger.warning("meta_ad_library: scraper batch failed, falling back to direct: %s", exc)
+
     for q in queries:
         rows = fetch(q, limit=limit_per_query, country=country, timeout=timeout)
         for r in rows:

@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 
+from . import _scraper_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -196,6 +198,20 @@ def fetch(
     Returns ``[]`` on any failure.
     """
     query = (query or "").strip()
+
+    # Headless-browser scraper service wins when configured. The
+    # creative_radar API requires the MS-TOKEN cookie + signed params
+    # the Creative Center JS computes, which bare HTTP can't produce.
+    if _scraper_client.is_configured() and query:
+        try:
+            scraped = _scraper_client.fetch_tiktok(
+                [query], region=region, limit_per_query=limit, timeout=max(timeout, 90)
+            )
+            if scraped:
+                return scraped[:limit]
+        except _scraper_client.ScraperUnavailable as exc:
+            logger.warning("tiktok_creative: scraper service failed for %r: %s", query, exc)
+
     page_size = min(limit, 50)
     rows: List[Dict[str, Any]] = []
     page = 1
@@ -213,9 +229,10 @@ def fetch(
         page += 1
     if not rows:
         logger.info(
-            "tiktok_creative: 0 cards for query=%r region=%s",
+            "tiktok_creative: 0 cards for query=%r region=%s (scraper=%s)",
             query,
             region,
+            "yes" if _scraper_client.is_configured() else "no",
         )
     # De-dupe preserving order.
     seen: set = set()
@@ -241,6 +258,27 @@ def fetch_many(
 ) -> List[Dict[str, Any]]:
     seen: set = set()
     out: List[Dict[str, Any]] = []
+
+    # Fast path: batch through the scraper service.
+    if _scraper_client.is_configured():
+        try:
+            scraped = _scraper_client.fetch_tiktok(
+                list(queries),
+                region=region,
+                limit_per_query=limit_per_query,
+                timeout=max(timeout * 2, 120),
+            )
+            if scraped:
+                for r in scraped:
+                    rid = r.get("id")
+                    if not rid or rid in seen:
+                        continue
+                    seen.add(rid)
+                    out.append(r)
+                return out
+        except _scraper_client.ScraperUnavailable as exc:
+            logger.warning("tiktok_creative: scraper batch failed, falling back to direct: %s", exc)
+
     for q in queries:
         rows = fetch(q, limit=limit_per_query, region=region, timeout=timeout)
         for r in rows:

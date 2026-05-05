@@ -760,4 +760,145 @@ def refresh_winners(
     }
 
 
-__all__ = ["refresh_winners"]
+def refetch_creatives(
+    adapter,
+    *,
+    platform: Optional[str] = None,
+    only_imageless: bool = True,
+    ad_ids: Optional[Iterable[str]] = None,
+    max_to_refetch: int = 200,
+) -> Dict[str, Any]:
+    """Re-resolve creative metadata (headline / image_url / local image) for
+    winners that are already in ``winners.json``. Useful when the original
+    ``refresh_winners`` couldn't reach the creative — e.g. NewsBreak's
+    ``/report`` doesn't carry an ``ad_group_id`` and the per-account index
+    lookup missed the ad — leaving the row stuck with a generic "Ad" name
+    and no thumbnail.
+
+    Returns ``{"updated", "still_imageless", "missing_account", "scanned",
+    "errors", "platform"}``.
+    """
+    plat = platform or getattr(adapter, "platform", None) or storage.DEFAULT_PLATFORM
+    rows = list(storage.list_winners(platform=plat))
+    if ad_ids is not None:
+        wanted = {str(a) for a in ad_ids if a}
+        rows = [r for r in rows if str(r.get("ad_id") or r.get("id")) in wanted]
+    elif only_imageless:
+        rows = [
+            r for r in rows
+            if not r.get("image_local_path") and not r.get("image_url")
+        ]
+    rows = rows[:max_to_refetch]
+
+    summary: Dict[str, Any] = {
+        "scanned": len(rows),
+        "updated": 0,
+        "still_imageless": 0,
+        "missing_account": 0,
+        "errors": [],
+        "platform": plat,
+    }
+    if not rows:
+        return summary
+
+    # Per-account index cache so we only walk the campaign tree once per
+    # account, no matter how many imageless winners we have to backfill.
+    account_index_cache: Dict[tuple, Dict[str, str]] = {}
+
+    for w in rows:
+        ad_id = str(w.get("ad_id") or w.get("id") or "")
+        aid = str(w.get("ad_account_id") or "")
+        if not ad_id or not aid:
+            summary["missing_account"] += 1
+            continue
+
+        try:
+            index = _build_account_index(adapter, aid, account_index_cache)
+        except Exception as e:  # pragma: no cover - network
+            summary["errors"].append({
+                "ad_id": ad_id, "stage": "build_account_index", "error": str(e)
+            })
+            continue
+
+        group_id = index.get(ad_id)
+        if not group_id:
+            logger.info(
+                "winners.refetch: ad=%s not in account index (size=%d)",
+                ad_id, len(index),
+            )
+            summary["still_imageless"] += 1
+            continue
+
+        try:
+            creative = _creative_for_ad(adapter, aid, group_id, ad_id)
+        except Exception as e:  # pragma: no cover - network
+            summary["errors"].append({
+                "ad_id": ad_id, "stage": "creative_for_ad", "error": str(e)
+            })
+            continue
+
+        if not creative:
+            summary["still_imageless"] += 1
+            continue
+
+        new_image_url = creative.get("image_url")
+        new_local = _cache_winner_image(ad_id, new_image_url, platform=plat)
+
+        # Only persist a row if we actually got something new — don't let a
+        # second empty fetch wipe out fields that were already populated.
+        patch: Dict[str, Any] = {}
+        for key, fresh in (
+            ("headline", creative.get("headline")),
+            ("description", creative.get("description")),
+            ("sponsored_name", creative.get("sponsored_name")),
+            ("landing_url", creative.get("landing_page_url")),
+            ("image_url", new_image_url),
+            ("image_local_path", new_local),
+        ):
+            if fresh and fresh != w.get(key):
+                patch[key] = fresh
+
+        if patch:
+            merged = {**w, **patch}
+            storage.upsert_winner(merged, platform=plat)
+            summary["updated"] += 1
+            logger.info(
+                "winners.refetch: backfilled ad=%s patch_keys=%s",
+                ad_id, list(patch.keys()),
+            )
+        else:
+            summary["still_imageless"] += 1
+
+    return summary
+
+
+def cleanup_imageless(*, platform: Optional[str] = None) -> Dict[str, Any]:
+    """Hard-delete winners that have neither a cached local image nor a
+    remote ``image_url``. Returns ``{"deleted", "kept", "platform"}``.
+
+    These rows are ad records that the platform's creative API refused to
+    return content for — they take up UI space without ever showing a
+    thumbnail. They'll come back on the next ``refresh_winners`` run if
+    they still meet the spend / conversion thresholds, so this is mainly a
+    visual cleanup; pair it with ``refetch_creatives`` to first try to
+    rescue any rows where the creative fetch was a transient failure.
+    """
+    plat = platform or storage.DEFAULT_PLATFORM
+    rows = list(storage.list_winners(platform=plat))
+    deleted = 0
+    for r in rows:
+        if r.get("image_local_path") or r.get("image_url"):
+            continue
+        ad_id = str(r.get("ad_id") or r.get("id") or "")
+        if not ad_id:
+            continue
+        if storage.delete_winner(ad_id, platform=plat):
+            deleted += 1
+    return {
+        "deleted": deleted,
+        "kept": max(0, len(rows) - deleted),
+        "platform": plat,
+    }
+
+
+__all__ = ["refresh_winners", "refetch_creatives", "cleanup_imageless"]

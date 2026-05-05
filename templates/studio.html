@@ -105,6 +105,12 @@
     </div>
     <div class="studio-grid-toolbar" id="winners-grid-toolbar" hidden>
       <span id="winners-grid-summary" class="nb-muted nb-small"></span>
+      <label class="winners-imageless-toggle nb-small" title="Hide rows where the platform's creative API didn't return an image — these usually show as a generic placeholder + the bare word 'Ad'.">
+        <input type="checkbox" id="winners-hide-imageless" checked>
+        Hide imageless
+      </label>
+      <button type="button" id="winners-refetch-creatives" class="nb-btn small" title="Re-fetch creative metadata (headline, image) for winners that came back blank. Often rescues NewsBreak rows where the per-account index missed the ad.">🔄 Refetch missing creatives</button>
+      <button type="button" id="winners-cleanup-imageless" class="nb-btn small nb-btn-danger" title="Hard-delete winners that have no cached image AND no remote image_url. They'll come back on the next refresh if they still meet thresholds.">🗑 Clean up imageless</button>
       <button type="button" id="winners-download-all" class="nb-btn small" disabled>Download all images</button>
     </div>
     <table class="nb-table" id="winners-table">
@@ -119,6 +125,7 @@
           <th>Score</th>
           <th>Marked</th>
           <th aria-label="Download"></th>
+          <th aria-label="Delete"></th>
         </tr>
       </thead>
       <tbody></tbody>
@@ -637,13 +644,29 @@
     const scope = (scopeEl && scopeEl.value) || 'all';
     const res = await fetch('/api/studio/winners?scope=' + encodeURIComponent(scope));
     const body = await res.json();
+    const allRows = (body.winners || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
+    lastWinners = allRows;
+    renderWinners();
+  }
+
+  // Re-renders the winners table from `lastWinners` using current UI
+  // filters. Pulled out of loadWinners so the "Hide imageless" toggle
+  // doesn't need to refetch — it just re-paints what's already in memory.
+  function renderWinners() {
     const tbody = document.querySelector('#winners-table tbody');
+    if (!tbody) return;
     tbody.innerHTML = '';
-    const rows = (body.winners || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
-    lastWinners = rows;
-    rows.forEach((w, i) => {
+    const allRows = lastWinners || [];
+    const hideToggle = document.getElementById('winners-hide-imageless');
+    const hideImageless = !!(hideToggle && hideToggle.checked);
+    const rows = hideImageless ? allRows.filter(winnerImageSrc) : allRows;
+
+    rows.forEach((w, displayIdx) => {
       const m = w.metrics || {};
       const tr = document.createElement('tr');
+      // Index back into `lastWinners` so download/delete handlers stay
+      // correct even when filtering hides some rows.
+      const realIdx = allRows.indexOf(w);
       const imgSrc = winnerImageSrc(w);
       const srcPlat = w.source_platform || '';
       const badgeLabel = srcPlat === 'smartnews' ? 'SN' : (srcPlat === 'newsbreak' ? 'NB' : '—');
@@ -656,8 +679,12 @@
              </svg>
            </span>`;
       const dlButton = imgSrc
-        ? `<button type="button" class="nb-btn small winner-download-btn" data-winner-idx="${i}" title="Download this winner image">⬇ Download</button>`
+        ? `<button type="button" class="nb-btn small winner-download-btn" data-winner-idx="${realIdx}" title="Download this winner image">⬇ Download</button>`
         : `<span class="nb-muted nb-small" title="No image cached for this winner">—</span>`;
+      const adId = w.ad_id || w.id || '';
+      const delButton = adId
+        ? `<button type="button" class="winner-delete-btn" data-winner-idx="${realIdx}" data-ad-id="${escapeHtml(adId)}" data-platform="${escapeHtml(srcPlat)}" title="Delete this winner from winners.json">🗑</button>`
+        : '';
       tr.innerHTML = `
         <td><div class="winner-cell">${winnerThumb}
           <div><strong>${escapeHtml(w.headline || '')}</strong><br/>
@@ -669,7 +696,8 @@
         <td>${m.cpa ? '$' + Number(m.cpa).toFixed(2) : '—'}</td>
         <td>${w.score || ''}</td>
         <td><small>${w.marked_at || ''}</small></td>
-        <td class="winner-row-actions">${dlButton}</td>`;
+        <td class="winner-row-actions">${dlButton}</td>
+        <td class="winner-row-actions">${delButton}</td>`;
       tbody.appendChild(tr);
     });
 
@@ -689,15 +717,47 @@
       });
     });
 
+    // Wire per-row delete buttons.
+    tbody.querySelectorAll('.winner-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const adId = btn.dataset.adId;
+        const platform = btn.dataset.platform;
+        if (!adId || !platform) return;
+        if (!confirm(`Delete this winner (ad_id=${adId})?\n\nIt will come back on the next refresh if it still meets the spend / conv thresholds.`)) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const url = `/api/studio/winners/${encodeURIComponent(platform)}/${encodeURIComponent(adId)}`;
+          const r = await fetch(url, { method: 'DELETE' });
+          const body = await r.json();
+          if (!r.ok || !body.ok) throw new Error(body.error || 'delete failed');
+          // Drop from memory + repaint so we don't have to re-hit the server.
+          const idx = parseInt(btn.dataset.winnerIdx, 10);
+          if (!Number.isNaN(idx)) lastWinners.splice(idx, 1);
+          renderWinners();
+        } catch (err) {
+          alert('Delete failed: ' + err.message);
+          btn.disabled = false;
+        }
+      });
+    });
+
     // Toolbar: counts + bulk download.
     const toolbar = document.getElementById('winners-grid-toolbar');
     const summary = document.getElementById('winners-grid-summary');
     const dlAll = document.getElementById('winners-download-all');
+    const cleanupBtn = document.getElementById('winners-cleanup-imageless');
     const downloadable = rows.filter(winnerImageSrc).length;
+    const imagelessCount = allRows.length - allRows.filter(winnerImageSrc).length;
     if (summary) {
-      summary.textContent = rows.length
-        ? `${downloadable} of ${rows.length} winners have images cached`
-        : '';
+      if (!allRows.length) {
+        summary.textContent = '';
+      } else if (hideImageless && imagelessCount) {
+        summary.textContent = `${downloadable} with images shown · ${imagelessCount} imageless hidden (${allRows.length} total)`;
+      } else {
+        summary.textContent = `${downloadable} of ${allRows.length} winners have images cached`;
+      }
     }
     if (dlAll) {
       dlAll.disabled = downloadable === 0;
@@ -705,17 +765,23 @@
         ? `Download all images (${downloadable})`
         : 'Download all images';
     }
-    if (toolbar) toolbar.hidden = rows.length === 0;
+    if (cleanupBtn) {
+      cleanupBtn.disabled = imagelessCount === 0;
+      cleanupBtn.textContent = imagelessCount
+        ? `🗑 Clean up imageless (${imagelessCount})`
+        : '🗑 Clean up imageless';
+    }
+    if (toolbar) toolbar.hidden = allRows.length === 0;
 
     const status = document.getElementById('winners-status');
     if (status) {
-      const counts = rows.reduce((acc, w) => {
+      const counts = allRows.reduce((acc, w) => {
         const p = w.source_platform || '—';
         acc[p] = (acc[p] || 0) + 1;
         return acc;
       }, {});
       const breakdown = Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' · ');
-      status.textContent = rows.length ? `${rows.length} winners (${breakdown})` : 'No winners yet.';
+      status.textContent = allRows.length ? `${allRows.length} winners (${breakdown})` : 'No winners yet.';
     }
   }
 
@@ -776,6 +842,79 @@
     }
   });
   document.getElementById('winners-reload').addEventListener('click', loadWinners);
+
+  // Toggle hides imageless rows in-place — no refetch needed.
+  const hideImagelessToggle = document.getElementById('winners-hide-imageless');
+  if (hideImagelessToggle) {
+    hideImagelessToggle.addEventListener('change', renderWinners);
+  }
+
+  // Refetch missing creatives — surgical backfill across all platforms.
+  const refetchBtn = document.getElementById('winners-refetch-creatives');
+  if (refetchBtn) {
+    refetchBtn.addEventListener('click', async () => {
+      const status = document.getElementById('winners-status');
+      const original = refetchBtn.textContent;
+      refetchBtn.disabled = true;
+      refetchBtn.textContent = '⌛ Refetching…';
+      if (status) status.textContent = 'Backfilling creatives for imageless winners…';
+      try {
+        const r = await fetch('/api/studio/winners/refetch-creatives', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ only_imageless: true }),
+        });
+        const body = await r.json();
+        if (!r.ok || !body.ok) throw new Error(body.error || 'refetch failed');
+        const sm = body.summary || {};
+        if (status) {
+          status.textContent =
+            `Refetched ${sm.scanned || 0} winners — ${sm.updated || 0} rescued, ` +
+            `${sm.still_imageless || 0} still imageless, ${sm.missing_account || 0} missing ad_account_id.`;
+        }
+        await loadWinners();
+      } catch (err) {
+        if (status) status.textContent = 'Refetch failed: ' + err.message;
+      } finally {
+        refetchBtn.disabled = false;
+        refetchBtn.textContent = original;
+      }
+    });
+  }
+
+  // Bulk delete imageless winners.
+  const cleanupBtn = document.getElementById('winners-cleanup-imageless');
+  if (cleanupBtn) {
+    cleanupBtn.addEventListener('click', async () => {
+      const status = document.getElementById('winners-status');
+      const allRows = lastWinners || [];
+      const imageless = allRows.filter(w => !winnerImageSrc(w));
+      if (!imageless.length) return;
+      if (!confirm(
+        `Delete ${imageless.length} winner${imageless.length === 1 ? '' : 's'} with no cached image?\n\n` +
+        `They'll come back on the next "Force pull winners" if they still meet the spend / conv thresholds. ` +
+        `Use "Refetch missing creatives" first if you want to try and rescue them.`
+      )) return;
+      const original = cleanupBtn.textContent;
+      cleanupBtn.disabled = true;
+      cleanupBtn.textContent = '⌛ Cleaning…';
+      try {
+        const r = await fetch('/api/studio/winners/cleanup-imageless', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const body = await r.json();
+        if (!r.ok || !body.ok) throw new Error(body.error || 'cleanup failed');
+        if (status) status.textContent = `Deleted ${body.deleted} imageless winner${body.deleted === 1 ? '' : 's'} (${body.kept} kept).`;
+        await loadWinners();
+      } catch (err) {
+        if (status) status.textContent = 'Cleanup failed: ' + err.message;
+        cleanupBtn.disabled = false;
+        cleanupBtn.textContent = original;
+      }
+    });
+  }
 
   const insightsSel = document.getElementById('insights-offer');
   const insightsBody = document.getElementById('insights-body');
@@ -1580,8 +1719,22 @@
 }
 .winner-row-actions { text-align: right; white-space: nowrap; }
 .winner-download-btn { padding: .25rem .55rem; font-size: .75rem; }
-#winners-grid-toolbar { margin: 14px 0 6px; }
+.winner-delete-btn {
+  padding: .25rem .5rem; font-size: .8rem;
+  background: transparent; border: 1px solid transparent;
+  color: #94a3b8; cursor: pointer; border-radius: 4px;
+}
+.winner-delete-btn:hover { color: #ef4444; border-color: #7f1d1d; background: rgba(127,29,29,.15); }
+.winner-delete-btn:disabled { opacity: .4; cursor: progress; }
+#winners-grid-toolbar { margin: 14px 0 6px; display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 #winners-grid-toolbar #winners-grid-summary { margin-right: auto; }
+.winners-imageless-toggle {
+  display: inline-flex; align-items: center; gap: .35rem;
+  cursor: pointer; user-select: none; color: #cbd5e1;
+}
+.winners-imageless-toggle input { margin: 0; }
+.nb-btn-danger { color: #fecaca; border-color: #7f1d1d; }
+.nb-btn-danger:hover { background: rgba(127,29,29,.25); border-color: #b91c1c; }
 
 /* ===== Research tab toolbar / multi-select ===== */
 .research-toolbar-header {

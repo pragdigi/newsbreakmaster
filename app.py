@@ -9,7 +9,7 @@ import secrets
 import sys
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -1718,6 +1718,107 @@ def api_studio_refresh_winners():
         app.logger.exception("refresh_winners failed")
         return jsonify({"error": str(exc)}), 500
     return jsonify({"ok": True, "summary": summary})
+
+
+@app.route("/api/studio/winners/refetch-creatives", methods=["POST"])
+def api_studio_refetch_winner_creatives():
+    """Surgical backfill: re-resolve creative metadata for already-stored
+    winners that came back from ``refresh_winners`` without an image (the
+    NewsBreak creative resolver fails for some ads when the per-account
+    index doesn't surface ``ad_id → ad_group_id``). Iterates every
+    configured platform unless the caller pins one explicitly.
+    """
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    body = request.get_json(silent=True) or {}
+    requested_platform = body.get("platform")
+    only_imageless = body.get("only_imageless", True)
+    raw_ad_ids = body.get("ad_ids")
+    ad_ids = [str(x) for x in raw_ad_ids] if isinstance(raw_ad_ids, list) else None
+
+    if requested_platform:
+        platforms = [normalize_platform(requested_platform)]
+    else:
+        platforms = list(PLATFORMS)
+
+    summaries: List[Dict[str, Any]] = []
+    totals = {"scanned": 0, "updated": 0, "still_imageless": 0, "missing_account": 0}
+    errors: List[Dict[str, Any]] = []
+    for plat in platforms:
+        adapter = _adapter(plat)
+        if not adapter:
+            errors.append({"platform": plat, "error": "no adapter configured"})
+            continue
+        try:
+            summary = _studio_winners.refetch_creatives(
+                adapter,
+                platform=plat,
+                only_imageless=bool(only_imageless),
+                ad_ids=ad_ids,
+            )
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("refetch_creatives failed for platform=%s", plat)
+            errors.append({"platform": plat, "error": str(exc)})
+            continue
+        summaries.append(summary)
+        for k in totals:
+            totals[k] += int(summary.get(k, 0) or 0)
+        errors.extend(summary.get("errors", []))
+
+    return jsonify({
+        "ok": True,
+        "summary": {**totals, "errors": errors, "per_platform": summaries},
+    })
+
+
+@app.route("/api/studio/winners/cleanup-imageless", methods=["POST"])
+def api_studio_cleanup_imageless_winners():
+    """Hard-delete winners that have neither a cached local image nor a
+    remote ``image_url`` — the rows that show up as a generic placeholder
+    icon + the bare word "Ad" in the winners table. Iterates every
+    configured platform unless one is pinned in the body.
+    """
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    body = request.get_json(silent=True) or {}
+    requested_platform = body.get("platform")
+    if requested_platform:
+        platforms = [normalize_platform(requested_platform)]
+    else:
+        platforms = list(PLATFORMS)
+    per_platform: List[Dict[str, Any]] = []
+    deleted = 0
+    kept = 0
+    for plat in platforms:
+        try:
+            result = _studio_winners.cleanup_imageless(platform=plat)
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("cleanup_imageless failed for platform=%s", plat)
+            per_platform.append({"platform": plat, "error": str(exc)})
+            continue
+        deleted += int(result.get("deleted", 0) or 0)
+        kept += int(result.get("kept", 0) or 0)
+        per_platform.append(result)
+    return jsonify({"ok": True, "deleted": deleted, "kept": kept, "per_platform": per_platform})
+
+
+@app.route("/api/studio/winners/<platform>/<ad_id>", methods=["DELETE"])
+def api_studio_delete_winner(platform, ad_id):
+    """Delete a single winner from ``winners.json``. Same caveat as the
+    bulk cleanup: the row will come back on the next ``refresh_winners``
+    pass if it still clears spend / conv thresholds — but at least the
+    user can clear out one row at a time without losing the rest.
+    """
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    plat = normalize_platform(platform)
+    if not ad_id:
+        return jsonify({"ok": False, "error": "missing ad_id"}), 400
+    removed = storage.delete_winner(ad_id, platform=plat)
+    return jsonify({"ok": True, "removed": removed, "ad_id": ad_id, "platform": plat})
 
 
 @app.route("/api/studio/insights/<offer_id>", methods=["GET"])

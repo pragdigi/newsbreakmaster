@@ -69,18 +69,32 @@ def _fill_template_placeholders(
     return out
 
 
-def _collect_recent_prompts(platform: str, *, limit: int) -> List[str]:
+def _collect_recent_prompts(
+    platform: str,
+    *,
+    limit: int,
+    offer_id: Optional[str] = None,
+) -> List[str]:
     """Pull the last ``limit`` prompts from the platform's generation log.
 
     Used as anti-repetition memory for the concept LLM so successive batches
     don't keep producing the same scenes. Pulls a small extra buffer in case
     older rows were image-only (no prompts persisted).
+
+    When ``offer_id`` is provided we filter to prompts from the *same* offer
+    only. This prevents prompts from a heavily-tested offer (e.g. tinnitus)
+    from leaking subject-matter cues into a brand-new offer's generation —
+    even though they're framed as "do not repeat", just having them in the
+    LLM context primes the model toward that vertical's vocabulary.
     """
     out: List[str] = []
     try:
-        rows = storage.list_generations(platform=platform, limit=max(limit * 2, limit))
+        rows = storage.list_generations(platform=platform, limit=max(limit * 4, limit))
     except Exception:  # noqa: BLE001
         return out
+    if offer_id is not None:
+        offer_key = str(offer_id)
+        rows = [r for r in rows if str(r.get("offer_id") or "") == offer_key]
     for row in rows[-limit * 2 :]:
         prompts = row.get("prompts") or []
         if isinstance(prompts, list):
@@ -212,7 +226,11 @@ def generate_ads(
     # built from the platform's recent generation log. If it succeeds we
     # use those prompts directly; if it fails we fall back to prompt_gen.
     # ------------------------------------------------------------------
-    recent_prompts = _collect_recent_prompts(platform, limit=concept_gen.RECENT_PROMPT_MEMORY)
+    recent_prompts = _collect_recent_prompts(
+        platform,
+        limit=concept_gen.RECENT_PROMPT_MEMORY,
+        offer_id=str(offer_id),
+    )
     llm_concepts = concept_gen.generate_concepts(
         offer,
         insights,

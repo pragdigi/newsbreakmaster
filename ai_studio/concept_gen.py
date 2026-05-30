@@ -218,19 +218,23 @@ def _platform_voice(platform: Optional[str]) -> str:
 SYSTEM_PROMPT = (
     "You are a senior direct-response creative director. You write image-generation "
     "prompts for static social ads. Your job is to invent distinctly different "
-    "scenes for the same offer — never two prompts in one batch should describe "
-    "the same setting, props, character, copy, or composition. You have full "
-    "creative latitude to invent new angles, scenes, props, characters, and copy "
-    "as long as you stay truthful to the offer's category and never fabricate "
-    "specific medical, financial, or legal claims.\n\n"
-    "When the user attaches reference images, those are PROVEN WINNERS from "
-    "the same offer (or sibling offers on adjacent platforms). Study them "
-    "carefully — pay attention to composition, framing, lighting, colour "
-    "palette, layout of text, presence/style of CTAs, and the emotional "
-    "register of the imagery. Your concepts should INHERIT THE WINNING "
-    "VISUAL DNA (mood, framing logic, copy density, palette range) but never "
-    "duplicate a specific scene, character, prop combination, or headline "
-    "from the references. You are remixing what works, not copying it."
+    "scenes for THE OFFER NAMED IN THE USER PROMPT — never two prompts in one "
+    "batch should describe the same setting, props, character, copy, or "
+    "composition. You have full creative latitude to invent new angles, scenes, "
+    "props, characters, and copy as long as you stay truthful to the offer's "
+    "category and never fabricate specific medical, financial, or legal claims.\n\n"
+    "OFFER FIDELITY (highest priority): Every concept you emit must be "
+    "specifically about the offer named in the user prompt. Do NOT borrow "
+    "subject matter, conditions, body parts, ingredients, claims, brand "
+    "vocabulary, or copy themes from any reference image, recent prompt, or "
+    "any other source unless they explicitly belong to THIS offer. If a "
+    "reference depicts a different vertical (e.g. tinnitus when this offer "
+    "is heart-health), you may borrow ONLY the visual structure — "
+    "composition, framing, lighting, palette, copy density, CTA style — "
+    "and you must invent fresh subject matter that fits this offer.\n\n"
+    "Reference images are tagged in the user prompt as either "
+    "[SAME OFFER] (inherit full visual + tonal DNA) or [DIFFERENT OFFER — "
+    "structural style only]. Treat each tag literally."
 )
 
 
@@ -238,7 +242,12 @@ def _format_reference_summary(refs: Sequence[Dict[str, Any]]) -> str:
     """Short text recap of the visual references so the model can reason
     about them even before it 'looks' at the bytes. Helps Claude when an
     image content block is dropped, and helps Gemini ground multimodal
-    grounding to the right metadata."""
+    grounding to the right metadata.
+
+    Each row is prefixed with [SAME OFFER] or [DIFFERENT OFFER — structural
+    style only] so the LLM knows whether to inherit the full DNA or just
+    the visual scaffolding. The system prompt enforces this distinction.
+    """
     if not refs:
         return "(none)"
     rows: List[str] = []
@@ -251,8 +260,12 @@ def _format_reference_summary(refs: Sequence[Dict[str, Any]]) -> str:
         head = (r.get("headline") or "").strip().replace("\n", " ")
         if len(head) > 140:
             head = head[:137] + "..."
+        # Default to "different" when the flag is missing — safer for
+        # priming the model toward NOT borrowing subject matter.
+        same_offer = bool(r.get("same_offer"))
+        tag = "[SAME OFFER]" if same_offer else "[DIFFERENT OFFER — structural style only, do not borrow subject matter]"
         rows.append(
-            f"  Reference {i} [{platform} · CPA ${cpa or '—'} · conv "
+            f"  Reference {i} {tag} [{platform} · CPA ${cpa or '—'} · conv "
             f"{int(conv)} · score {score}] headline: {head}"
         )
     return "\n".join(rows)
@@ -305,12 +318,20 @@ def collect_reference_images(
 
     Strategy:
       1. Prefer winners attributed to this exact ``offer_id`` (any platform).
-      2. Top up with the highest-scoring proven winners across all platforms
-         so the model still gets visual grounding even for brand-new offers.
+         These are tagged ``same_offer=True`` and the prompt instructs the
+         LLM to inherit the full visual + tonal DNA.
+      2. If we still have room AND there are NO same-offer references,
+         backfill with the top cross-offer winners — capped at half the
+         limit so they don't dominate. These are tagged ``same_offer=False``
+         and the prompt instructs the LLM to borrow ONLY visual structure
+         (composition, palette, copy density) and explicitly NOT subject
+         matter, claims, conditions, or copy themes.
 
-    Each returned dict carries ``image_local_path``, ``b64`` (the raw
-    base64 string with no data-URI prefix), ``mime``, plus enough metadata
-    for the text recap (headline, metrics, source_platform).
+    The previous behaviour silently filled the entire reference budget
+    with cross-offer winners when no same-offer winners existed, which
+    caused new offers to inherit the dominant winner's category — e.g.
+    a fresh non-tinnitus offer would generate tinnitus-flavored ads
+    because all platform winners were tinnitus.
     """
     if limit <= 0:
         return []
@@ -330,31 +351,46 @@ def collect_reference_images(
 
     out: List[Dict[str, Any]] = []
     seen_paths: set = set()
-    for source in (primary, backfill):
-        for w in source:
-            if len(out) >= cap:
-                break
-            path = (w.get("image_local_path") or "").strip()
-            if not path or path in seen_paths:
-                continue
-            payload = _read_reference_image(path)
-            if not payload:
-                continue
-            b64, mime = payload
-            seen_paths.add(path)
-            out.append(
-                {
-                    "image_local_path": path,
-                    "b64": b64,
-                    "mime": mime,
-                    "headline": w.get("headline") or "",
-                    "metrics": w.get("metrics") or {},
-                    "score": w.get("score"),
-                    "source_platform": w.get("source_platform") or platform,
-                }
-            )
+
+    def _push(winner: Dict[str, Any], *, same_offer: bool) -> bool:
+        path = (winner.get("image_local_path") or "").strip()
+        if not path or path in seen_paths:
+            return False
+        payload = _read_reference_image(path)
+        if not payload:
+            return False
+        b64, mime = payload
+        seen_paths.add(path)
+        out.append(
+            {
+                "image_local_path": path,
+                "b64": b64,
+                "mime": mime,
+                "headline": winner.get("headline") or "",
+                "metrics": winner.get("metrics") or {},
+                "score": winner.get("score"),
+                "source_platform": winner.get("source_platform") or platform,
+                "source_offer_id": str(winner.get("offer_id") or ""),
+                "same_offer": same_offer,
+            }
+        )
+        return True
+
+    for w in primary:
         if len(out) >= cap:
             break
+        _push(w, same_offer=True)
+
+    if len(out) < cap and not [r for r in out if r.get("same_offer")]:
+        # No same-offer references at all → cautiously borrow from other
+        # offers, but cap their share so the LLM doesn't inherit a foreign
+        # category wholesale.
+        cross_cap = min(cap, max(1, cap // 2))
+        for w in backfill:
+            if len(out) >= cross_cap:
+                break
+            _push(w, same_offer=False)
+
     return out
 
 
@@ -394,22 +430,55 @@ def _build_user_prompt(
         )
     slots_text = "\n".join(slots_block)
 
+    same_offer_count = sum(1 for r in references if r.get("same_offer"))
+    cross_offer_count = len(references) - same_offer_count
     refs_text = _format_reference_summary(references)
-    refs_intro = (
-        f"\nVisual reference winners attached above ({len(references)} images) — "
-        "study composition, framing, palette, copy density, and CTA style. Inherit "
-        "the winning visual DNA, never copy a specific scene/character/headline:\n"
-        f"{refs_text}\n"
-    ) if references else ""
+    if references:
+        ref_lines = [
+            f"\nVisual reference winners attached above ({len(references)} images, "
+            f"{same_offer_count} from THIS offer, {cross_offer_count} from other offers)."
+        ]
+        if same_offer_count:
+            ref_lines.append(
+                "For [SAME OFFER] references: study composition, framing, palette, copy "
+                "density, and CTA style — inherit the winning visual DNA, never copy a "
+                "specific scene/character/headline."
+            )
+        if cross_offer_count:
+            ref_lines.append(
+                "For [DIFFERENT OFFER] references: borrow ONLY structural style "
+                "(composition, framing, lighting, palette range, copy density). DO NOT "
+                "borrow the subject matter, claims, conditions, body parts, ingredients, "
+                "or copy themes — those belong to a different offer's category."
+            )
+        ref_lines.append(refs_text + "\n")
+        refs_intro = "\n".join(ref_lines)
+    else:
+        refs_intro = ""
 
     voice_text = _platform_voice(platform)
 
-    return f"""Offer: {offer.get('name') or '(unnamed)'}
-Brand: {offer.get('brand_name') or '(none)'}
-Default headline: {offer.get('headline') or '(none)'}
-Default body: {offer.get('body') or '(none)'}
+    offer_name = offer.get('name') or '(unnamed)'
+    brand_name = offer.get('brand_name') or '(none)'
+    default_headline = offer.get('headline') or '(none)'
+    default_body = offer.get('body') or '(none)'
+
+    return f"""Offer: {offer_name}
+Brand: {brand_name}
+Default headline: {default_headline}
+Default body: {default_body}
 Default CTA: {offer.get('cta') or 'Learn More'}
 Landing URL: {offer.get('landing_url') or '(none)'}
+
+OFFER FOCUS (highest-priority constraint): every concept in this batch must
+be specifically about "{offer_name}" (brand: {brand_name}). Use the default
+headline and body above as the source of truth for what the offer is about,
+its category, mechanisms, and claims. NEVER write copy or build scenes
+around a different vertical's subject matter (e.g. tinnitus, blood sugar,
+prostate, hair loss) unless those terms appear literally in this offer's
+own headline / body. If a reference image or recent prompt is from a
+different offer, treat it as visual scaffolding only — never lift its
+condition, body part, ingredient, or claim into this batch.
 
 Target platform: {(platform or 'newsbreak').lower()}
 Platform voice brief — every concept must match this register:

@@ -1106,12 +1106,35 @@
       </div>
     </div>
 
-    <div class="nb-alert nb-alert-info" style="margin-top:12px;">
-      <strong>Inventory:</strong> ad sets launch with <em>Unlimited</em> inventory (NewsBreak + Scoopz + Premium Partners).
-      NewsBreak's public API doesn't expose the publisher-restriction field
-      (verified via /ad-set/create + /ad-set/update — both silently strip <code>trafficPlatforms</code> and <code>placements</code>).
-      To restrict to NewsBreak only, open the ad set in Ad Manager → <em>Placements</em> → tick <strong>NewsBreak</strong>.
+    {% if active_platform == 'newsbreak' %}
+    <div style="margin-top:16px;border-top:1px solid #1f2937;padding-top:16px;">
+      <label class="nb-label">Inventory <span class="nb-muted" style="font-weight:400;">(NewsBreak <code>platforms</code> field, added Apr 2026)</span></label>
+      <div class="nb-check-row" id="nb-platforms-mode">
+        <label><input type="radio" name="platforms_mode" value="all" checked> All inventory <span class="nb-muted">(default)</span></label>
+        <label><input type="radio" name="platforms_mode" value="custom"> Custom selection</label>
+      </div>
+      <div id="nb-platforms-custom" style="display:none;margin-top:10px;padding:12px;border:1px solid #1f2937;border-radius:8px;background:#0b0f17;">
+        <div style="font-size:0.85rem;color:#9ca3af;margin-bottom:8px;">Pick at least one. You may combine NewsBreak + Scoopz with at most one Premium-Partners option.</div>
+        <div class="nb-check-row" id="nb-platforms-list">
+          <label><input type="checkbox" name="platforms" value="NEWSBREAK"> NewsBreak <span class="nb-muted">(app + web)</span></label>
+          <label><input type="checkbox" name="platforms" value="SCOOPZ"> Scoopz</label>
+        </div>
+        <div style="margin-top:10px;font-size:0.85rem;color:#9ca3af;">Premium Partners <span class="nb-muted">(at most one)</span></div>
+        <div class="nb-check-row" id="nb-platforms-premium" style="margin-top:6px;">
+          <label><input type="radio" name="platforms_premium" value="" checked> None</label>
+          <label><input type="radio" name="platforms_premium" value="PREMIUM_PARTNERS_ALL"> All categories</label>
+          <label><input type="radio" name="platforms_premium" value="PREMIUM_PARTNERS_GAMING"> Gaming only</label>
+          <label><input type="radio" name="platforms_premium" value="PREMIUM_PARTNERS_NON_GAMING"> Non-gaming</label>
+        </div>
+        <div id="nb-platforms-warning" class="nb-hint" style="margin-top:8px;color:#fca5a5;display:none;"></div>
+      </div>
+      <div class="nb-hint" style="margin-top:6px;">
+        Default <em>All inventory</em> matches Meta's "All Placements" — NewsBreak app/web + Scoopz + every premium partner.
+        Choose <em>Custom</em> to restrict serving to specific surfaces (e.g. <code>NEWSBREAK</code> only).
+        See <a href="https://advertising-api.newsbreak.com/hc/en-us/articles/45950972191629-Platforms" target="_blank" rel="noopener">NewsBreak's <code>platforms</code> docs</a>.
+      </div>
     </div>
+    {% endif %}
   </div>
 
   <!-- 4 Conversion tracking -->
@@ -1390,6 +1413,27 @@
     });
   });
 
+  // Inventory / platforms picker (NewsBreak only — the markup block is
+  // rendered inside an active_platform check, so on SmartNews the
+  // querySelector calls below all return null and we silently skip.)
+  (function setupPlatformsPicker() {
+    const modeRadios = document.querySelectorAll('input[name="platforms_mode"]');
+    const wrap = document.getElementById('nb-platforms-custom');
+    const warning = document.getElementById('nb-platforms-warning');
+    if (!modeRadios.length || !wrap) return;
+
+    function syncMode() {
+      const mode = (document.querySelector('input[name="platforms_mode"]:checked') || {}).value;
+      wrap.style.display = mode === 'custom' ? 'block' : 'none';
+      if (mode !== 'custom' && warning) {
+        warning.style.display = 'none';
+        warning.textContent = '';
+      }
+    }
+    modeRadios.forEach(r => r.addEventListener('change', syncMode));
+    syncMode();
+  })();
+
   // Prevent submit if no creatives AND guarantee the file input carries the latest selection
   document.getElementById('launch-form').addEventListener('submit', function(e) {
     if (items.length === 0) {
@@ -1404,6 +1448,31 @@
       alert('Browser lost track of the uploaded files — please re-drop them and launch again.');
       dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
+    }
+
+    // NewsBreak custom inventory: enforce the API's exclusivity rules
+    // BEFORE we POST so the user gets an inline message instead of a
+    // generic 400 from /ad-set/create. APP_AND_WEB_UNLIMITED is implicit
+    // when mode=all (we just omit `platforms` from the request).
+    const platformsModeEl = document.querySelector('input[name="platforms_mode"]:checked');
+    if (platformsModeEl && platformsModeEl.value === 'custom') {
+      const checked = Array.from(document.querySelectorAll('input[name="platforms"]:checked')).map(i => i.value);
+      const premiumEl = document.querySelector('input[name="platforms_premium"]:checked');
+      const premium = premiumEl ? premiumEl.value : '';
+      const warning = document.getElementById('nb-platforms-warning');
+      const all = premium ? checked.concat([premium]) : checked;
+      if (all.length === 0) {
+        e.preventDefault();
+        if (warning) {
+          warning.textContent = 'Pick at least one surface, or switch back to "All inventory".';
+          warning.style.display = 'block';
+        } else {
+          alert('Pick at least one inventory surface, or switch back to "All inventory".');
+        }
+        const wrap = document.getElementById('nb-platforms-custom');
+        if (wrap) wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
     }
     const utm = (defU && defU.value || '').trim();
     if (utm) {

@@ -441,6 +441,72 @@ def dashboard():
     return render_template("dashboard.html", accounts=accounts, error=err)
 
 
+# NewsBreak Inventory / Platforms field — added 2026-04 per
+# https://advertising-api.newsbreak.com/hc/en-us/articles/45950972191629-Platforms
+# These constants mirror the validator on NewsBreak's side; we enforce
+# them client-side AND server-side so the user gets a clear message
+# instead of a generic "platforms[] is invalid" 400 from /ad-set/create.
+_NB_PLATFORM_VALUES = {
+    "APP_AND_WEB_UNLIMITED",
+    "NEWSBREAK",
+    "SCOOPZ",
+    "PREMIUM_PARTNERS_ALL",
+    "PREMIUM_PARTNERS_GAMING",
+    "PREMIUM_PARTNERS_NON_GAMING",
+}
+_NB_PLATFORM_PREMIUM_VALUES = {
+    "PREMIUM_PARTNERS_ALL",
+    "PREMIUM_PARTNERS_GAMING",
+    "PREMIUM_PARTNERS_NON_GAMING",
+}
+
+
+def _build_newsbreak_platforms(form) -> list[str] | None:
+    """Translate the launch-form `platforms_mode`/`platforms[]`/`platforms_premium`
+    triplet into the JSON list NewsBreak expects on `/ad-set/create`.
+
+    Returns:
+        - ``None`` to mean "omit the field" (NewsBreak then defaults to
+          ``["APP_AND_WEB_UNLIMITED"]``, identical to pre-Apr-2026 behavior).
+        - A validated list of enum strings otherwise.
+
+    Rules from NewsBreak's docs:
+      1. APP_AND_WEB_UNLIMITED is exclusive — must appear alone.
+      2. At most one PREMIUM_PARTNERS_* value may appear.
+      3. Duplicate entries are rejected.
+      4. Unknown values return 400.
+    """
+    mode = (form.get("platforms_mode") or "all").strip().lower()
+    if mode != "custom":
+        # Default = omit the field; lets the API pick its default.
+        return None
+
+    raw = [str(v).strip() for v in form.getlist("platforms")]
+    premium = (form.get("platforms_premium") or "").strip()
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in raw:
+        if not v or v not in _NB_PLATFORM_VALUES or v in seen:
+            continue
+        # Reject any premium value smuggled in as a checkbox — those go
+        # through the dedicated single-select to enforce the at-most-one
+        # rule. Skip silently rather than 500 the launch.
+        if v in _NB_PLATFORM_PREMIUM_VALUES or v == "APP_AND_WEB_UNLIMITED":
+            continue
+        seen.add(v)
+        out.append(v)
+
+    if premium and premium in _NB_PLATFORM_PREMIUM_VALUES and premium not in seen:
+        out.append(premium)
+
+    if not out:
+        # User picked "Custom" but cleared everything — be lenient and
+        # fall back to the API default rather than failing the launch.
+        return None
+    return out
+
+
 @app.route("/launch", methods=["GET", "POST"])
 def launch():
     adapter = _adapter()
@@ -640,14 +706,20 @@ def launch():
     ad_set_base["_brand_name"] = (request.form.get("brand_name") or "Advertiser").strip() or "Advertiser"
     ad_set_base["_cta"] = (request.form.get("cta") or "Learn More").strip() or "Learn More"
 
-    # Inventory scope (NewsBreak-only vs partner networks) is not exposed
-    # on the public advertising-api.newsbreak.com endpoints — verified
-    # 2026-04-17 via Render logs: both /ad-set/create and /ad-set/update
-    # silently strip `placements` and `trafficPlatforms` from the request
-    # (unknown-field whitelist). All ad sets launched via the public API
-    # run with "Unlimited" inventory until NewsBreak adds these fields,
-    # or until we wire up a Nova-cookie relay against the internal
-    # nova.newsbreak.com host.
+    # NewsBreak `platforms` field (added 2026-04 — see
+    # https://advertising-api.newsbreak.com/hc/en-us/articles/45950972191629-Platforms).
+    # Lives at the ad-set level alongside `targeting`, accepts a list of
+    # enum strings (NEWSBREAK, SCOOPZ, PREMIUM_PARTNERS_*, APP_AND_WEB_UNLIMITED).
+    # We collect it from the form here and pass through verbatim;
+    # bulk_launcher.bulk_launch spreads ad_set_base into the JSON body.
+    #
+    # Earlier attempts to use `placements` / `trafficPlatforms` were silently
+    # stripped — those fields never shipped publicly. The new `platforms`
+    # field IS supported and goes into the create_ad_set payload.
+    if platform == "newsbreak":
+        platforms_value = _build_newsbreak_platforms(request.form)
+        if platforms_value is not None:
+            ad_set_base["platforms"] = platforms_value
 
     ad_set_base = {k: v for k, v in ad_set_base.items() if v is not None}
 

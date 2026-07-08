@@ -228,10 +228,11 @@
           <button type="button" class="chip-filter" data-aspect="16:9">16:9</button>
           <button type="button" class="chip-filter" data-aspect="9:16">9:16</button>
         </div>
-        <div class="research-filter-group">
-          <label class="nb-check nb-small">
-            <input type="checkbox" id="library-include-consumed" /> Include consumed
-          </label>
+        <div class="research-filter-group" data-filter="library-status">
+          <span class="research-filter-label">Status:</span>
+          <button type="button" class="chip-filter active" data-status="unused">Unused</button>
+          <button type="button" class="chip-filter" data-status="used">Used</button>
+          <button type="button" class="chip-filter" data-status="">All</button>
         </div>
         <div class="research-filter-group" style="margin-left:auto;">
           <button type="button" id="library-refresh" class="nb-btn small">🔄 Refresh</button>
@@ -1177,7 +1178,8 @@
   let libraryAll = [];
   let libraryVisible = [];
   // platform '' means "all" — the backend merges across newsbreak + smartnews.
-  const libraryFilters = { platform: '', offer: '', aspect: '', includeConsumed: false };
+  // status: 'unused' (default backlog view) | 'used' | '' (all).
+  const libraryFilters = { platform: '', offer: '', aspect: '', status: 'unused' };
   let libraryFirstFetchDone = false;
 
   function setResearchMode(mode) {
@@ -1208,15 +1210,20 @@
       // Always ask for "all" so a session locked to NewsBreak can still
       // see SmartNews tiles. The browser-side platform chip narrows down.
       params.set('platform', 'all');
-      if (libraryFilters.includeConsumed) params.set('include_consumed', 'true');
+      // Always include consumed rows — the Status chips filter client-side
+      // so toggling Unused/Used/All never needs another round-trip.
+      params.set('include_consumed', 'true');
       const res = await fetch('/api/studio/library/list?' + params.toString());
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
       libraryAll = body.items || [];
       // Stash counts for the platform chips so we can show "(N)" badges.
       libraryAll._platformCounts = body.platform_counts || {};
+      libraryAll._unusedCount = body.unused_count || 0;
+      libraryAll._usedCount = body.used_count || 0;
       refreshLibraryOfferDropdown();
       refreshLibraryPlatformChips();
+      refreshLibraryStatusChips();
       applyLibraryFilters();
       updateLibraryCounts();
     } catch (e) {
@@ -1230,6 +1237,17 @@
       const p = b.dataset.platform || '';
       const n = p ? (counts[p] || 0) : libraryAll.length;
       // Strip any old count then re-append.
+      const base = b.textContent.replace(/\s*\(\d+\)\s*$/, '').trim();
+      b.textContent = `${base} (${n})`;
+    });
+  }
+
+  function refreshLibraryStatusChips() {
+    const unused = libraryAll._unusedCount || 0;
+    const used = libraryAll._usedCount || 0;
+    document.querySelectorAll('[data-filter="library-status"] .chip-filter').forEach(b => {
+      const s = b.dataset.status;
+      const n = s === 'unused' ? unused : s === 'used' ? used : unused + used;
       const base = b.textContent.replace(/\s*\(\d+\)\s*$/, '').trim();
       b.textContent = `${base} (${n})`;
     });
@@ -1253,11 +1271,13 @@
   }
 
   function applyLibraryFilters() {
-    const { platform, offer, aspect } = libraryFilters;
+    const { platform, offer, aspect, status } = libraryFilters;
     let rows = libraryAll.slice();
     if (platform) rows = rows.filter(it => String(it.platform || '') === platform);
     if (offer) rows = rows.filter(it => String(it.offer_id || '') === offer);
     if (aspect) rows = rows.filter(it => String(it.aspect || '') === aspect);
+    if (status === 'unused') rows = rows.filter(it => !it.consumed_at);
+    else if (status === 'used') rows = rows.filter(it => !!it.consumed_at);
     rows.sort((a, b) => (Date.parse(b.created_at || 0) || 0) - (Date.parse(a.created_at || 0) || 0));
     libraryVisible = rows;
     renderLibraryGrid();
@@ -1276,13 +1296,21 @@
     const platformLabel = platform === 'smartnews' ? 'SmartNews'
                         : platform === 'newsbreak' ? 'NewsBreak'
                         : platform;
+    let usedTitle = 'Already consumed by a Generate batch';
+    if (it.used_in) {
+      const u = it.used_in;
+      usedTitle = u.via === 'manual'
+        ? 'Manually marked used'
+        : `Used in a launch on ${u.platform || platform}${u.campaign_id ? ' · campaign ' + u.campaign_id : ''}${u.launched_at ? ' · ' + new Date(u.launched_at).toLocaleString() : ''}`;
+    }
+    const consumedWhen = it.consumed_at ? new Date(Date.parse(it.consumed_at)).toLocaleString() : '';
     return `
       <div class="studio-tile is-library${isConsumed ? ' is-consumed' : ''}" data-library-id="${escapeHtml(it.library_id)}" data-platform="${escapeHtml(platform)}">
         <div class="library-tile-img" style="--tile-aspect:${aspectCss};">
           <img src="${escapeHtml(it.image_url || '')}" alt="${escapeHtml(it.style_name || '')}" loading="lazy" />
           <span class="library-tile-aspect-chip">${escapeHtml(aspect)}</span>
           ${platformLabel ? `<span class="library-tile-platform-chip platform-${escapeHtml(platform)}">${escapeHtml(platformLabel)}</span>` : ''}
-          ${isConsumed ? '<span class="library-tile-consumed-chip" title="Already consumed by a Generate batch">consumed</span>' : ''}
+          ${isConsumed ? `<span class="library-tile-consumed-chip" title="${escapeHtml(usedTitle)}${consumedWhen ? ' (' + escapeHtml(consumedWhen) + ')' : ''}">used</span>` : ''}
         </div>
         <div class="studio-tile-meta">
           <strong title="${escapeHtml(it.style_name || it.style_id || '')}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;display:inline-block;">
@@ -1297,6 +1325,10 @@
           </a>
           <button type="button" class="nb-btn small" data-act="library-send" data-library-id="${escapeHtml(it.library_id)}">
             Send to launch
+          </button>
+          <button type="button" class="nb-btn small" data-act="library-mark" data-library-id="${escapeHtml(it.library_id)}" data-consumed="${isConsumed ? '0' : '1'}"
+                  title="${isConsumed ? 'Return this image to the unused backlog' : 'Mark this image as used without launching it'}">
+            ${isConsumed ? '↩ Mark unused' : '✓ Mark used'}
           </button>
         </div>
       </div>`;
@@ -1362,11 +1394,63 @@
         }
       });
     });
+
+    scope.querySelectorAll('[data-act="library-mark"]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.libraryId;
+        const item = libraryAll.find(x => x.library_id === id);
+        if (!item) return;
+        const markUsed = btn.dataset.consumed === '1';
+        btn.disabled = true;
+        btn.textContent = '⌛…';
+        try {
+          const res = await fetch('/api/studio/library/mark', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              library_ids: [id],
+              consumed: markUsed,
+              platform: item.platform || '',
+            }),
+          });
+          const body = await res.json();
+          if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+          // Patch the local copy so counts + filters stay in sync without
+          // a full refetch.
+          if (markUsed) {
+            item.consumed_at = new Date().toISOString();
+            item.used_in = { platform: item.platform, via: 'manual' };
+            libraryAll._unusedCount = Math.max(0, (libraryAll._unusedCount || 0) - 1);
+            libraryAll._usedCount = (libraryAll._usedCount || 0) + 1;
+          } else {
+            item.consumed_at = null;
+            delete item.used_in;
+            libraryAll._usedCount = Math.max(0, (libraryAll._usedCount || 0) - 1);
+            libraryAll._unusedCount = (libraryAll._unusedCount || 0) + 1;
+          }
+          refreshLibraryStatusChips();
+          applyLibraryFilters();
+          updateLibraryCounts();
+        } catch (e) {
+          btn.textContent = '⚠ Failed';
+          setTimeout(() => {
+            btn.textContent = markUsed ? '✓ Mark used' : '↩ Mark unused';
+            btn.disabled = false;
+          }, 2200);
+        }
+      });
+    });
   }
 
   function updateLibraryCounts() {
     const dest = document.getElementById('research-mode-library-count');
-    if (dest) dest.textContent = libraryAll.length ? ` (${libraryAll.length})` : '';
+    if (dest) {
+      const unused = libraryAll._unusedCount || 0;
+      const used = libraryAll._usedCount || 0;
+      dest.textContent = (unused + used)
+        ? ` (${unused} unused${used ? ' · ' + used + ' used' : ''})`
+        : (libraryAll.length ? ` (${libraryAll.length})` : '');
+    }
     const ideasDest = document.getElementById('research-mode-ideas-count');
     if (ideasDest) ideasDest.textContent = researchAll.length ? ` (${researchAll.length})` : '';
   }
@@ -1400,10 +1484,14 @@
       applyLibraryFilters();
     });
   });
-  const libIncEl = document.getElementById('library-include-consumed');
-  if (libIncEl) libIncEl.addEventListener('change', () => {
-    libraryFilters.includeConsumed = libIncEl.checked;
-    loadLibrary();
+  document.querySelectorAll('[data-filter="library-status"] .chip-filter').forEach(b => {
+    b.addEventListener('click', () => {
+      libraryFilters.status = b.dataset.status || '';
+      document
+        .querySelectorAll('[data-filter="library-status"] .chip-filter')
+        .forEach(x => x.classList.toggle('active', x === b));
+      applyLibraryFilters();
+    });
   });
   const libRefreshEl = document.getElementById('library-refresh');
   if (libRefreshEl) libRefreshEl.addEventListener('click', loadLibrary);
@@ -1433,11 +1521,13 @@
   // Default to ideas mode + pre-fetch library count for the toggle badge
   // (so users can see "🖼 Prebuilt images (20)" without clicking).
   setResearchMode('ideas');
-  fetch('/api/studio/library/list?platform=all')
+  fetch('/api/studio/library/list?platform=all&include_consumed=true')
     .then(r => r.ok ? r.json() : { items: [] })
     .then(b => {
       libraryAll = b.items || [];
       libraryAll._platformCounts = b.platform_counts || {};
+      libraryAll._unusedCount = b.unused_count || 0;
+      libraryAll._usedCount = b.used_count || 0;
       updateLibraryCounts();
     })
     .catch(() => {});

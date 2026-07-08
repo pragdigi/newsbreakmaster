@@ -286,6 +286,9 @@
       <button type="button" class="nb-btn" id="sn-studio-generate" style="background:#4f46e5;border-color:#4f46e5;color:#fff;">
         ✨ Generate with AI (10)
       </button>
+      <button type="button" class="nb-btn" id="sn-library-use">
+        📚 Use from library
+      </button>
       <span class="nb-muted" style="font-size:13px;">
         Uses your offer + winners to render a batch of on-brand 1:1 ads and drops them into the queue below.
       </span>
@@ -780,11 +783,12 @@
         items.push({
           file: f,
           ad_name: 'Ad ' + n,
-          headline: defH.value || '',
+          headline: (opts.headlines && opts.headlines[i]) || defH.value || '',
           description: defD.value || '',
           landing_url: defL.value || '',
           url: URL.createObjectURL(f),
           aiBatch: !!opts.aiBatch,
+          libraryId: (opts.libraryIds && opts.libraryIds[i]) || null,
         });
       });
       renderAll();
@@ -898,6 +902,18 @@
         addHidden('description_' + i,      it.description);
         addHidden('landing_url_' + i,      appendUtm(it.landing_url, utmTail));
       });
+
+      // Library mark-off: send the ids of creatives that came from the
+      // prebuilt library so the server can stamp them used on success.
+      var libIds = items.map(function(it){ return it.libraryId; }).filter(Boolean);
+      if (libIds.length) {
+        var lh = document.createElement('input');
+        lh.type = 'hidden';
+        lh.name = 'library_ids';
+        lh.value = libIds.join(',');
+        lh.setAttribute('data-sn-dropzone-generated', '1');
+        holder.appendChild(lh);
+      }
 
       form.appendChild(holder);
     });
@@ -1215,6 +1231,9 @@
       <button type="button" class="nb-btn" id="nb-studio-generate" style="background:#4f46e5;border-color:#4f46e5;color:#fff;">
         ✨ Generate with AI (10)
       </button>
+      <button type="button" class="nb-btn" id="nb-library-use">
+        📚 Use from library
+      </button>
       <span class="nb-muted" style="font-size:13px;">
         Pulls your saved offer + winners, produces 10 1:1 ads and feeds them to the dropzone.
       </span>
@@ -1364,14 +1383,15 @@
   function addFiles(fileList, opts) {
     opts = opts || {};
     const allowed = Array.from(fileList).filter(f => f && f.type && (f.type.startsWith('image/') || f.type.startsWith('video/')));
-    allowed.forEach(f => {
+    allowed.forEach((f, i) => {
       items.push({
         file: f,
-        headline: defH.value || '',
+        headline: (opts.headlines && opts.headlines[i]) || defH.value || '',
         body: defB.value || '',
         landing_url: defL.value || '',
         url: URL.createObjectURL(f),
         aiBatch: !!opts.aiBatch,
+        libraryId: (opts.libraryIds && opts.libraryIds[i]) || null,
       });
     });
     renderAll();
@@ -1448,6 +1468,19 @@
       alert('Browser lost track of the uploaded files — please re-drop them and launch again.');
       dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
+    }
+
+    // Library mark-off: send the ids of creatives that came from the
+    // prebuilt library so the server can stamp them used on success.
+    this.querySelectorAll('[data-nb-library-ids]').forEach(el => el.remove());
+    const submitLibIds = items.map(it => it.libraryId).filter(Boolean);
+    if (submitLibIds.length) {
+      const lh = document.createElement('input');
+      lh.type = 'hidden';
+      lh.name = 'library_ids';
+      lh.value = submitLibIds.join(',');
+      lh.setAttribute('data-nb-library-ids', '1');
+      this.appendChild(lh);
     }
 
     // NewsBreak custom inventory: enforce the API's exclusivity rules
@@ -1880,6 +1913,220 @@
       }
     } catch (err) {
       setStatus('Error: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();
+</script>
+
+<style>
+/* ========= "Use from library" picker ========= */
+.lib-picker-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.lib-picker-panel {
+  background: var(--surface); border-radius: var(--radius);
+  width: min(960px, 100%); max-height: 86vh;
+  display: flex; flex-direction: column;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.lib-picker-head, .lib-picker-foot {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 18px; flex-wrap: wrap;
+}
+.lib-picker-head { border-bottom: 1px solid rgba(255,255,255,0.08); }
+.lib-picker-foot { border-top: 1px solid rgba(255,255,255,0.08); justify-content: flex-end; }
+.lib-picker-body { overflow-y: auto; padding: 16px 18px; flex: 1; }
+.lib-picker-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;
+}
+.lib-picker-tile {
+  position: relative; border: 2px solid transparent; border-radius: 8px;
+  overflow: hidden; cursor: pointer; background: rgba(255,255,255,0.03);
+}
+.lib-picker-tile img { width: 100%; aspect-ratio: 1/1; object-fit: cover; display: block; }
+.lib-picker-tile.selected { border-color: var(--accent); }
+.lib-picker-tile .lib-picker-check {
+  position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
+  border-radius: 50%; background: rgba(15,20,25,0.75); color: transparent;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; border: 1px solid rgba(255,255,255,0.35);
+}
+.lib-picker-tile.selected .lib-picker-check { background: var(--accent); color: #fff; border-color: var(--accent); }
+.lib-picker-tile .lib-picker-caption {
+  padding: 6px 8px; font-size: 11px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+</style>
+<script>
+/* ========= "Use from library" picker =========
+   Lets the operator pull banked (unconsumed) prebuilt-library images
+   straight into the launch dropzone. Selected items ride along in the
+   form as `library_ids` and get marked used when the launch succeeds. */
+(function () {
+  var platform = {{ active_platform|tojson }};
+  var cfg = platform === 'smartnews'
+    ? { buttonId: 'sn-library-use', statusId: 'sn-studio-gen-status', offerSelectId: 'sn-offer-ref' }
+    : { buttonId: 'nb-library-use', statusId: 'nb-studio-gen-status', offerSelectId: 'offer_ref' };
+  var btn = document.getElementById(cfg.buttonId);
+  if (!btn) return;
+  var statusEl = document.getElementById(cfg.statusId);
+  function setStatus(msg) { if (statusEl) statusEl.textContent = msg || ''; }
+  function getDropzoneApi() {
+    return platform === 'smartnews' ? window.snDropzone : window.nbDropzone;
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  }
+
+  var overlay = null;
+  var allItems = [];
+  var selected = {};   // library_id -> true
+
+  function close() {
+    if (overlay) { overlay.remove(); overlay = null; }
+    selected = {};
+  }
+
+  function visibleItems() {
+    var offerSel = overlay ? overlay.querySelector('#lib-picker-offer') : null;
+    var offer = offerSel ? offerSel.value : '';
+    return offer ? allItems.filter(function (it) { return String(it.offer_id || '') === offer; }) : allItems;
+  }
+
+  function renderGrid() {
+    var grid = overlay.querySelector('.lib-picker-grid');
+    var rows = visibleItems();
+    if (!rows.length) {
+      grid.innerHTML = '<em class="nb-muted" style="grid-column:1/-1;">No unused library images' +
+        (allItems.length ? ' for this offer.' : ' banked yet — run a top-up in AI Studio.') + '</em>';
+    } else {
+      grid.innerHTML = rows.map(function (it) {
+        var sel = selected[it.library_id] ? ' selected' : '';
+        return '<div class="lib-picker-tile' + sel + '" data-library-id="' + esc(it.library_id) + '">' +
+          '<img src="' + esc(it.image_url) + '" alt="" loading="lazy">' +
+          '<span class="lib-picker-check">✓</span>' +
+          '<div class="lib-picker-caption" title="' + esc(it.headline || it.style_name || '') + '">' +
+            esc(it.style_name || it.style_id || '') + (it.aspect ? ' · ' + esc(it.aspect) : '') +
+          '</div></div>';
+      }).join('');
+    }
+    grid.querySelectorAll('.lib-picker-tile').forEach(function (tile) {
+      tile.addEventListener('click', function () {
+        var id = tile.dataset.libraryId;
+        if (selected[id]) delete selected[id]; else selected[id] = true;
+        tile.classList.toggle('selected', !!selected[id]);
+        updateFoot();
+      });
+    });
+    updateFoot();
+  }
+
+  function updateFoot() {
+    var n = Object.keys(selected).length;
+    var addBtn = overlay.querySelector('#lib-picker-add');
+    addBtn.textContent = n ? ('Add ' + n + ' to launch') : 'Add to launch';
+    addBtn.disabled = n === 0;
+    var selAllBtn = overlay.querySelector('#lib-picker-select-all');
+    var vis = visibleItems();
+    selAllBtn.textContent = (vis.length && vis.every(function (it) { return selected[it.library_id]; }))
+      ? 'Deselect all' : 'Select all';
+  }
+
+  async function addSelected() {
+    var chosen = allItems.filter(function (it) { return selected[it.library_id]; });
+    if (!chosen.length) return;
+    var api = getDropzoneApi();
+    if (!api || typeof api.addFiles !== 'function') {
+      setStatus('Dropzone API missing — reload and try again.');
+      close();
+      return;
+    }
+    var addBtn = overlay.querySelector('#lib-picker-add');
+    addBtn.disabled = true;
+    addBtn.textContent = 'Fetching images…';
+    var files = [], ids = [], headlines = [], failed = 0;
+    for (var i = 0; i < chosen.length; i++) {
+      var it = chosen[i];
+      try {
+        var resp = await fetch(it.image_url);
+        if (!resp.ok) { failed++; continue; }
+        var blob = await resp.blob();
+        var mime = blob.type || it.mime || 'image/png';
+        var ext = (mime.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        files.push(new File([blob], 'lib-' + String(it.library_id).slice(0, 8) + '-' + i + '.' + ext, { type: mime }));
+        ids.push(it.library_id);
+        headlines.push(it.headline || '');
+      } catch (_e) { failed++; }
+    }
+    if (files.length) api.addFiles(files, { libraryIds: ids, headlines: headlines });
+    close();
+    setStatus('Added ' + files.length + ' from library' + (failed ? ' (' + failed + ' failed to load)' : '') +
+      ' — they will be marked used when the launch succeeds.');
+  }
+
+  btn.addEventListener('click', async function () {
+    btn.disabled = true;
+    setStatus('Loading library…');
+    try {
+      var res = await fetch('/api/studio/library/list?platform=' + encodeURIComponent(platform));
+      var body = await res.json();
+      if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+      allItems = body.items || [];
+      setStatus('');
+      overlay = document.createElement('div');
+      overlay.className = 'lib-picker-overlay';
+      var offers = {};
+      allItems.forEach(function (it) {
+        var k = String(it.offer_id || '');
+        if (k) offers[k] = (offers[k] || 0) + 1;
+      });
+      var offerOpts = Object.entries(offers).sort(function (a, b) { return b[1] - a[1]; })
+        .map(function (e) { return '<option value="' + esc(e[0]) + '">' + esc(e[0]) + ' (' + e[1] + ')</option>'; })
+        .join('');
+      overlay.innerHTML =
+        '<div class="lib-picker-panel">' +
+          '<div class="lib-picker-head">' +
+            '<strong>Use from library</strong>' +
+            '<span class="nb-muted" style="font-size:13px;">' + allItems.length + ' unused prebuilt image' + (allItems.length === 1 ? '' : 's') + ' on ' + esc(platform) + '</span>' +
+            '<select id="lib-picker-offer" class="nb-select" style="width:auto;margin-left:auto;">' +
+              '<option value="">All offers (' + allItems.length + ')</option>' + offerOpts +
+            '</select>' +
+            '<button type="button" class="nb-btn" id="lib-picker-select-all">Select all</button>' +
+            '<button type="button" class="nb-btn" id="lib-picker-close">✕</button>' +
+          '</div>' +
+          '<div class="lib-picker-body"><div class="lib-picker-grid"></div></div>' +
+          '<div class="lib-picker-foot">' +
+            '<span class="nb-muted" style="font-size:13px;margin-right:auto;">Selected items are marked used automatically when the launch succeeds.</span>' +
+            '<button type="button" class="nb-btn" id="lib-picker-cancel">Cancel</button>' +
+            '<button type="button" class="nb-btn nb-btn-primary" id="lib-picker-add" disabled>Add to launch</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      // Preselect the offer filter to match the launch form's offer, if any.
+      var formOffer = document.getElementById(cfg.offerSelectId);
+      var offerSel = overlay.querySelector('#lib-picker-offer');
+      if (formOffer && formOffer.value && offers[formOffer.value]) offerSel.value = formOffer.value;
+      offerSel.addEventListener('change', renderGrid);
+      overlay.querySelector('#lib-picker-close').addEventListener('click', close);
+      overlay.querySelector('#lib-picker-cancel').addEventListener('click', close);
+      overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+      overlay.querySelector('#lib-picker-select-all').addEventListener('click', function () {
+        var vis = visibleItems();
+        var allSel = vis.length && vis.every(function (it) { return selected[it.library_id]; });
+        vis.forEach(function (it) {
+          if (allSel) delete selected[it.library_id]; else selected[it.library_id] = true;
+        });
+        renderGrid();
+      });
+      overlay.querySelector('#lib-picker-add').addEventListener('click', addSelected);
+      renderGrid();
+    } catch (err) {
+      setStatus('Library error: ' + err.message);
     } finally {
       btn.disabled = false;
     }

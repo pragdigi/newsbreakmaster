@@ -104,6 +104,42 @@ class StorageLibraryTests(unittest.TestCase):
             self.assertEqual(len(remaining), 1)
             self.assertIsNone(remaining[0]["consumed_at"])
 
+    def test_set_library_consumed_by_id_and_back(self):
+        with _TempStorage():
+            import storage
+
+            a = storage.append_library_item({"offer_id": "of1"}, platform="newsbreak")
+            b = storage.append_library_item({"offer_id": "of1"}, platform="newsbreak")
+
+            used_in = {"platform": "newsbreak", "campaign_id": "c-1", "via": "launch_form"}
+            updated = storage.set_library_consumed(
+                [a["library_id"]], True, platform="newsbreak", used_in=used_in
+            )
+            self.assertEqual(len(updated), 1)
+            self.assertEqual(updated[0]["library_id"], a["library_id"])
+            self.assertIsNotNone(updated[0]["consumed_at"])
+            self.assertEqual(updated[0]["used_in"]["campaign_id"], "c-1")
+
+            # b untouched; unused listing only shows b.
+            remaining = storage.list_library_items(platform="newsbreak", offer_id="of1")
+            self.assertEqual([r["library_id"] for r in remaining], [b["library_id"]])
+
+            # Mark back unused — consumed_at + used_in cleared.
+            reverted = storage.set_library_consumed(
+                [a["library_id"]], False, platform="newsbreak"
+            )
+            self.assertEqual(len(reverted), 1)
+            self.assertIsNone(reverted[0]["consumed_at"])
+            self.assertNotIn("used_in", reverted[0])
+            self.assertEqual(
+                len(storage.list_library_items(platform="newsbreak", offer_id="of1")), 2
+            )
+
+            # Unknown ids are a no-op.
+            self.assertEqual(
+                storage.set_library_consumed(["nope"], True, platform="newsbreak"), []
+            )
+
     def test_consume_skips_other_offers(self):
         with _TempStorage():
             import storage

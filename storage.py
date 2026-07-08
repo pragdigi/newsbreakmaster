@@ -693,6 +693,57 @@ def consume_library_items(
     return chosen
 
 
+def set_library_consumed(
+    library_ids: List[str],
+    consumed: bool,
+    *,
+    platform: str = DEFAULT_PLATFORM,
+    used_in: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Mark specific library rows used (``consumed_at=now``) or unused.
+
+    Unlike :func:`consume_library_items` (FIFO by offer), this targets exact
+    ``library_id`` values — used by the launch flow's "Use from library"
+    picker and by the manual mark-used / mark-unused toggles in the studio
+    Research tab. When marking used, ``used_in`` (e.g. ``{"platform": ...,
+    "campaign_id": ...}``) is stamped on the row so there's a forensic
+    trail of which launch consumed which prebuilt image. Marking unused
+    clears both ``consumed_at`` and ``used_in``.
+
+    Returns the updated rows (empty when nothing matched).
+    """
+    wanted = {str(x) for x in (library_ids or []) if str(x).strip()}
+    if not wanted:
+        return []
+    path = _library_file(platform)
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    now = datetime.now(timezone.utc).isoformat()
+    updated: List[Dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("library_id")) not in wanted:
+            continue
+        if consumed:
+            row["consumed_at"] = now
+            if used_in:
+                row["used_in"] = used_in
+        else:
+            row["consumed_at"] = None
+            row.pop("used_in", None)
+        updated.append(row)
+    if not updated:
+        return []
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, default=str) + "\n")
+    shutil.move(tmp, path)
+    return updated
+
+
 def update_generation(gen_id: str, patch: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Optional[Dict[str, Any]]:
     """Rewrite the jsonl in place with ``patch`` applied to the matching row.
 

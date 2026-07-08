@@ -335,6 +335,44 @@ def _studio_link_launch_if_any(platform: str, gen_id, result) -> None:
         app.logger.warning("studio link_launch failed: %s", exc)
 
 
+def _mark_library_used_if_any(platform: str, form, result) -> None:
+    """Auto mark-off prebuilt library items consumed by a launch.
+
+    The launch form's "Use from library" picker submits the chosen ids in a
+    hidden ``library_ids`` field (comma-separated). When the launch actually
+    succeeded we stamp those rows ``consumed_at`` + ``used_in`` so the
+    backlog view stays honest. Failed launches leave the items unused so
+    the operator can retry without losing them.
+    """
+    raw = (form.get("library_ids") or "").strip()
+    if not raw:
+        return
+    ids = [x.strip() for x in raw.split(",") if x.strip()]
+    if not ids:
+        return
+    if not isinstance(result, dict):
+        return
+    ok = bool(result.get("success") or result.get("ok"))
+    if not ok:
+        return
+    used_in = {
+        "platform": platform,
+        "campaign_id": result.get("campaign_id"),
+        "launched_at": datetime.now(timezone.utc).isoformat(),
+        "via": "launch_form",
+    }
+    try:
+        updated = storage.set_library_consumed(
+            ids, True, platform=platform, used_in=used_in
+        )
+        app.logger.info(
+            "library mark-off: %d/%d items marked used (platform=%s campaign=%s)",
+            len(updated), len(ids), platform, result.get("campaign_id"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning("library mark-off failed: %s", exc)
+
+
 @app.route("/platform/switch", methods=["POST"])
 def platform_switch():
     target = normalize_platform(request.form.get("platform") or request.args.get("platform"))
@@ -543,6 +581,7 @@ def launch():
             pair_builder=creative_pair_from_square,
         )
         _studio_link_launch_if_any(platform, request.form.get("studio_gen_id"), result)
+        _mark_library_used_if_any(platform, request.form, result)
         return render_template(
             "launch.html",
             accounts=account_options,
@@ -761,6 +800,7 @@ def launch():
         pass
 
     _studio_link_launch_if_any(platform, request.form.get("studio_gen_id"), result)
+    _mark_library_used_if_any(platform, request.form, result)
 
     return render_template(
         "launch.html",
@@ -2138,22 +2178,36 @@ def api_studio_library_list():
     )
     out = []
     per_platform_counts: Dict[str, int] = {}
+    per_platform_usage: Dict[str, Dict[str, int]] = {}
+    total_unused = 0
+    total_used = 0
     for plat in targets:
         try:
+            # Always list everything so used/unused counts stay accurate
+            # regardless of the include_consumed toggle; filter below.
             rows = storage.list_library_items(
                 platform=plat,
                 offer_id=offer_id,
-                include_consumed=include_consumed,
+                include_consumed=True,
             )
         except Exception as exc:  # noqa: BLE001
             app.logger.exception("studio/library/list failed for %s", plat)
             continue
         kept = 0
+        n_used = 0
+        n_unused = 0
         for row in rows:
             filename = (row.get("filename") or "").strip()
             if not filename:
                 # Stale rows where the render failed before we could patch
                 # the filename in. Skip — they have nothing to show.
+                continue
+            is_consumed = bool(row.get("consumed_at"))
+            if is_consumed:
+                n_used += 1
+            else:
+                n_unused += 1
+            if is_consumed and not include_consumed:
                 continue
             item = dict(row)
             item["platform"] = plat
@@ -2163,11 +2217,17 @@ def api_studio_library_list():
             out.append(item)
             kept += 1
         per_platform_counts[plat] = kept
+        per_platform_usage[plat] = {"unused": n_unused, "used": n_used}
+        total_unused += n_unused
+        total_used += n_used
     out.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
     return jsonify(
         {
             "platforms": targets,
             "platform_counts": per_platform_counts,
+            "platform_usage": per_platform_usage,
+            "unused_count": total_unused,
+            "used_count": total_used,
             "items": out,
             "count": len(out),
         }
@@ -2207,6 +2267,47 @@ def api_studio_library_topup():
         app.logger.exception("studio/library/topup failed")
         return jsonify({"error": str(exc)}), 500
     return jsonify(result)
+
+
+@app.route("/api/studio/library/mark", methods=["POST"])
+def api_studio_library_mark():
+    """Manually mark library items used / unused (housekeeping toggles).
+
+    Body: {library_ids: [...], consumed: bool, platform: "newsbreak"|...}
+    Marking used stamps ``used_in.via = "manual"`` so it's distinguishable
+    from launch-driven consumption; marking unused clears the trail.
+    """
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    data = request.get_json(force=True, silent=True) or {}
+    ids = [str(x).strip() for x in (data.get("library_ids") or []) if str(x).strip()]
+    if not ids:
+        return jsonify({"error": "library_ids required"}), 400
+    consumed = bool(data.get("consumed", True))
+    platform = normalize_platform(data.get("platform") or _active_platform())
+    used_in = None
+    if consumed:
+        used_in = {
+            "platform": platform,
+            "via": "manual",
+            "launched_at": None,
+        }
+    try:
+        updated = storage.set_library_consumed(
+            ids, consumed, platform=platform, used_in=used_in
+        )
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("studio/library/mark failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "updated": len(updated),
+            "consumed": consumed,
+            "library_ids": [r.get("library_id") for r in updated],
+        }
+    )
 
 
 @app.route("/studio/library-image/<platform>/<path:filename>")

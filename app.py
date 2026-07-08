@@ -2462,6 +2462,124 @@ def api_studio_library_mark():
     )
 
 
+_LIBRARY_EXPORT_FIELDS = [
+    "library_id",
+    "platform",
+    "offer_id",
+    "style_id",
+    "style_name",
+    "aspect",
+    "headline",
+    "prompt",
+    "model",
+    "status",
+    "created_at",
+    "consumed_at",
+    "used_via",
+    "used_campaign_id",
+]
+
+
+@app.route("/api/studio/library/export", methods=["GET"])
+def api_studio_library_export():
+    """Download the banked library prompts as CSV or JSON.
+
+    Lets the operator feed the stashed ideas (full image-generation prompt
+    + headline/style metadata) into other tools — e.g. generating the same
+    concepts for Facebook. Honors the same filters as the Research view:
+
+      format   : csv (default) | json
+      status   : unused (default) | used | all
+      platform : "" / "all" (default) | newsbreak | smartnews | ...
+      offer_id : optional exact-match filter
+    """
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    import csv
+    import io
+    import json as _json
+
+    fmt = (request.args.get("format") or "csv").strip().lower()
+    if fmt not in ("csv", "json"):
+        return jsonify({"error": "format must be csv or json"}), 400
+    status = (request.args.get("status") or "unused").strip().lower()
+    if status not in ("unused", "used", "all"):
+        return jsonify({"error": "status must be unused, used or all"}), 400
+    raw_platform = (request.args.get("platform") or "").strip().lower()
+    if raw_platform in ("", "all"):
+        targets = list(PLATFORMS)
+    else:
+        targets = [normalize_platform(raw_platform)]
+    offer_id = (request.args.get("offer_id") or "").strip() or None
+
+    rows: List[Dict[str, Any]] = []
+    for plat in targets:
+        try:
+            items = storage.list_library_items(
+                platform=plat, offer_id=offer_id, include_consumed=True
+            )
+        except Exception:  # noqa: BLE001
+            app.logger.exception("studio/library/export: list failed for %s", plat)
+            continue
+        for it in items:
+            consumed = bool(it.get("consumed_at"))
+            if status == "unused" and consumed:
+                continue
+            if status == "used" and not consumed:
+                continue
+            used_in = it.get("used_in") or {}
+            rows.append(
+                {
+                    "library_id": it.get("library_id"),
+                    "platform": plat,
+                    "offer_id": it.get("offer_id"),
+                    "style_id": it.get("style_id"),
+                    "style_name": it.get("style_name"),
+                    "aspect": it.get("aspect"),
+                    "headline": it.get("headline"),
+                    "prompt": it.get("prompt"),
+                    "model": it.get("model"),
+                    "status": "used" if consumed else "unused",
+                    "created_at": it.get("created_at"),
+                    "consumed_at": it.get("consumed_at"),
+                    "used_via": used_in.get("via"),
+                    "used_campaign_id": used_in.get("campaign_id"),
+                }
+            )
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    filename = f"library-prompts-{status}-{stamp}.{fmt}"
+    if fmt == "json":
+        payload = _json.dumps(
+            {
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "status": status,
+                "platforms": targets,
+                "count": len(rows),
+                "items": rows,
+            },
+            indent=2,
+            default=str,
+        )
+        return Response(
+            payload,
+            mimetype="application/json",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_LIBRARY_EXPORT_FIELDS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 @app.route("/studio/library-image/<platform>/<path:filename>")
 def library_image(platform, filename):
     guard = _studio_required()

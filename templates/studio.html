@@ -237,6 +237,8 @@
         <div class="research-filter-group" style="margin-left:auto;">
           <button type="button" id="library-refresh" class="nb-btn small">🔄 Refresh</button>
           <button type="button" id="library-download-all" class="nb-btn small" disabled>Download all visible</button>
+          <button type="button" id="library-export-csv" class="nb-btn small" title="Download the filtered ideas' prompts + headlines as CSV — feed them to another generator (Facebook, etc.)">⬇ Prompts CSV</button>
+          <button type="button" id="library-export-json" class="nb-btn small" title="Same export as JSON">⬇ JSON</button>
         </div>
       </div>
 
@@ -1495,6 +1497,20 @@
   });
   const libRefreshEl = document.getElementById('library-refresh');
   if (libRefreshEl) libRefreshEl.addEventListener('click', loadLibrary);
+
+  // Prompt export — mirrors the active platform / offer / status filters.
+  function libraryExportUrl(fmt) {
+    const params = new URLSearchParams();
+    params.set('format', fmt);
+    params.set('status', libraryFilters.status || 'all');
+    params.set('platform', libraryFilters.platform || 'all');
+    if (libraryFilters.offer) params.set('offer_id', libraryFilters.offer);
+    return '/api/studio/library/export?' + params.toString();
+  }
+  const libExpCsvEl = document.getElementById('library-export-csv');
+  if (libExpCsvEl) libExpCsvEl.addEventListener('click', () => { window.location.href = libraryExportUrl('csv'); });
+  const libExpJsonEl = document.getElementById('library-export-json');
+  if (libExpJsonEl) libExpJsonEl.addEventListener('click', () => { window.location.href = libraryExportUrl('json'); });
 
   const libDlAllEl = document.getElementById('library-download-all');
   if (libDlAllEl) libDlAllEl.addEventListener('click', async () => {

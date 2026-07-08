@@ -157,6 +157,62 @@ class StorageLibraryTests(unittest.TestCase):
             self.assertEqual(counts.get("of2", 0), 1)
 
 
+class LibraryExportTests(unittest.TestCase):
+    def test_export_csv_and_json_honor_status_filter(self):
+        with _TempStorage():
+            import app as _app
+            import storage
+
+            a = storage.append_library_item(
+                {
+                    "offer_id": "of1",
+                    "style_id": "s1",
+                    "style_name": "Stack",
+                    "headline": "H1",
+                    "prompt": "Full prompt text, with commas",
+                    "aspect": "1:1",
+                },
+                platform="newsbreak",
+            )
+            storage.append_library_item(
+                {"offer_id": "of1", "headline": "H2", "prompt": "P2"},
+                platform="newsbreak",
+            )
+            storage.set_library_consumed(
+                [a["library_id"]], True, platform="newsbreak",
+                used_in={"platform": "newsbreak", "campaign_id": "c-9", "via": "launch_form"},
+            )
+
+            client = _app.app.test_client()
+            with mock.patch.object(_app, "_auth_required", return_value=True), \
+                 mock.patch.object(_app, "_AI_STUDIO_AVAILABLE", True):
+                # Unused only (default) — one row, the not-yet-used H2.
+                resp = client.get("/api/studio/library/export?format=csv&status=unused")
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn("text/csv", resp.content_type)
+                body = resp.get_data(as_text=True)
+                self.assertIn("P2", body)
+                self.assertNotIn("c-9", body)
+                self.assertIn("attachment", resp.headers.get("Content-Disposition", ""))
+
+                # All rows as JSON — includes prompt verbatim + used_in trail.
+                resp = client.get("/api/studio/library/export?format=json&status=all")
+                self.assertEqual(resp.status_code, 200)
+                data = resp.get_json()
+                self.assertEqual(data["count"], 2)
+                by_headline = {r["headline"]: r for r in data["items"]}
+                self.assertEqual(
+                    by_headline["H1"]["prompt"], "Full prompt text, with commas"
+                )
+                self.assertEqual(by_headline["H1"]["status"], "used")
+                self.assertEqual(by_headline["H1"]["used_campaign_id"], "c-9")
+                self.assertEqual(by_headline["H2"]["status"], "unused")
+
+                # Bad format rejected.
+                resp = client.get("/api/studio/library/export?format=xml")
+                self.assertEqual(resp.status_code, 400)
+
+
 class LibraryTopupTests(unittest.TestCase):
     def test_topup_offer_writes_disk_files_and_appends_rows(self):
         with _TempStorage():

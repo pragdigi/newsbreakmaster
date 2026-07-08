@@ -7,6 +7,8 @@
     <p class="nb-muted">
       {% if active_platform == 'smartnews' %}
         SmartNews campaigns (Marketing API v3). Upload one 1:1 square per ad — the 1.91:1 landscape is auto-generated.
+      {% elif active_platform == 'outbrain' %}
+        Outbrain / Teads campaigns (Amplify API). Drop creatives — each is regenerated to your chosen format (1:1 or 16:9) and shipped as a paused campaign.
       {% else %}
         Conversion campaigns. Drag &amp; drop creatives, pick a bid strategy, ship in one click.
       {% endif %}
@@ -919,6 +921,399 @@
     });
   })();
 </script>
+{% elif active_platform == 'outbrain' %}
+{% if result %}
+<div class="nb-card" style="margin-bottom:16px;">
+  {% set ok = result.get('ok') %}
+  {% set reused = result.get('campaign_reused') %}
+  <h3 style="margin:0 0 8px 0;">
+    {% if ok %}{% if reused %}Ads added to existing campaign{% else %}Campaign created (paused){% endif %}{% else %}Launch failed{% endif %}
+  </h3>
+  <div class="nb-kpi-grid" style="margin-bottom:12px;">
+    <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#34d399' if ok else '#f87171' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}{% if reused %} <span class="nb-muted">(reused)</span>{% endif %}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Format</div><div class="nb-kpi-value">{{ result.get('creative_format') or '—' }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Ads</div><div class="nb-kpi-value">{{ result.get('ads', [])|length }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Errors</div><div class="nb-kpi-value" style="color:{{ '#f87171' if result.get('errors') else 'var(--text)' }};">{{ result.get('errors', [])|length }}</div></div>
+  </div>
+  {% if result.get('error') %}
+  <div class="nb-alert nb-alert-danger"><strong>Error:</strong> {{ result.error }}</div>
+  {% endif %}
+  {% if result.get('errors') %}
+  <div class="nb-alert nb-alert-danger">
+    <strong>Per-ad errors:</strong>
+    <ul style="margin:6px 0 0 18px;">
+      {% for e in result.errors %}<li style="margin:4px 0;">{{ e | tojson }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% if ok %}
+  <div class="nb-alert nb-alert-info" style="margin-top:8px;">{{ result.get('note') or 'Campaign created paused — review and enable it in Outbrain when ready.' }}</div>
+  {% endif %}
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;color:#6b7280;">Raw response</summary>
+    <pre class="nb-pre" style="max-height:240px;overflow:auto;">{{ result | tojson(indent=2) }}</pre>
+  </details>
+</div>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="ob-launch-form">
+  <!-- 0 · Offer -->
+  <div class="nb-field-group">
+    <h3>0 · Offer <span class="nb-muted" style="font-weight:400;font-size:13px;">(optional — prefills landing URL &amp; default headline, and powers AI generate)</span></h3>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Offer</label>
+        <select id="ob-offer-ref" class="nb-select">
+          <option value="">— None —</option>
+          {% for o in offers %}
+          <option value="{{ o.id }}">{{ o.name }}{% if o.payout %} · ${{ '%.2f'|format(o.payout) }}{% endif %}</option>
+          {% endfor %}
+        </select>
+        <div class="nb-hint">
+          {% if offers %}Pick an offer to prefill copy &amp; landing, then click ✨ Generate.{% else %}No offers saved yet — <a href="{{ url_for('settings_page') }}">create one here</a>.{% endif %}
+        </div>
+      </div>
+      <div id="ob-offer-summary" class="nb-hint" style="align-self:end;"></div>
+    </div>
+  </div>
+
+  <!-- 1 · Marketer (ad account) -->
+  <div class="nb-field-group">
+    <h3>1 · Marketer (ad account)</h3>
+    <select name="account_id" id="ob-account-id" class="nb-select" required>
+      <option value="">— Select —</option>
+      {% for id, name in accounts.items() %}
+      <option value="{{ id }}">{{ name }} ({{ id }})</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <!-- 2 · Campaign -->
+  <div class="nb-field-group">
+    <h3>2 · Campaign</h3>
+    <div style="margin-bottom:12px;">
+      <label class="nb-label">Mode</label>
+      <div>
+        <label style="margin-right:12px;"><input type="radio" name="campaign_mode" value="new" checked> Create new</label>
+        <label><input type="radio" name="campaign_mode" value="existing"> Add to existing</label>
+      </div>
+      <div class="nb-hint">"Add to existing" creates new promoted links under a campaign you already have.</div>
+    </div>
+
+    <div id="ob-existing-campaign" style="display:none;margin-bottom:12px;">
+      <label class="nb-label">Existing campaign</label>
+      <select name="campaign_id" id="ob-campaign-id" class="nb-select">
+        <option value="">— Select a campaign —</option>
+        {% for c in campaigns %}
+        <option value="{{ c.id }}">{{ c.name }}{% if c.status %} [{{ c.status }}]{% endif %} ({{ c.id }})</option>
+        {% endfor %}
+      </select>
+      <div class="nb-hint">Campaigns are listed for the first marketer. New promoted links are created under it.</div>
+    </div>
+
+    <div id="ob-new-campaign">
+      <div class="nb-row-2">
+        <div>
+          <label class="nb-label">Campaign name</label>
+          <input type="text" name="campaign_name" id="ob-campaign-name" class="nb-input">
+        </div>
+        <div>
+          <label class="nb-label">Objective</label>
+          <select name="objective" class="nb-select">
+            <option value="Traffic" selected>Traffic</option>
+            <option value="Conversions">Conversions</option>
+            <option value="Awareness">Awareness</option>
+            <option value="LeadGeneration">Lead generation</option>
+            <option value="Engagement">Engagement</option>
+            <option value="VideoViews">Video views</option>
+            <option value="AppInstall">App install</option>
+          </select>
+        </div>
+      </div>
+      <div class="nb-row-3" style="margin-top:12px;">
+        <div>
+          <label class="nb-label">Total budget <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
+          <input type="number" name="budget_amount_usd" id="ob-budget-amount" class="nb-input" min="1" step="0.01" value="100" required>
+          <div class="nb-hint">Outbrain enforces an account minimum (~$25/day implied).</div>
+        </div>
+        <div>
+          <label class="nb-label">Daily target <span class="nb-muted" style="font-weight:400;">(USD, optional)</span></label>
+          <input type="number" name="daily_target_usd" class="nb-input" min="0" step="0.01" placeholder="even pacing if blank">
+        </div>
+        <div>
+          <label class="nb-label">Max CPC bid <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
+          <input type="number" name="cpc_usd" class="nb-input" min="0.01" step="0.01" value="0.30" required>
+        </div>
+      </div>
+      <div class="nb-row-2" style="margin-top:12px;">
+        <div>
+          <label class="nb-label">Schedule <span class="nb-muted" style="font-weight:400;">(UTC — end date optional)</span></label>
+          <div style="display:flex;gap:8px;">
+            <input type="datetime-local" name="start_time" class="nb-input" style="flex:1;">
+            <input type="datetime-local" name="end_time" class="nb-input" style="flex:1;">
+          </div>
+          <div class="nb-hint">Blank end date = evergreen (monthly budget that runs forever).</div>
+        </div>
+        <div>
+          <label class="nb-label">UTM / tracking suffix <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+          <input type="text" name="suffix_tracking_code" class="nb-input" placeholder="utm_source=outbrain&amp;utm_campaign=...">
+          <div class="nb-hint">Appended to every promoted link URL by Outbrain. No leading <code>?</code>.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3 · Format & targeting -->
+  <div class="nb-field-group">
+    <h3>3 · Creative format &amp; targeting</h3>
+    <div class="nb-row-3">
+      <div>
+        <label class="nb-label">Creative format</label>
+        <div>
+          <label style="margin-right:12px;"><input type="radio" name="creative_format" value="1:1" checked> 1:1 (1200×1200)</label>
+          <label><input type="radio" name="creative_format" value="16:9"> 16:9 (1200×675)</label>
+        </div>
+        <div class="nb-hint">Source creatives are regenerated to this ratio with nano-banana. 16:9 is outpainted (nothing cropped).</div>
+      </div>
+      <div>
+        <label class="nb-label">Devices</label>
+        <div>
+          <label style="margin-right:10px;"><input type="checkbox" name="platforms" value="DESKTOP" checked> Desktop</label>
+          <label style="margin-right:10px;"><input type="checkbox" name="platforms" value="MOBILE" checked> Mobile</label>
+          <label><input type="checkbox" name="platforms" value="TABLET" checked> Tablet</label>
+        </div>
+      </div>
+      <div>
+        <label class="nb-label">Language</label>
+        <input type="text" name="language" class="nb-input" value="en" maxlength="5">
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      <label class="nb-label">Location IDs <span class="nb-muted" style="font-weight:400;">(optional — comma-separated Outbrain location ids; blank = United States)</span></label>
+      <input type="text" name="locations" class="nb-input" placeholder="blank = United States (fc4deb51...)">
+    </div>
+  </div>
+
+  <!-- 4 · Ads -->
+  <div class="nb-field-group">
+    <h3>4 · Ads</h3>
+    <p class="nb-muted" style="margin-top:0;">Each image becomes one promoted link. Headline max 100 chars.</p>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Landing page URL <span class="nb-muted" style="font-weight:400;">(default for every ad)</span></label>
+        <input type="url" name="landing_page_url" id="ob-landing" class="nb-input" placeholder="https://..." required>
+      </div>
+      <div>
+        <label class="nb-label">Call to action</label>
+        <select name="cta_label" class="nb-select">
+          <option value="LEARN_MORE" selected>Learn more</option>
+          <option value="READ_MORE">Read more</option>
+          <option value="SHOP_NOW">Shop now</option>
+          <option value="SIGN_UP">Sign up</option>
+          <option value="DOWNLOAD">Download</option>
+          <option value="BOOK_NOW">Book now</option>
+          <option value="APPLY_NOW">Apply now</option>
+          <option value="GET_QUOTE">Get quote</option>
+          <option value="SUBSCRIBE">Subscribe</option>
+          <option value="GET_OFFER">Get offer</option>
+          <option value="REGISTER">Register</option>
+          <option value="TRY_NOW">Try now</option>
+          <option value="ORDER_NOW">Order now</option>
+          <option value="NONE">No button</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- AI Studio: generate a batch -->
+    <div class="nb-ai-studio-bar" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap;">
+      <button type="button" class="nb-btn" id="ob-studio-generate" style="background:#4f46e5;border-color:#4f46e5;color:#fff;">
+        ✨ Generate with AI (10)
+      </button>
+      <span class="nb-muted" style="font-size:13px;">Uses your offer + winners to render on-brand 1:1 ads and drops them below.</span>
+      <input type="hidden" name="studio_gen_id" id="ob-studio-gen-id" />
+      <span id="ob-studio-gen-status" class="nb-muted" style="font-size:13px;"></span>
+    </div>
+
+    <!-- Dropzone -->
+    <label for="ob-file-input" class="nb-dropzone" id="ob-dropzone" style="margin-top:16px;">
+      <input type="file" id="ob-file-input" multiple accept="image/*" hidden>
+      <div class="nb-dropzone-icon" aria-hidden="true">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </div>
+      <div class="nb-dropzone-title">Drop creatives here</div>
+      <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — each becomes one promoted link, regenerated to the chosen format.</div>
+    </label>
+
+    <!-- Defaults -->
+    <div class="nb-defaults-panel">
+      <div class="nb-defaults-title">Defaults <span class="nb-muted">(propagate to every ad instantly)</span></div>
+      <div class="nb-row-2">
+        <input type="text" id="ob-default-headline" class="nb-input" placeholder="Default headline (max 100 chars)" maxlength="100">
+        <input type="url" id="ob-default-landing" class="nb-input" placeholder="Default landing URL (overrides field above)">
+      </div>
+    </div>
+
+    <div class="nb-creative-count">
+      <span id="ob-creative-count-text">No creatives yet</span>
+      <button type="button" class="nb-btn nb-btn-small" id="ob-clear-all" style="display:none;">Clear all</button>
+    </div>
+    <div id="ob-creative-grid" class="nb-creative-grid"></div>
+  </div>
+
+  <div class="nb-submit-bar" style="flex-wrap:wrap;gap:16px;align-items:center;">
+    <button type="submit" class="nb-btn nb-btn-primary">Launch Outbrain campaign (paused)</button>
+    <a href="{{ url_for('dashboard') }}" class="nb-btn">Cancel</a>
+  </div>
+</form>
+<script>
+  // --- Campaign mode toggle ---
+  (function(){
+    var modes = document.querySelectorAll('input[name="campaign_mode"]');
+    var existing = document.getElementById('ob-existing-campaign');
+    var newBox = document.getElementById('ob-new-campaign');
+    var cid = document.getElementById('ob-campaign-id');
+    var ownedRequired = newBox ? newBox.querySelectorAll('[required]') : [];
+    function setMode(mode){
+      if (mode === 'existing') {
+        existing.style.display = '';
+        newBox.style.display = 'none';
+        if (cid) cid.setAttribute('required','required');
+        ownedRequired.forEach(function(el){ el.setAttribute('data-was-required','1'); el.removeAttribute('required'); });
+      } else {
+        existing.style.display = 'none';
+        newBox.style.display = '';
+        if (cid) cid.removeAttribute('required');
+        ownedRequired.forEach(function(el){ if (el.getAttribute('data-was-required')) el.setAttribute('required','required'); });
+      }
+    }
+    modes.forEach(function(r){ r.addEventListener('change', function(){ setMode(r.value); }); });
+    var initial = document.querySelector('input[name="campaign_mode"]:checked');
+    setMode(initial ? initial.value : 'new');
+  })();
+
+  // --- Offer prefill ---
+  (function(){
+    var OFFERS = {{ offers|tojson }};
+    var sel = document.getElementById('ob-offer-ref');
+    var summary = document.getElementById('ob-offer-summary');
+    if (!sel) return;
+    function cleanLanding(u){ return String(u||'').trim().replace(/[?&=]+$/,''); }
+    sel.addEventListener('change', function(){
+      var o = (OFFERS||[]).find(function(x){ return x.id === sel.value; });
+      if (!o) { if (summary) summary.textContent=''; return; }
+      var land = cleanLanding(o.landing_url);
+      var landEl = document.getElementById('ob-landing');
+      var defL = document.getElementById('ob-default-landing');
+      var defH = document.getElementById('ob-default-headline');
+      if (landEl && land) landEl.value = land;
+      if (defL && land) defL.value = land;
+      if (defH && o.headline) defH.value = o.headline;
+      [defH, defL].forEach(function(el){ if (el) el.dispatchEvent(new Event('input',{bubbles:true})); });
+      if (summary) summary.textContent = (o.brand_name || o.name || '') + (o.payout ? ' · $'+Number(o.payout).toFixed(2) : '');
+    });
+  })();
+
+  // --- Creative dropzone + grid ---
+  (function(){
+    var dropzone = document.getElementById('ob-dropzone');
+    var fileInput = document.getElementById('ob-file-input');
+    var grid = document.getElementById('ob-creative-grid');
+    var countText = document.getElementById('ob-creative-count-text');
+    var btnClear = document.getElementById('ob-clear-all');
+    var defH = document.getElementById('ob-default-headline');
+    var defL = document.getElementById('ob-default-landing');
+    var form = document.getElementById('ob-launch-form');
+    if (!dropzone || !grid || !form) return;
+
+    var items = [];
+    var prevDefaults = { h:'', l:'' };
+    function esc(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+    function fmtSize(b){ if (b<1024) return b+' B'; if (b<1024*1024) return (b/1024).toFixed(1)+' KB'; return (b/1024/1024).toFixed(1)+' MB'; }
+
+    function applyDefaults(){
+      items.forEach(function(it){
+        if (!it.headline || it.headline === prevDefaults.h) it.headline = defH.value || it.headline;
+        if (!it.landing_url || it.landing_url === prevDefaults.l) it.landing_url = defL.value || it.landing_url;
+      });
+      prevDefaults.h = defH.value; prevDefaults.l = defL.value;
+    }
+    function renderCount(){
+      var n = items.length;
+      countText.textContent = n===0 ? 'No creatives yet' : (n+' ad'+(n===1?'':'s')+' ready');
+      btnClear.style.display = n>0 ? 'inline-block' : 'none';
+    }
+    function renderCard(it, idx){
+      var card = document.createElement('div');
+      card.className = 'nb-creative-card';
+      card.dataset.idx = String(idx);
+      card.innerHTML =
+        '<div class="nb-creative-media">' +
+          '<img src="'+esc(it.url)+'" alt="">' +
+          '<button type="button" class="nb-creative-remove" title="Remove">×</button>' +
+          '<div class="nb-creative-meta">IMAGE · '+fmtSize(it.file.size)+'</div>' +
+        '</div>' +
+        '<div class="nb-creative-fields">' +
+          '<input type="text" data-role="headline" class="nb-input" maxlength="100" required placeholder="Headline (max 100)" value="'+esc(it.headline)+'">' +
+          '<input type="url" data-role="landing_url" class="nb-input" placeholder="Landing URL (blank = default)" value="'+esc(it.landing_url)+'">' +
+        '</div>';
+      card.querySelector('.nb-creative-remove').addEventListener('click', function(){
+        items.splice(parseInt(card.dataset.idx,10),1); renderAll();
+      });
+      card.querySelectorAll('input[data-role]').forEach(function(inp){
+        inp.addEventListener('input', function(){ items[parseInt(card.dataset.idx,10)][inp.dataset.role] = inp.value; });
+      });
+      return card;
+    }
+    function renderAll(){ grid.innerHTML=''; items.forEach(function(it,i){ grid.appendChild(renderCard(it,i)); }); renderCount(); }
+
+    function addFiles(fileList, opts){
+      opts = opts || {};
+      Array.prototype.slice.call(fileList||[]).filter(function(f){ return f && f.type && f.type.indexOf('image/')===0; })
+        .forEach(function(f){
+          items.push({ file:f, headline: defH.value||'', landing_url: defL.value||'', url: URL.createObjectURL(f), aiBatch: !!opts.aiBatch });
+        });
+      renderAll();
+    }
+    function clearAiBatch(){ items = items.filter(function(it){ return !it.aiBatch; }); renderAll(); }
+    window.obDropzone = { addFiles: addFiles, clearAiBatch: clearAiBatch, count: function(){ return items.length; } };
+
+    ['dragenter','dragover'].forEach(function(ev){ dropzone.addEventListener(ev,function(e){ e.preventDefault(); e.stopPropagation(); dropzone.classList.add('dragover'); }); });
+    ['dragleave','drop'].forEach(function(ev){ dropzone.addEventListener(ev,function(e){ e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('dragover'); }); });
+    dropzone.addEventListener('drop', function(e){ if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files); });
+    fileInput.addEventListener('change', function(e){ if (e.target.files && e.target.files.length) addFiles(e.target.files); fileInput.value=''; });
+    btnClear.addEventListener('click', function(){ items=[]; renderAll(); });
+    [defH, defL].forEach(function(inp){ inp.addEventListener('input', function(){ applyDefaults(); renderAll(); }); });
+
+    form.addEventListener('submit', function(e){
+      Array.prototype.slice.call(form.querySelectorAll('[data-ob-generated="1"]')).forEach(function(el){ el.parentNode.removeChild(el); });
+      if (items.length === 0) { e.preventDefault(); alert('Add at least one creative before launching.'); dropzone.scrollIntoView({behavior:'smooth',block:'center'}); return; }
+      var invalid = [];
+      items.forEach(function(it,i){
+        var h = (it.headline||'').trim();
+        if (!h) invalid.push('Ad '+(i+1)+': headline required');
+        else if (h.length > 100) invalid.push('Ad '+(i+1)+': headline too long ('+h.length+'>100)');
+      });
+      if (invalid.length) { e.preventDefault(); alert('Fix the following:\n\n'+invalid.join('\n')); grid.scrollIntoView({behavior:'smooth',block:'center'}); return; }
+      var holder = document.createElement('div');
+      holder.style.display='none'; holder.setAttribute('data-ob-generated','1');
+      items.forEach(function(it,i){
+        var file = document.createElement('input');
+        file.type='file'; file.name='creative_'+i; file.setAttribute('data-ob-generated','1');
+        var dt = new DataTransfer(); dt.items.add(it.file); file.files = dt.files;
+        holder.appendChild(file);
+        function addHidden(name,val){ if (val==null||val==='') return; var h=document.createElement('input'); h.type='hidden'; h.name=name; h.value=val; h.setAttribute('data-ob-generated','1'); holder.appendChild(h); }
+        addHidden('headline_'+i, it.headline);
+        addHidden('landing_page_url_'+i, it.landing_url);
+      });
+      form.appendChild(holder);
+    });
+  })();
+</script>
 {% else %}
 
 {% if result %}
@@ -1797,21 +2192,30 @@
 /* ========= AI Studio "Generate with AI" integration ========= */
 (function () {
   var platform = {{ active_platform|tojson }};
-  var config = platform === 'smartnews'
-    ? {
-        buttonId: 'sn-studio-generate',
-        statusId: 'sn-studio-gen-status',
-        genIdId: 'sn-studio-gen-id',
-        fileInputId: 'sn-file-input',
-        offerSelectId: 'sn-offer-ref',
-      }
-    : {
-        buttonId: 'nb-studio-generate',
-        statusId: 'nb-studio-gen-status',
-        genIdId: 'nb-studio-gen-id',
-        fileInputId: 'file-input',
-        offerSelectId: 'offer_ref',
-      };
+  var configs = {
+    smartnews: {
+      buttonId: 'sn-studio-generate',
+      statusId: 'sn-studio-gen-status',
+      genIdId: 'sn-studio-gen-id',
+      fileInputId: 'sn-file-input',
+      offerSelectId: 'sn-offer-ref',
+    },
+    outbrain: {
+      buttonId: 'ob-studio-generate',
+      statusId: 'ob-studio-gen-status',
+      genIdId: 'ob-studio-gen-id',
+      fileInputId: 'ob-file-input',
+      offerSelectId: 'ob-offer-ref',
+    },
+    newsbreak: {
+      buttonId: 'nb-studio-generate',
+      statusId: 'nb-studio-gen-status',
+      genIdId: 'nb-studio-gen-id',
+      fileInputId: 'file-input',
+      offerSelectId: 'offer_ref',
+    },
+  };
+  var config = configs[platform] || configs.newsbreak;
 
   var btn = document.getElementById(config.buttonId);
   if (!btn) return;
@@ -1829,7 +2233,9 @@
   function setStatus(msg) { if (statusEl) statusEl.textContent = msg || ''; }
 
   function getDropzoneApi() {
-    return platform === 'smartnews' ? window.snDropzone : window.nbDropzone;
+    if (platform === 'smartnews') return window.snDropzone;
+    if (platform === 'outbrain') return window.obDropzone;
+    return window.nbDropzone;
   }
 
   btn.addEventListener('click', async function () {

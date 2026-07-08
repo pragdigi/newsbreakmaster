@@ -133,6 +133,30 @@ def _env_smartnews_configured() -> bool:
     return bool(_env_smartnews_client_id() and _env_smartnews_client_secret())
 
 
+def _env_outbrain_token() -> str:
+    return (_cfg_val("OUTBRAIN_ACCESS_TOKEN", "") or "").strip()
+
+
+def _env_outbrain_username() -> str:
+    return (_cfg_val("OUTBRAIN_USERNAME", "") or "").strip()
+
+
+def _env_outbrain_password() -> str:
+    return (_cfg_val("OUTBRAIN_PASSWORD", "") or "").strip()
+
+
+def _env_outbrain_marketer_ids() -> list[str]:
+    raw = _cfg_val("OUTBRAIN_DEFAULT_MARKETER_IDS", "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _env_outbrain_configured() -> bool:
+    return bool(
+        _env_outbrain_token()
+        or (_env_outbrain_username() and _env_outbrain_password())
+    )
+
+
 def _effective_token(platform: str | None = None) -> dict | None:
     """Prefer env-configured credentials so Render redeploys don't force re-login.
 
@@ -156,6 +180,22 @@ def _effective_token(platform: str | None = None) -> dict | None:
             }
         saved = storage.load_token(_user_id(), platform=p)
         if saved and saved.get("client_id") and saved.get("client_secret"):
+            return saved
+        return None
+    if p == "outbrain":
+        if _env_outbrain_configured():
+            return {
+                "access_token": _env_outbrain_token(),
+                "username": _env_outbrain_username(),
+                "password": _env_outbrain_password(),
+                "org_ids": _env_outbrain_marketer_ids(),
+                "platform": p,
+            }
+        saved = storage.load_token(_user_id(), platform=p)
+        if saved and (
+            saved.get("access_token")
+            or (saved.get("username") and saved.get("password"))
+        ):
             return saved
         return None
     return None
@@ -190,6 +230,13 @@ def _adapter(platform: str | None = None):
             "client_id": tok.get("client_id"),
             "client_secret": tok.get("client_secret"),
             "account_ids": tok.get("org_ids") or tok.get("account_ids") or [],
+        }
+    elif p == "outbrain":
+        credentials = {
+            "access_token": tok.get("access_token"),
+            "username": tok.get("username"),
+            "password": tok.get("password"),
+            "marketer_ids": tok.get("org_ids") or tok.get("marketer_ids") or [],
         }
     else:
         return None
@@ -268,6 +315,11 @@ def _require_basic_auth():
     # caller to share a browser password, defeating the point of HMAC.
     if request.path.startswith("/api/agent/"):
         return None
+    # Public creative images must be fetchable by Outbrain's image crawler
+    # (it pulls the imageUrl when a promoted link is created), so this route
+    # is intentionally exempt from Basic Auth. Files are opaque uuids.
+    if request.path.startswith("/public/creative/"):
+        return None
     if _basic_auth_ok():
         return None
     return Response(
@@ -291,7 +343,7 @@ def _inject_platform():
         "active_platform": p,
         "active_platform_label": PLATFORM_LABELS.get(p, p.title()),
         "active_platform_currency": PLATFORM_CURRENCIES.get(p, "USD"),
-        "supports_ad_set_scope": True,
+        "supports_ad_set_scope": p not in ("outbrain",),
         "available_platforms": [
             {"id": pid, "label": PLATFORM_LABELS.get(pid, pid.title())}
             for pid in PLATFORMS
@@ -392,8 +444,10 @@ def index():
 def login():
     platform = _active_platform()
     # If env-configured credentials exist for this platform, skip login.
-    if (platform == "newsbreak" and _env_access_token()) or (
-        platform == "smartnews" and _env_smartnews_configured()
+    if (
+        (platform == "newsbreak" and _env_access_token())
+        or (platform == "smartnews" and _env_smartnews_configured())
+        or (platform == "outbrain" and _env_outbrain_configured())
     ):
         return redirect(url_for("dashboard"))
     err = None
@@ -415,6 +469,31 @@ def login():
                     adapter = get_adapter(platform, **credentials)
                     adapter.verify()
                     storage.save_token(_user_id(), token, org_ids, platform=platform)
+                    return redirect(url_for("dashboard"))
+            elif platform == "outbrain":
+                token = (request.form.get("access_token") or "").strip()
+                username = (request.form.get("username") or "").strip()
+                password = (request.form.get("password") or "").strip()
+                if not token and not (username and password):
+                    err = (
+                        "Outbrain requires an OB-TOKEN-V1 access token "
+                        "or a username + password."
+                    )
+                else:
+                    credentials = {
+                        "access_token": token,
+                        "username": username,
+                        "password": password,
+                        "marketer_ids": org_ids,
+                    }
+                    adapter = get_adapter(platform, **credentials)
+                    adapter.verify()
+                    saved = (
+                        {"access_token": token}
+                        if token
+                        else {"username": username, "password": password}
+                    )
+                    storage.save_token(_user_id(), saved, org_ids, platform=platform)
                     return redirect(url_for("dashboard"))
             else:  # smartnews
                 client_id = (
@@ -545,6 +624,41 @@ def _build_newsbreak_platforms(form) -> list[str] | None:
     return out
 
 
+@app.route("/public/creative/<path:filename>")
+def public_creative(filename):
+    """Serve a prepared creative image without auth (Outbrain fetches it)."""
+    directory = storage.public_creative_dir()
+    return send_from_directory(directory, filename)
+
+
+def _outbrain_public_base_url() -> str:
+    """Best-effort public base URL for image hosting Outbrain can reach."""
+    base = (
+        _cfg_val("OUTBRAIN_PUBLIC_BASE_URL", "")
+        or _cfg_val("AGENT_BASE_URL", "")
+        or os.environ.get("RENDER_EXTERNAL_URL", "")
+    ).strip()
+    if base:
+        return base.rstrip("/")
+    # Fall back to the inbound request's host (works locally / single host).
+    try:
+        return request.url_root.rstrip("/")
+    except Exception:
+        return ""
+
+
+def _host_creative_image(image_bytes: bytes, filename: str) -> str:
+    """Persist a creative image and return its public, unauthenticated URL."""
+    ext = os.path.splitext(filename)[1].lstrip(".") or "jpg"
+    name = f"{uuid.uuid4().hex}.{ext}"
+    path = os.path.join(storage.public_creative_dir(), name)
+    with open(path, "wb") as f:
+        f.write(image_bytes)
+    base = _outbrain_public_base_url()
+    rel = url_for("public_creative", filename=name)
+    return f"{base}{rel}" if base else rel
+
+
 @app.route("/launch", methods=["GET", "POST"])
 def launch():
     adapter = _adapter()
@@ -556,6 +670,44 @@ def launch():
     except Exception:
         accounts = []
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
+
+    # Outbrain / Teads launches go through a dedicated handler.
+    if platform == "outbrain":
+        from bulk_launcher_outbrain import outbrain_bulk_launch
+
+        campaigns_for_pick: list[dict] = []
+        if account_options:
+            try:
+                first_acct = next(iter(account_options))
+                campaigns_for_pick = adapter.get_campaigns(first_acct)
+            except Exception:
+                campaigns_for_pick = []
+
+        if request.method == "GET":
+            return render_template(
+                "launch.html",
+                accounts=account_options,
+                campaigns=campaigns_for_pick,
+                pixels=storage.list_pixels(platform=platform),
+                events=storage.list_events(platform=platform),
+                offers=storage.list_offers(platform=platform),
+            )
+        result = outbrain_bulk_launch(
+            adapter,
+            form=request.form,
+            files=request.files,
+            host_image=_host_creative_image,
+        )
+        _studio_link_launch_if_any(platform, request.form.get("studio_gen_id"), result)
+        return render_template(
+            "launch.html",
+            accounts=account_options,
+            campaigns=campaigns_for_pick,
+            pixels=storage.list_pixels(platform=platform),
+            events=storage.list_events(platform=platform),
+            offers=storage.list_offers(platform=platform),
+            result=result,
+        )
 
     # SmartNews launches go through a dedicated handler.
     if platform == "smartnews":

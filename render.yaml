@@ -9,3 +9,17 @@ services:
         value: "3.12.0"
       - key: FLASK_SECRET_KEY
         generateValue: true
+      # Outbrain / Teads (Amplify API). Provide a long-lived OB-TOKEN-V1 OR a
+      # username + password (auto-login). Set in the Render dashboard.
+      - key: OUTBRAIN_ACCESS_TOKEN
+        sync: false
+      - key: OUTBRAIN_USERNAME
+        sync: false
+      - key: OUTBRAIN_PASSWORD
+        sync: false
+      - key: OUTBRAIN_DEFAULT_MARKETER_IDS
+        sync: false
+      # Public base URL Outbrain's image crawler can reach to fetch creatives
+      # (defaults to AGENT_BASE_URL / RENDER_EXTERNAL_URL when blank).
+      - key: OUTBRAIN_PUBLIC_BASE_URL
+        sync: false

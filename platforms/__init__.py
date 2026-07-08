@@ -10,17 +10,19 @@ from typing import Any, Dict, List, Optional
 
 from .base import AdPlatformAdapter, UnsupportedOperationError
 
-PLATFORMS: List[str] = ["newsbreak", "smartnews"]
+PLATFORMS: List[str] = ["newsbreak", "smartnews", "outbrain"]
 DEFAULT_PLATFORM = "newsbreak"
 
 PLATFORM_LABELS: Dict[str, str] = {
     "newsbreak": "NewsBreak",
     "smartnews": "SmartNews",
+    "outbrain": "Outbrain / Teads",
 }
 
 PLATFORM_CURRENCIES: Dict[str, str] = {
     "newsbreak": "USD",
     "smartnews": "JPY",
+    "outbrain": "USD",
 }
 
 
@@ -40,6 +42,8 @@ def get_adapter(platform: str, **credentials: Any) -> AdPlatformAdapter:
                    account_ids (list[str], optional). ``api_key`` is no longer
                    accepted — SmartNews Marketing API v3 uses OAuth
                    client_credentials, not a shared key.
+      - outbrain:  access_token (OB-TOKEN-V1 str) OR username+password, plus
+                   marketer_ids (list[str], optional).
     """
     p = normalize_platform(platform)
     if p == "newsbreak":
@@ -67,6 +71,27 @@ def get_adapter(platform: str, **credentials: Any) -> AdPlatformAdapter:
             )
         client = SmartNewsClient(client_id, client_secret)
         return SmartNewsAdapter(client, credentials.get("account_ids") or [])
+
+    if p == "outbrain":
+        from outbrain_api import OutbrainClient
+
+        from .outbrain import OutbrainAdapter
+
+        token = credentials.get("access_token") or credentials.get("api_key")
+        username = credentials.get("username")
+        password = credentials.get("password")
+        if not token and not (username and password):
+            raise ValueError(
+                "outbrain adapter requires access_token (OB-TOKEN-V1) "
+                "or username+password"
+            )
+        client = OutbrainClient(token, username=username, password=password)
+        return OutbrainAdapter(
+            client,
+            credentials.get("marketer_ids")
+            or credentials.get("account_ids")
+            or [],
+        )
 
     raise ValueError(f"Unknown platform {platform}")
 

@@ -19,6 +19,12 @@
       The app uses OAuth <code>client_credentials</code> to obtain a short-lived access token.
     </p>
     <p class="nb-muted">Enter one or more <strong>Ad Account IDs</strong> (comma-separated) — or leave blank to auto-discover every account this developer app can manage.</p>
+    {% elif active_platform == 'outbrain' %}
+    <p class="nb-muted">
+      Paste your <strong>OB-TOKEN-V1</strong> access token (from the Outbrain Amplify
+      API), or sign in with your Outbrain username&nbsp;+&nbsp;password.
+    </p>
+    <p class="nb-muted">Leave <strong>Marketer&nbsp;IDs</strong> blank to auto-discover every marketer (ad account) this token can manage.</p>
     {% else %}
     <p class="nb-muted">Paste your API <strong>Access-Token</strong> from Ad Manager → Resources → API Access Tokens.</p>
     <p class="nb-muted">Enter one or more <strong>Organization IDs</strong> (comma-separated). Required for <code>getGroupsByOrgIds</code>.</p>
@@ -34,6 +40,21 @@
       <textarea name="client_secret" class="nb-input nb-textarea" rows="3" placeholder="Developer app client secret" required></textarea>
       <label class="nb-label">Ad Account IDs <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
       <input type="text" name="org_ids" class="nb-input" placeholder="e.g. 105421139" value="{{ default_org_ids }}">
+      {% elif active_platform == 'outbrain' %}
+      <label class="nb-label">OB-TOKEN-V1 Access Token <span class="nb-muted" style="font-weight:400;">(or use username/password below)</span></label>
+      <textarea name="access_token" class="nb-input nb-textarea" rows="4" placeholder="MTc4MTcwMTg4..."></textarea>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div>
+          <label class="nb-label">Username <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+          <input type="text" name="username" class="nb-input" placeholder="you@agency.com" autocomplete="username">
+        </div>
+        <div>
+          <label class="nb-label">Password <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+          <input type="password" name="password" class="nb-input" placeholder="••••••••" autocomplete="current-password">
+        </div>
+      </div>
+      <label class="nb-label">Marketer IDs <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+      <input type="text" name="org_ids" class="nb-input" placeholder="leave blank to auto-discover" value="{{ default_org_ids }}">
       {% else %}
       <label class="nb-label">Access-Token</label>
       <textarea name="access_token" class="nb-input nb-textarea" rows="4" placeholder="Access-Token" required></textarea>

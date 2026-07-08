@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 DEFAULT_PLATFORM = "newsbreak"
-KNOWN_PLATFORMS = ("newsbreak", "smartnews")
+KNOWN_PLATFORMS = ("newsbreak", "smartnews", "outbrain")
 
 _LOCAL_STORAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage")
 
@@ -438,6 +438,18 @@ def winner_image_path(ad_id: str, *, platform: str = DEFAULT_PLATFORM, ext: str 
 def library_image_dir(platform: str = DEFAULT_PLATFORM) -> str:
     """Directory that holds rendered images for the prebuilt-ad library."""
     path = os.path.join(_catalog_dir(platform), "library_images")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def public_creative_dir() -> str:
+    """Directory for publicly-servable creative images.
+
+    Outbrain/Teads promoted links are created with an ``imageUrl`` that
+    Outbrain fetches and caches, so prepared creatives are written here and
+    exposed via an unauthenticated ``/public/creative/<file>`` route.
+    """
+    path = os.path.join(STORAGE_ROOT, "public_creatives")
     os.makedirs(path, exist_ok=True)
     return path
 

@@ -2620,6 +2620,153 @@ def api_studio_research_candidates():
     )
 
 
+_CANDIDATE_EXPORT_FIELDS = [
+    "style_id",
+    "platform",
+    "name",
+    "description",
+    "visual_cues",
+    "prompt_template",
+    "source",
+    "status",
+    "offer_id",
+    "trials",
+    "wins",
+    "impressions",
+    "spend",
+    "conversions",
+    "cpa",
+    "ctr",
+    "created_at",
+    "updated_at",
+    "last_trial_at",
+]
+
+
+def _candidate_matches_source(cand: Dict[str, Any], chip: str) -> bool:
+    """Mirror the Research tab's fuzzy source-chip matching."""
+    raw = str(cand.get("source") or "").lower()
+    anchor = str((cand.get("source_meta") or {}).get("anchor_platform") or "").lower()
+    if chip == "gethookd":
+        return raw in ("gethookd", "scrape")
+    if chip == "cluster_winners":
+        return raw in ("cluster_winners", "cluster")
+    if chip == "meta":
+        return raw == "meta" or (raw == "public_scout" and anchor in ("meta", "mixed"))
+    if chip == "tiktok":
+        return raw == "tiktok" or (raw == "public_scout" and anchor in ("tiktok", "mixed"))
+    return chip in raw
+
+
+@app.route("/api/studio/research/candidates/export", methods=["GET"])
+def api_studio_research_candidates_export():
+    """Download the banked style ideas (concepts) as CSV or JSON.
+
+    These are the raw idea records from the Research tab — angle name,
+    description, visual cues, and the reusable image-generation prompt
+    template — independent of whether any image was ever rendered from
+    them, so they can be fed to other generators (Facebook, etc.).
+
+      format   : csv (default) | json
+      status   : "" / all (default) | candidate | testing | promoted | archived
+      source   : "" / all (default) | cluster_winners | gethookd | brainstorm | meta | tiktok | scholar | upload
+      platform : "" (default = active platform) | all | newsbreak | ...
+    """
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    import csv
+    import io
+    import json as _json
+
+    fmt = (request.args.get("format") or "csv").strip().lower()
+    if fmt not in ("csv", "json"):
+        return jsonify({"error": "format must be csv or json"}), 400
+    status = (request.args.get("status") or "all").strip().lower() or "all"
+    source = (request.args.get("source") or "all").strip().lower() or "all"
+    raw_platform = (request.args.get("platform") or "").strip().lower()
+    if raw_platform == "all":
+        targets = list(PLATFORMS)
+    elif raw_platform:
+        targets = [normalize_platform(raw_platform)]
+    else:
+        targets = [_active_platform()]
+
+    rows: List[Dict[str, Any]] = []
+    for plat in targets:
+        try:
+            cands = storage.list_style_candidates(platform=plat)
+        except Exception:  # noqa: BLE001
+            app.logger.exception("research/candidates/export: list failed for %s", plat)
+            continue
+        for c in cands:
+            sid = str(c.get("style_id") or c.get("id") or "")
+            # "catalog:" rows are lifecycle bookkeeping mirrors, not ideas.
+            if sid.startswith("catalog:"):
+                continue
+            if status != "all" and str(c.get("status") or "candidate").lower() != status:
+                continue
+            if source != "all" and not _candidate_matches_source(c, source):
+                continue
+            meta = c.get("source_meta") or {}
+            cues = c.get("visual_cues") or []
+            rows.append(
+                {
+                    "style_id": sid,
+                    "platform": plat,
+                    "name": c.get("name"),
+                    "description": c.get("description"),
+                    "visual_cues": " | ".join(str(x) for x in cues) if fmt == "csv" else cues,
+                    "prompt_template": c.get("prompt_template"),
+                    "source": c.get("source"),
+                    "status": c.get("status") or "candidate",
+                    "offer_id": meta.get("offer_id"),
+                    "trials": c.get("trials") or 0,
+                    "wins": c.get("wins") or 0,
+                    "impressions": c.get("impressions") or 0,
+                    "spend": c.get("spend") or 0,
+                    "conversions": c.get("conversions") or 0,
+                    "cpa": c.get("cpa"),
+                    "ctr": c.get("ctr"),
+                    "created_at": c.get("created_at"),
+                    "updated_at": c.get("updated_at"),
+                    "last_trial_at": c.get("last_trial_at"),
+                }
+            )
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    filename = f"style-ideas-{status}-{stamp}.{fmt}"
+    if fmt == "json":
+        payload = _json.dumps(
+            {
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "status": status,
+                "source": source,
+                "platforms": targets,
+                "count": len(rows),
+                "items": rows,
+            },
+            indent=2,
+            default=str,
+        )
+        return Response(
+            payload,
+            mimetype="application/json",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_CANDIDATE_EXPORT_FIELDS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 @app.route("/api/studio/research/discover", methods=["POST"])
 def api_studio_research_discover():
     guard = _studio_required()

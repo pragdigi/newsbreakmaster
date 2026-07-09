@@ -206,6 +206,10 @@
           </select>
           <input type="search" id="research-search" class="studio-thin-input" style="width:160px;" placeholder="Search name / desc…">
         </div>
+        <div class="research-filter-group" style="margin-left:auto;">
+          <button type="button" id="research-export-csv" class="nb-btn small" title="Download the filtered ideas (name, description, visual cues, prompt template) as CSV — feed them to another generator (Facebook, etc.)">⬇ Ideas CSV</button>
+          <button type="button" id="research-export-json" class="nb-btn small" title="Same export as JSON">⬇ JSON</button>
+        </div>
       </div>
 
       <div class="research-toolbar" data-mode-only="library" hidden>
@@ -1569,6 +1573,20 @@
     researchFilters.search = researchSearchEl.value || '';
     applyResearchFilters();
   });
+
+  // Idea export — mirrors the active status / source chips (search + sort
+  // are view-only niceties, the download carries the full field set).
+  function researchExportUrl(fmt) {
+    const params = new URLSearchParams();
+    params.set('format', fmt);
+    params.set('status', researchFilters.status || 'all');
+    params.set('source', researchFilters.source || 'all');
+    return '/api/studio/research/candidates/export?' + params.toString();
+  }
+  const resExpCsvEl = document.getElementById('research-export-csv');
+  if (resExpCsvEl) resExpCsvEl.addEventListener('click', () => { window.location.href = researchExportUrl('csv'); });
+  const resExpJsonEl = document.getElementById('research-export-json');
+  if (resExpJsonEl) resExpJsonEl.addEventListener('click', () => { window.location.href = researchExportUrl('json'); });
   const selectAllEl = document.getElementById('research-select-all');
   if (selectAllEl) selectAllEl.addEventListener('change', () => {
     researchVisible.forEach(c => {

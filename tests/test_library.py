@@ -213,6 +213,75 @@ class LibraryExportTests(unittest.TestCase):
                 self.assertEqual(resp.status_code, 400)
 
 
+class CandidateExportTests(unittest.TestCase):
+    def test_export_ideas_csv_and_json_honor_filters(self):
+        with _TempStorage():
+            import app as _app
+            import storage
+
+            storage.upsert_style_candidate(
+                {
+                    "style_id": "value-stack",
+                    "name": "Value Stack",
+                    "description": "Products stacked with price anchors",
+                    "visual_cues": ["stacked boxes", "bold price"],
+                    "prompt_template": "Photo of {{headline}} value stack. Square format.",
+                    "source": "brainstorm",
+                    "source_meta": {"offer_id": "of1"},
+                    "status": "candidate",
+                },
+                platform="newsbreak",
+            )
+            storage.upsert_style_candidate(
+                {
+                    "style_id": "archived-idea",
+                    "name": "Old Idea",
+                    "source": "gethookd",
+                    "status": "archived",
+                },
+                platform="newsbreak",
+            )
+            # Lifecycle bookkeeping mirror — must never appear in exports.
+            storage.upsert_style_candidate(
+                {"style_id": "catalog:value-stack", "name": "value-stack", "status": "catalog"},
+                platform="newsbreak",
+            )
+
+            client = _app.app.test_client()
+            with mock.patch.object(_app, "_auth_required", return_value=True), \
+                 mock.patch.object(_app, "_AI_STUDIO_AVAILABLE", True), \
+                 mock.patch.object(_app, "_active_platform", return_value="newsbreak"):
+                # All ideas as JSON — catalog mirror excluded, cues kept as list.
+                resp = client.get("/api/studio/research/candidates/export?format=json&status=all")
+                self.assertEqual(resp.status_code, 200)
+                data = resp.get_json()
+                self.assertEqual(data["count"], 2)
+                by_id = {r["style_id"]: r for r in data["items"]}
+                self.assertNotIn("catalog:value-stack", by_id)
+                vs = by_id["value-stack"]
+                self.assertEqual(
+                    vs["prompt_template"],
+                    "Photo of {{headline}} value stack. Square format.",
+                )
+                self.assertEqual(vs["visual_cues"], ["stacked boxes", "bold price"])
+                self.assertEqual(vs["offer_id"], "of1")
+
+                # Status filter — only the archived gethookd idea.
+                resp = client.get("/api/studio/research/candidates/export?format=csv&status=archived")
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn("text/csv", resp.content_type)
+                body = resp.get_data(as_text=True)
+                self.assertIn("archived-idea", body)
+                self.assertNotIn("value-stack", body)
+
+                # Source filter uses the fuzzy chip matching (scrape == gethookd).
+                resp = client.get("/api/studio/research/candidates/export?format=json&source=gethookd")
+                self.assertEqual(resp.get_json()["count"], 1)
+
+                resp = client.get("/api/studio/research/candidates/export?format=xml")
+                self.assertEqual(resp.status_code, 400)
+
+
 class LibraryTopupTests(unittest.TestCase):
     def test_topup_offer_writes_disk_files_and_appends_rows(self):
         with _TempStorage():

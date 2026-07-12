@@ -209,6 +209,8 @@
         <div class="research-filter-group" style="margin-left:auto;">
           <button type="button" id="research-export-csv" class="nb-btn small" title="Download the filtered ideas (name, description, visual cues, prompt template) as CSV — feed them to another generator (Facebook, etc.)">⬇ Ideas CSV</button>
           <button type="button" id="research-export-json" class="nb-btn small" title="Same export as JSON">⬇ JSON</button>
+          <button type="button" id="research-import" class="nb-btn small" title="Restore ideas from a previous CSV/JSON export — additive merge by style_id, fills in missing fields, never deletes">⬆ Import</button>
+          <input type="file" id="research-import-file" accept=".csv,.json,application/json,text/csv" hidden>
         </div>
       </div>
 
@@ -1587,6 +1589,32 @@
   if (resExpCsvEl) resExpCsvEl.addEventListener('click', () => { window.location.href = researchExportUrl('csv'); });
   const resExpJsonEl = document.getElementById('research-export-json');
   if (resExpJsonEl) resExpJsonEl.addEventListener('click', () => { window.location.href = researchExportUrl('json'); });
+
+  // Idea import — restore from a previous export download. Additive merge
+  // on the server (fills gaps by style_id, never overwrites or deletes).
+  const resImpBtn = document.getElementById('research-import');
+  const resImpFile = document.getElementById('research-import-file');
+  if (resImpBtn && resImpFile) {
+    resImpBtn.addEventListener('click', () => resImpFile.click());
+    resImpFile.addEventListener('change', async () => {
+      const f = resImpFile.files[0];
+      if (!f) return;
+      const statusEl = document.getElementById('research-status');
+      if (statusEl) statusEl.textContent = `Importing ${f.name}…`;
+      const fd = new FormData();
+      fd.append('file', f);
+      try {
+        const res = await fetch('/api/studio/research/candidates/import', { method: 'POST', body: fd });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+        if (statusEl) statusEl.textContent = `Imported: ${body.inserted} new, ${body.updated} filled in, ${body.skipped} unchanged.`;
+        loadResearch();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = 'Import failed: ' + e.message;
+      }
+      resImpFile.value = '';
+    });
+  }
   const selectAllEl = document.getElementById('research-select-all');
   if (selectAllEl) selectAllEl.addEventListener('change', () => {
     researchVisible.forEach(c => {

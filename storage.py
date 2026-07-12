@@ -29,12 +29,15 @@ A one-shot migration on import moves pre-namespace files into the
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
+import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 DEFAULT_PLATFORM = "newsbreak"
 KNOWN_PLATFORMS = ("newsbreak", "smartnews", "outbrain")
@@ -169,6 +172,28 @@ ensure_dirs()
 _migrate_flat_to_namespaced()
 
 
+# Serialises every read-modify-write against the JSON/JSONL stores.
+# gunicorn runs a single process with several gthread workers, so an
+# in-process lock is sufficient; if the deployment ever moves to
+# multiple worker *processes*, this must become a cross-process file
+# lock. Without this lock (pre 2026-07), two overlapping requests could
+# interleave a truncate-write with a read, making the reader see partial
+# JSON, fall back to [], and clobber the whole file (this wiped
+# style_candidates.json during a bulk promote on 2026-07-12).
+_MUTATE_LOCK = threading.RLock()
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _locked(fn: _F) -> _F:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with _MUTATE_LOCK:
+            return fn(*args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
+
+
 def _read_json(path: str, default: Any) -> Any:
     if not os.path.exists(path):
         return default
@@ -179,10 +204,41 @@ def _read_json(path: str, default: Any) -> Any:
         return default
 
 
+def _read_json_strict(path: str, default: Any) -> Any:
+    """Like :func:`_read_json` but raises on a corrupt (unparseable) file.
+
+    Used by read-modify-write paths: silently treating a corrupt file as
+    ``default`` would make the subsequent write throw away every record
+    that was in the file. Better to fail the single mutating request.
+    """
+    if not os.path.exists(path):
+        return default
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def _write_json(path: str, data: Any) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
+    """Atomically replace ``path`` with the serialised ``data``.
+
+    Writes to a unique temp file in the same directory, then
+    ``os.replace``s it over the target so concurrent readers only ever
+    see the old or the new complete file — never a partial write.
+    """
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=directory, prefix=os.path.basename(path) + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # --- Tokens (per session user id, per platform) ---
@@ -315,12 +371,23 @@ def _load_catalog(path: str) -> List[Dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def _load_catalog_for_update(path: str) -> List[Dict[str, Any]]:
+    """Catalog load used by mutators — raises instead of clobbering.
+
+    A corrupt file must fail the mutation rather than be treated as an
+    empty catalog (which would erase every existing record on save).
+    """
+    data = _read_json_strict(path, [])
+    return data if isinstance(data, list) else []
+
+
 def _save_catalog(path: str, items: List[Dict[str, Any]]) -> None:
     _write_json(path, items)
 
 
+@_locked
 def _upsert_catalog(path: str, item: Dict[str, Any]) -> Dict[str, Any]:
-    items = _load_catalog(path)
+    items = _load_catalog_for_update(path)
     now = datetime.now(timezone.utc).isoformat()
     if not item.get("id"):
         item["id"] = str(uuid.uuid4())
@@ -336,8 +403,9 @@ def _upsert_catalog(path: str, item: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
+@_locked
 def _delete_catalog(path: str, item_id: str) -> bool:
-    items = _load_catalog(path)
+    items = _load_catalog_for_update(path)
     remaining = [x for x in items if x.get("id") != item_id]
     if len(remaining) == len(items):
         return False
@@ -496,10 +564,11 @@ def list_all_winners(*, platforms: Optional[List[str]] = None) -> List[Dict[str,
     return out
 
 
+@_locked
 def upsert_winner(item: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     """Upsert by ``ad_id`` (preferred) or fall back to generated ``id``."""
     path = _winners_file(platform)
-    items = _load_catalog(path)
+    items = _load_catalog_for_update(path)
     now = datetime.now(timezone.utc).isoformat()
     key = str(item.get("ad_id") or item.get("id") or "")
     if not key:
@@ -525,9 +594,10 @@ def upsert_winner(item: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> 
     return item
 
 
+@_locked
 def delete_winner(ad_id: str, *, platform: str = DEFAULT_PLATFORM) -> bool:
     path = _winners_file(platform)
-    items = _load_catalog(path)
+    items = _load_catalog_for_update(path)
     remaining = [x for x in items if str(x.get("ad_id")) != str(ad_id) and x.get("id") != ad_id]
     if len(remaining) == len(items):
         return False
@@ -548,9 +618,10 @@ def load_insights(offer_id: str, *, platform: str = DEFAULT_PLATFORM) -> Optiona
     return None
 
 
+@_locked
 def save_insights(offer_id: str, insights: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     path = _insights_file(platform)
-    items = _load_catalog(path)
+    items = _load_catalog_for_update(path)
     now = datetime.now(timezone.utc).isoformat()
     payload = {**insights, "offer_id": str(offer_id), "updated_at": now}
     if not payload.get("generated_at"):
@@ -566,6 +637,7 @@ def save_insights(offer_id: str, insights: Dict[str, Any], *, platform: str = DE
 
 
 # Generations log (append-only jsonl) -----------------------------------
+@_locked
 def append_generation(entry: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     path = _generations_file(platform)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -609,6 +681,7 @@ def list_generations(*, platform: str = DEFAULT_PLATFORM, limit: int = 500) -> L
 # we can keep a forensic trail of which library entries fed which launch
 # (useful for the bandit + analyzer when learning what library
 # pre-renders convert vs. fresh ones).
+@_locked
 def append_library_item(entry: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     path = _library_file(platform)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -662,6 +735,7 @@ def library_counts(*, platform: str = DEFAULT_PLATFORM) -> Dict[str, int]:
     return counts
 
 
+@_locked
 def consume_library_items(
     offer_id: str,
     n: int,
@@ -705,6 +779,7 @@ def consume_library_items(
     return chosen
 
 
+@_locked
 def set_library_consumed(
     library_ids: List[str],
     consumed: bool,
@@ -756,6 +831,7 @@ def set_library_consumed(
     return updated
 
 
+@_locked
 def update_generation(gen_id: str, patch: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Optional[Dict[str, Any]]:
     """Rewrite the jsonl in place with ``patch`` applied to the matching row.
 
@@ -787,10 +863,11 @@ def list_style_candidates(*, platform: str = DEFAULT_PLATFORM) -> List[Dict[str,
     return _load_catalog(_style_candidates_file(platform))
 
 
+@_locked
 def upsert_style_candidate(item: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     """Upsert by ``style_id`` (preferred) or fall back to generated ``id``."""
     path = _style_candidates_file(platform)
-    items = _load_catalog(path)
+    items = _load_catalog_for_update(path)
     now = datetime.now(timezone.utc).isoformat()
     key = str(item.get("style_id") or item.get("id") or "")
     if not key:
@@ -816,9 +893,10 @@ def upsert_style_candidate(item: Dict[str, Any], *, platform: str = DEFAULT_PLAT
     return item
 
 
+@_locked
 def delete_style_candidate(style_id: str, *, platform: str = DEFAULT_PLATFORM) -> bool:
     path = _style_candidates_file(platform)
-    items = _load_catalog(path)
+    items = _load_catalog_for_update(path)
     remaining = [x for x in items if str(x.get("style_id")) != str(style_id) and x.get("id") != style_id]
     if len(remaining) == len(items):
         return False
@@ -826,6 +904,7 @@ def delete_style_candidate(style_id: str, *, platform: str = DEFAULT_PLATFORM) -
     return True
 
 
+@_locked
 def append_research_run(entry: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     path = _research_runs_file(platform)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -874,6 +953,7 @@ def _agent_queue_file(platform: str) -> str:
     return os.path.join(_catalog_dir(platform), "agent_queue.jsonl")
 
 
+@_locked
 def append_agent_job(entry: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     path = _agent_queue_file(platform)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -919,6 +999,7 @@ def list_agent_jobs(
     return out
 
 
+@_locked
 def update_agent_job(
     job_id: str,
     patch: Dict[str, Any],

@@ -2767,6 +2767,95 @@ def api_studio_research_candidates_export():
     )
 
 
+@app.route("/api/studio/research/candidates/import", methods=["POST"])
+def api_studio_research_candidates_import():
+    """Restore banked style ideas from a previous ``/candidates/export`` file.
+
+    Accepts a multipart ``file`` (the CSV or JSON produced by the export
+    route) or a raw JSON body ``{"items": [...]}``. The merge is strictly
+    additive by ``style_id``:
+      * unknown ids are inserted,
+      * existing records only gain fields they are currently missing
+        (so lifecycle stamps like ``status=promoted`` are never undone),
+      * nothing is ever deleted.
+    """
+    guard = _studio_required()
+    if guard is not None:
+        return guard
+    import csv
+    import io
+    import json as _json
+
+    items: List[Dict[str, Any]] = []
+    up = request.files.get("file")
+    if up is not None:
+        raw = up.read().decode("utf-8-sig", errors="replace")
+        stripped = raw.lstrip()
+        if (up.filename or "").lower().endswith(".json") or stripped[:1] in ("{", "["):
+            try:
+                payload = _json.loads(raw)
+            except ValueError:
+                return jsonify({"error": "file is not valid JSON"}), 400
+            items = payload.get("items") if isinstance(payload, dict) else payload
+        else:
+            items = list(csv.DictReader(io.StringIO(raw)))
+    else:
+        data = request.get_json(force=True, silent=True) or {}
+        items = data.get("items") or []
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "no items to import"}), 400
+
+    content_fields = ("name", "description", "visual_cues", "prompt_template", "source")
+    inserted = updated = skipped = 0
+    existing_by_platform: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row in items:
+        if not isinstance(row, dict):
+            skipped += 1
+            continue
+        sid = str(row.get("style_id") or "").strip()
+        if not sid or sid.startswith("catalog:"):
+            skipped += 1
+            continue
+        raw_plat = str(row.get("platform") or "").strip().lower()
+        plat = normalize_platform(raw_plat) if raw_plat else _active_platform()
+        if plat not in existing_by_platform:
+            existing_by_platform[plat] = {
+                str(c.get("style_id") or c.get("id") or ""): c
+                for c in storage.list_style_candidates(platform=plat)
+            }
+        existing = existing_by_platform[plat].get(sid)
+
+        patch: Dict[str, Any] = {"style_id": sid}
+        for field in content_fields:
+            val = row.get(field)
+            if field == "visual_cues" and isinstance(val, str):
+                val = [x.strip() for x in val.split("|") if x.strip()]
+            if val in (None, "", []):
+                continue
+            if existing is not None and existing.get(field) not in (None, "", []):
+                continue  # fill gaps only — never overwrite live data
+            patch[field] = val
+        if existing is None:
+            patch["status"] = str(row.get("status") or "candidate")
+            if row.get("created_at"):
+                patch["created_at"] = row["created_at"]
+            if row.get("offer_id"):
+                patch["source_meta"] = {"offer_id": row["offer_id"]}
+        elif len(patch) == 1:
+            skipped += 1
+            continue
+
+        saved = storage.upsert_style_candidate(patch, platform=plat)
+        existing_by_platform[plat][sid] = saved
+        if existing is None:
+            inserted += 1
+        else:
+            updated += 1
+    return jsonify(
+        {"ok": True, "inserted": inserted, "updated": updated, "skipped": skipped}
+    )
+
+
 @app.route("/api/studio/research/discover", methods=["POST"])
 def api_studio_research_discover():
     guard = _studio_required()

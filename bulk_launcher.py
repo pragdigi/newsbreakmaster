@@ -30,7 +30,7 @@ def _log_json(label: str, obj: Any) -> None:
 # convert .webp / .heic / .heif / .avif / .bmp / .tiff images to PNG
 # before upload so the user doesn't have to pre-process them.
 _IMAGE_EXT_OK = {".jpg", ".jpeg", ".png", ".gif"}
-_VIDEO_EXT_OK = {".mp4", ".mov", ".webm", ".m4v"}
+_VIDEO_EXT_OK = {".mp4", ".mov", ".webm", ".m4v", ".qt"}
 _IMAGE_EXT_CONVERT = {".webp", ".heic", ".heif", ".avif", ".bmp", ".tif", ".tiff"}
 
 
@@ -199,7 +199,7 @@ def bulk_launch(
         f = (filename or "").lower()
         if f.endswith(".gif"):
             return "GIF"
-        if f.endswith((".mp4", ".mov", ".webm", ".m4v")):
+        if f.endswith((".mp4", ".mov", ".webm", ".m4v", ".qt")):
             return "VIDEO"
         return "IMAGE"
 

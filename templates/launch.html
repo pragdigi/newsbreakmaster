@@ -1647,8 +1647,16 @@
         </svg>
       </div>
       <div class="nb-dropzone-title">Drop images & videos here</div>
-      <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — you can select multiple files</div>
+      <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — mp4/mov/webm, max 500&nbsp;MB per file (compress large phone exports first)</div>
     </label>
+    {% if request.args.get('upload_error') == 'too_large' %}
+    <div class="nb-alert nb-alert-danger" id="nb-upload-too-large" style="margin-top:12px;">
+      <strong>Upload too large.</strong>
+      The file{% if request.args.get('upload_size_mb') %} ({{ request.args.get('upload_size_mb') }}&nbsp;MB){% endif %}
+      exceeded the 500&nbsp;MB launch limit, so the campaign was never created.
+      Export a shorter / lower-bitrate H.264 <code>.mp4</code> (under ~100&nbsp;MB is ideal for ad creatives) and try again.
+    </div>
+    {% endif %}
 
     <!-- Defaults (live-applied to every creative) -->
     <div class="nb-defaults-panel">
@@ -1736,6 +1744,8 @@
   // QuickTime. Requiring a truthy MIME silently dropped those files.
   const NB_VIDEO_EXTS = ['.mp4', '.mov', '.m4v', '.webm'];
   const NB_IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.heic', '.heif', '.avif'];
+  // Keep in sync with app.MAX_UPLOAD_BYTES / MAX_CONTENT_LENGTH (500 MB).
+  const NB_MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
   function nbFileExt(name) {
     const m = String(name || '').toLowerCase().match(/(\.[a-z0-9]+)$/);
     return m ? m[1] : '';
@@ -1752,6 +1762,9 @@
   }
   function nbIsAllowedMediaFile(file) {
     return nbIsVideoFile(file) || nbIsImageFile(file);
+  }
+  function nbFileTooLarge(file) {
+    return !!(file && typeof file.size === 'number' && file.size > NB_MAX_UPLOAD_BYTES);
   }
 
   function renderItem(it, idx) {
@@ -1799,7 +1812,17 @@
 
   function addFiles(fileList, opts) {
     opts = opts || {};
-    const allowed = Array.from(fileList).filter(nbIsAllowedMediaFile);
+    const media = Array.from(fileList).filter(nbIsAllowedMediaFile);
+    const oversized = media.filter(nbFileTooLarge);
+    const allowed = media.filter(f => !nbFileTooLarge(f));
+    if (oversized.length) {
+      const names = oversized.map(f => f.name + ' (' + fmtSize(f.size) + ')').join('\n');
+      alert(
+        'These files are over the 500 MB launch limit and were skipped:\n\n' +
+        names +
+        '\n\nCompress to H.264 MP4 (under ~100 MB is ideal for ad creatives) and drop again.'
+      );
+    }
     allowed.forEach((f, i) => {
       items.push({
         file: f,
@@ -1876,6 +1899,18 @@
     if (items.length === 0) {
       e.preventDefault();
       alert('Please add at least one creative before launching.');
+      dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const oversized = items.filter(it => nbFileTooLarge(it.file));
+    if (oversized.length) {
+      e.preventDefault();
+      const names = oversized.map(it => it.file.name + ' (' + fmtSize(it.file.size) + ')').join('\n');
+      alert(
+        'Cannot launch — these creatives exceed the 500 MB upload limit:\n\n' +
+        names +
+        '\n\nCompress to H.264 MP4 and try again. (Raw phone .mov exports are often too large.)'
+      );
       dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }

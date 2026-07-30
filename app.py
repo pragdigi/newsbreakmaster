@@ -72,9 +72,66 @@ def _cfg_val(name: str, default: str = "") -> str:
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
-app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
+# Hard ceiling for multipart launch uploads (video creatives). Keep in sync
+# with the client-side check in templates/launch.html (NB_MAX_UPLOAD_BYTES).
+# Raw iPhone .mov exports often exceed this; compress before launching.
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 storage.ensure_dirs()
+
+
+def _upload_too_large_response():
+    """Shared 413 response: redirect launch POSTs back to the form with a flag."""
+    cl = request.content_length
+    app.logger.warning(
+        "upload.too_large path=%s content_length=%s max=%s",
+        request.path,
+        cl,
+        MAX_UPLOAD_BYTES,
+    )
+    mb = (cl / (1024 * 1024)) if cl else None
+    if request.path.rstrip("/").endswith("launch"):
+        return redirect(
+            url_for(
+                "launch",
+                upload_error="too_large",
+                upload_size_mb=f"{mb:.0f}" if mb else "",
+            )
+        )
+    limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+    size_bit = f" ({mb:.0f} MB)" if mb else ""
+    return (
+        f"Upload too large{size_bit}. Max is {limit_mb} MB — compress the video "
+        f"(H.264 MP4 under ~100 MB is typical for ad creatives) and try again.",
+        413,
+    )
+
+
+@app.errorhandler(413)
+def handle_request_entity_too_large(e):
+    """Surface a readable message when a video/image POST exceeds MAX_CONTENT_LENGTH.
+
+    Without this, browsers show a blank/generic 413 page and the launch form
+    never gets a chance to explain that the creative must be compressed.
+    """
+    return _upload_too_large_response()
+
+
+@app.before_request
+def _reject_oversized_uploads_early():
+    """Fail fast on Content-Length before the launch view runs.
+
+    Flask only raises RequestEntityTooLarge when the body stream is read.
+    /launch may redirect to /login (no token) before that, so oversized
+    videos would never hit the 413 handler. Check the header up front.
+    """
+    if request.method not in ("POST", "PUT", "PATCH"):
+        return None
+    cl = request.content_length
+    if cl is not None and cl > MAX_UPLOAD_BYTES:
+        return _upload_too_large_response()
+    return None
 
 if _agent_bp is not None:
     app.register_blueprint(_agent_bp)

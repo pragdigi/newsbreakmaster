@@ -72,9 +72,10 @@ def _cfg_val(name: str, default: str = "") -> str:
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
-# Hard ceiling for multipart launch uploads (video creatives). Keep in sync
-# with the client-side check in templates/launch.html (NB_MAX_UPLOAD_BYTES).
-# Raw iPhone .mov exports often exceed this; compress before launching.
+# Hard ceiling for the entire multipart /launch POST (all creatives + form
+# fields combined). Keep in sync with templates/launch.html
+# (NB_MAX_UPLOAD_BYTES / NB_MAX_BATCH_BYTES). Several videos at once can
+# hit this even when each file is under the limit.
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
@@ -102,8 +103,9 @@ def _upload_too_large_response():
     limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
     size_bit = f" ({mb:.0f} MB)" if mb else ""
     return (
-        f"Upload too large{size_bit}. Max is {limit_mb} MB — compress the video "
-        f"(H.264 MP4 under ~100 MB is typical for ad creatives) and try again.",
+        f"Upload too large{size_bit}. Max is {limit_mb} MB for all creatives "
+        f"combined — remove some files or compress "
+        f"(H.264 MP4 under ~100 MB each is typical) and try again.",
         413,
     )
 

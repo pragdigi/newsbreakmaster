@@ -1647,14 +1647,14 @@
         </svg>
       </div>
       <div class="nb-dropzone-title">Drop images & videos here</div>
-      <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — mp4/mov/webm, max 500&nbsp;MB per file (compress large phone exports first)</div>
+      <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — mp4/mov/webm, <strong>500&nbsp;MB max for all files combined</strong> (compress large phone exports)</div>
     </label>
     {% if request.args.get('upload_error') == 'too_large' %}
     <div class="nb-alert nb-alert-danger" id="nb-upload-too-large" style="margin-top:12px;">
       <strong>Upload too large.</strong>
-      The file{% if request.args.get('upload_size_mb') %} ({{ request.args.get('upload_size_mb') }}&nbsp;MB){% endif %}
-      exceeded the 500&nbsp;MB launch limit, so the campaign was never created.
-      Export a shorter / lower-bitrate H.264 <code>.mp4</code> (under ~100&nbsp;MB is ideal for ad creatives) and try again.
+      The launch POST{% if request.args.get('upload_size_mb') %} ({{ request.args.get('upload_size_mb') }}&nbsp;MB){% endif %}
+      exceeded the 500&nbsp;MB limit for <em>all creatives combined</em>, so the campaign was never created.
+      Remove some videos, or export shorter / lower-bitrate H.264 <code>.mp4</code> files (under ~100&nbsp;MB each is ideal), then try again.
     </div>
     {% endif %}
 
@@ -1727,13 +1727,6 @@
     fileInput.files = dt.files;
   }
 
-  function renderCount() {
-    const n = items.length;
-    countText.textContent = n === 0 ? 'No creatives yet' : (n + ' creative' + (n === 1 ? '' : 's') + ' ready');
-    btnClear.style.display = n > 0 ? 'inline-block' : 'none';
-    if (typeof refreshGroupPreview === 'function') refreshGroupPreview();
-  }
-
   function fmtSize(b) {
     if (b < 1024) return b + ' B';
     if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
@@ -1745,7 +1738,11 @@
   const NB_VIDEO_EXTS = ['.mp4', '.mov', '.m4v', '.webm'];
   const NB_IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.heic', '.heif', '.avif'];
   // Keep in sync with app.MAX_UPLOAD_BYTES / MAX_CONTENT_LENGTH (500 MB).
+  // Batch uses a slightly lower ceiling so multipart form fields still fit.
   const NB_MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+  const NB_MAX_BATCH_BYTES = 480 * 1024 * 1024;
+  const NB_MAX_UPLOAD_MB_LABEL = 500;
+
   function nbFileExt(name) {
     const m = String(name || '').toLowerCase().match(/(\.[a-z0-9]+)$/);
     return m ? m[1] : '';
@@ -1765,6 +1762,29 @@
   }
   function nbFileTooLarge(file) {
     return !!(file && typeof file.size === 'number' && file.size > NB_MAX_UPLOAD_BYTES);
+  }
+  function nbItemsTotalBytes(list) {
+    return (list || items).reduce(function(sum, it) {
+      const f = it && it.file ? it.file : it;
+      return sum + (f && typeof f.size === 'number' ? f.size : 0);
+    }, 0);
+  }
+  function renderCount() {
+    const n = items.length;
+    if (n === 0) {
+      countText.textContent = 'No creatives yet';
+    } else {
+      const total = nbItemsTotalBytes();
+      const over = total > NB_MAX_BATCH_BYTES;
+      countText.textContent =
+        n + ' creative' + (n === 1 ? '' : 's') + ' ready · ' +
+        fmtSize(total) + ' total (max ' + NB_MAX_UPLOAD_MB_LABEL + ' MB combined)' +
+        (over ? ' — over limit' : '');
+      countText.style.color = over ? '#f87171' : '';
+    }
+    if (n === 0) countText.style.color = '';
+    btnClear.style.display = n > 0 ? 'inline-block' : 'none';
+    if (typeof refreshGroupPreview === 'function') refreshGroupPreview();
   }
 
   function renderItem(it, idx) {
@@ -1814,16 +1834,39 @@
     opts = opts || {};
     const media = Array.from(fileList).filter(nbIsAllowedMediaFile);
     const oversized = media.filter(nbFileTooLarge);
-    const allowed = media.filter(f => !nbFileTooLarge(f));
+    const candidates = media.filter(f => !nbFileTooLarge(f));
     if (oversized.length) {
       const names = oversized.map(f => f.name + ' (' + fmtSize(f.size) + ')').join('\n');
       alert(
-        'These files are over the 500 MB launch limit and were skipped:\n\n' +
+        'These files are over the ' + NB_MAX_UPLOAD_MB_LABEL + ' MB per-file limit and were skipped:\n\n' +
         names +
         '\n\nCompress to H.264 MP4 (under ~100 MB is ideal for ad creatives) and drop again.'
       );
     }
-    allowed.forEach((f, i) => {
+    let room = NB_MAX_BATCH_BYTES - nbItemsTotalBytes();
+    const accepted = [];
+    const skippedTotal = [];
+    candidates.forEach(function(f) {
+      if (f.size <= room) {
+        accepted.push(f);
+        room -= f.size;
+      } else {
+        skippedTotal.push(f);
+      }
+    });
+    if (skippedTotal.length) {
+      const wouldBe = nbItemsTotalBytes() + candidates.reduce(function(s, f) { return s + f.size; }, 0);
+      alert(
+        'These ' + candidates.length + ' file' + (candidates.length === 1 ? '' : 's') +
+        ' total ' + fmtSize(wouldBe) + ' with what you already selected — max upload is ' +
+        NB_MAX_UPLOAD_MB_LABEL + ' MB for all files combined.\n\n' +
+        (accepted.length
+          ? ('Added ' + accepted.length + ' that fit; skipped:\n' +
+             skippedTotal.map(function(f) { return f.name + ' (' + fmtSize(f.size) + ')'; }).join('\n'))
+          : 'Nothing new was added. Remove some creatives or compress, then try again.')
+      );
+    }
+    accepted.forEach(function(f, i) {
       items.push({
         file: f,
         headline: (opts.headlines && opts.headlines[i]) || defH.value || '',
@@ -1907,9 +1950,20 @@
       e.preventDefault();
       const names = oversized.map(it => it.file.name + ' (' + fmtSize(it.file.size) + ')').join('\n');
       alert(
-        'Cannot launch — these creatives exceed the 500 MB upload limit:\n\n' +
+        'Cannot launch — these creatives exceed the ' + NB_MAX_UPLOAD_MB_LABEL + ' MB per-file limit:\n\n' +
         names +
         '\n\nCompress to H.264 MP4 and try again. (Raw phone .mov exports are often too large.)'
+      );
+      dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const totalBytes = nbItemsTotalBytes();
+    if (totalBytes > NB_MAX_BATCH_BYTES) {
+      e.preventDefault();
+      alert(
+        'These ' + items.length + ' files total ' + fmtSize(totalBytes) +
+        ' — max upload is ' + NB_MAX_UPLOAD_MB_LABEL + ' MB for all files combined.\n\n' +
+        'Remove some or compress, then try again.'
       );
       dropzone.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;

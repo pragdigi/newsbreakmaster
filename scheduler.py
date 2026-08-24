@@ -44,6 +44,37 @@ def _env_credentials_for(platform: str) -> List[Dict[str, Any]]:
                 }
             ]
         return []
+    if platform == "outbrain":
+        token = (os.environ.get("OUTBRAIN_ACCESS_TOKEN") or "").strip()
+        username = (os.environ.get("OUTBRAIN_USERNAME") or "").strip()
+        password = (os.environ.get("OUTBRAIN_PASSWORD") or "").strip()
+        raw = os.environ.get("OUTBRAIN_DEFAULT_MARKETER_IDS", "")
+        marketer_ids = [x.strip() for x in raw.split(",") if x.strip()]
+        if token or (username and password):
+            return [
+                {
+                    "uid": "env",
+                    "access_token": token,
+                    "username": username,
+                    "password": password,
+                    "account_ids": marketer_ids,
+                }
+            ]
+        return []
+    if platform == "mediago":
+        tok = (os.environ.get("MEDIAGO_API_TOKEN") or "").strip()
+        raw = os.environ.get("MEDIAGO_DEFAULT_ACCOUNT_IDS", "")
+        account_ids = [x.strip() for x in raw.split(",") if x.strip()]
+        if tok:
+            return [
+                {
+                    "uid": "env",
+                    "api_token": tok,
+                    "auth_level": (os.environ.get("MEDIAGO_AUTH_LEVEL") or "auto").strip(),
+                    "account_ids": account_ids,
+                }
+            ]
+        return []
     return []
 
 
@@ -57,12 +88,27 @@ def _file_credentials_for(platform: str) -> List[Dict[str, Any]]:
         if platform == "newsbreak":
             entry["access_token"] = tok.get("access_token")
             entry["org_ids"] = tok.get("org_ids") or []
-        else:  # smartnews
+        elif platform == "smartnews":
             entry["client_id"] = tok.get("client_id")
             entry["client_secret"] = tok.get("client_secret") or tok.get("access_token")
             entry["account_ids"] = tok.get("account_ids") or tok.get("org_ids") or []
             if not entry["client_id"] or not entry["client_secret"]:
                 continue
+        elif platform == "outbrain":
+            entry["access_token"] = tok.get("access_token")
+            entry["username"] = tok.get("username")
+            entry["password"] = tok.get("password")
+            entry["account_ids"] = tok.get("account_ids") or tok.get("org_ids") or []
+            if not entry["access_token"] and not (entry["username"] and entry["password"]):
+                continue
+        elif platform == "mediago":
+            entry["api_token"] = tok.get("api_token") or tok.get("access_token")
+            entry["auth_level"] = tok.get("auth_level") or "auto"
+            entry["account_ids"] = tok.get("account_ids") or tok.get("org_ids") or []
+            if not entry["api_token"]:
+                continue
+        else:
+            continue
         out.append(entry)
     return out
 
@@ -97,6 +143,21 @@ def _run_for_platform(platform: str) -> None:
                     "smartnews",
                     client_id=cred.get("client_id"),
                     client_secret=cred.get("client_secret"),
+                    account_ids=cred.get("account_ids") or [],
+                )
+            elif platform == "outbrain":
+                adapter = get_adapter(
+                    "outbrain",
+                    access_token=cred.get("access_token"),
+                    username=cred.get("username"),
+                    password=cred.get("password"),
+                    marketer_ids=cred.get("account_ids") or [],
+                )
+            elif platform == "mediago":
+                adapter = get_adapter(
+                    "mediago",
+                    api_token=cred.get("api_token"),
+                    auth_level=cred.get("auth_level") or "auto",
                     account_ids=cred.get("account_ids") or [],
                 )
             else:
@@ -166,6 +227,21 @@ def _adapters_for_platform(platform: str):
                     "smartnews",
                     client_id=cred.get("client_id"),
                     client_secret=cred.get("client_secret"),
+                    account_ids=cred.get("account_ids") or [],
+                )
+            elif platform == "outbrain":
+                adapter = get_adapter(
+                    "outbrain",
+                    access_token=cred.get("access_token"),
+                    username=cred.get("username"),
+                    password=cred.get("password"),
+                    marketer_ids=cred.get("account_ids") or [],
+                )
+            elif platform == "mediago":
+                adapter = get_adapter(
+                    "mediago",
+                    api_token=cred.get("api_token"),
+                    auth_level=cred.get("auth_level") or "auto",
                     account_ids=cred.get("account_ids") or [],
                 )
             else:

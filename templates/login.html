@@ -12,6 +12,15 @@
     <div style="text-align:center;margin-bottom:16px;">
       <img src="{{ url_for('static', filename='logo.svg') }}" alt="NewsBreak Launcher" height="56">
     </div>
+    <form method="post" action="{{ url_for('platform_switch') }}" class="nb-platform-switcher" style="margin:0 auto 16px;width:fit-content;">
+      <input type="hidden" name="next" value="{{ url_for('login') }}">
+      <label class="nb-platform-label" for="nb-login-platform">Platform</label>
+      <select id="nb-login-platform" name="platform" class="nb-platform-select" onchange="this.form.submit()">
+        {% for p in available_platforms %}
+        <option value="{{ p.id }}" {% if p.id == active_platform %}selected{% endif %}>{{ p.label }}</option>
+        {% endfor %}
+      </select>
+    </form>
     {% if active_platform == 'smartnews' %}
     <p class="nb-muted">
       Paste your <strong>Developer App</strong> Client&nbsp;ID (numeric) and Client&nbsp;Secret from
@@ -25,6 +34,13 @@
       API), or sign in with your Outbrain username&nbsp;+&nbsp;password.
     </p>
     <p class="nb-muted">Leave <strong>Marketer&nbsp;IDs</strong> blank to auto-discover every marketer (ad account) this token can manage.</p>
+    {% elif active_platform == 'mediago' %}
+    <p class="nb-muted">
+      Paste the <strong>Base64 API token</strong> from your MediaGo AM
+      (docs: <a href="https://apidoc.mediago.io" target="_blank" rel="noopener">apidoc.mediago.io</a>).
+      The app exchanges it for a short-lived Bearer token — native campaigns only.
+    </p>
+    <p class="nb-muted">Leave <strong>Account IDs</strong> blank to auto-discover every account this token can manage (client-level tokens list all accounts).</p>
     {% else %}
     <p class="nb-muted">Paste your API <strong>Access-Token</strong> from Ad Manager → Resources → API Access Tokens.</p>
     <p class="nb-muted">Enter one or more <strong>Organization IDs</strong> (comma-separated). Required for <code>getGroupsByOrgIds</code>.</p>
@@ -54,6 +70,17 @@
         </div>
       </div>
       <label class="nb-label">Marketer IDs <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
+      <input type="text" name="org_ids" class="nb-input" placeholder="leave blank to auto-discover" value="{{ default_org_ids }}">
+      {% elif active_platform == 'mediago' %}
+      <label class="nb-label">API Token</label>
+      <textarea name="api_token" class="nb-input nb-textarea" rows="4" placeholder="Base64 API token from your AM" required></textarea>
+      <label class="nb-label">Auth level</label>
+      <select name="auth_level" class="nb-select">
+        <option value="auto" selected>Auto (try client, then account)</option>
+        <option value="client">Client-level (multi-account)</option>
+        <option value="account">Account-level</option>
+      </select>
+      <label class="nb-label">Account IDs <span class="nb-muted" style="font-weight:400;">(optional)</span></label>
       <input type="text" name="org_ids" class="nb-input" placeholder="leave blank to auto-discover" value="{{ default_org_ids }}">
       {% else %}
       <label class="nb-label">Access-Token</label>

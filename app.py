@@ -216,6 +216,23 @@ def _env_outbrain_configured() -> bool:
     )
 
 
+def _env_mediago_api_token() -> str:
+    return (_cfg_val("MEDIAGO_API_TOKEN", "") or "").strip()
+
+
+def _env_mediago_auth_level() -> str:
+    return (_cfg_val("MEDIAGO_AUTH_LEVEL", "auto") or "auto").strip().lower() or "auto"
+
+
+def _env_mediago_account_ids() -> list[str]:
+    raw = _cfg_val("MEDIAGO_DEFAULT_ACCOUNT_IDS", "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _env_mediago_configured() -> bool:
+    return bool(_env_mediago_api_token())
+
+
 def _effective_token(platform: str | None = None) -> dict | None:
     """Prefer env-configured credentials so Render redeploys don't force re-login.
 
@@ -257,6 +274,18 @@ def _effective_token(platform: str | None = None) -> dict | None:
         ):
             return saved
         return None
+    if p == "mediago":
+        if _env_mediago_configured():
+            return {
+                "api_token": _env_mediago_api_token(),
+                "auth_level": _env_mediago_auth_level(),
+                "org_ids": _env_mediago_account_ids(),
+                "platform": p,
+            }
+        saved = storage.load_token(_user_id(), platform=p)
+        if saved and (saved.get("api_token") or saved.get("access_token")):
+            return saved
+        return None
     return None
 
 
@@ -296,6 +325,12 @@ def _adapter(platform: str | None = None):
             "username": tok.get("username"),
             "password": tok.get("password"),
             "marketer_ids": tok.get("org_ids") or tok.get("marketer_ids") or [],
+        }
+    elif p == "mediago":
+        credentials = {
+            "api_token": tok.get("api_token") or tok.get("access_token"),
+            "auth_level": tok.get("auth_level") or _env_mediago_auth_level(),
+            "account_ids": tok.get("org_ids") or tok.get("account_ids") or [],
         }
     else:
         return None
@@ -389,6 +424,17 @@ def _require_basic_auth():
 
 
 @app.before_request
+def _honor_platform_query():
+    """Keep ``?platform=mediago`` (etc.) deep-links working on HTML pages."""
+    if request.path.startswith("/api/") or request.path.startswith("/static"):
+        return None
+    raw = (request.args.get("platform") or "").strip().lower()
+    if raw in PLATFORMS:
+        session["platform"] = raw
+    return None
+
+
+@app.before_request
 def _start_jobs():
     if not app.config.get("_scheduler_started"):
         start_scheduler(15)
@@ -402,7 +448,7 @@ def _inject_platform():
         "active_platform": p,
         "active_platform_label": PLATFORM_LABELS.get(p, p.title()),
         "active_platform_currency": PLATFORM_CURRENCIES.get(p, "USD"),
-        "supports_ad_set_scope": p not in ("outbrain",),
+        "supports_ad_set_scope": p not in ("outbrain", "mediago"),
         "available_platforms": [
             {"id": pid, "label": PLATFORM_LABELS.get(pid, pid.title())}
             for pid in PLATFORMS
@@ -507,6 +553,7 @@ def login():
         (platform == "newsbreak" and _env_access_token())
         or (platform == "smartnews" and _env_smartnews_configured())
         or (platform == "outbrain" and _env_outbrain_configured())
+        or (platform == "mediago" and _env_mediago_configured())
     ):
         return redirect(url_for("dashboard"))
     err = None
@@ -554,6 +601,31 @@ def login():
                     )
                     storage.save_token(_user_id(), saved, org_ids, platform=platform)
                     return redirect(url_for("dashboard"))
+            elif platform == "mediago":
+                api_token = (
+                    request.form.get("api_token") or request.form.get("access_token") or ""
+                ).strip()
+                auth_level = (request.form.get("auth_level") or "auto").strip().lower() or "auto"
+                if not api_token:
+                    err = (
+                        "MediaGo requires the Base64 API token from your "
+                        "account manager (exchanged for a Bearer access token)."
+                    )
+                else:
+                    credentials = {
+                        "api_token": api_token,
+                        "auth_level": auth_level,
+                        "account_ids": org_ids,
+                    }
+                    adapter = get_adapter(platform, **credentials)
+                    adapter.verify()
+                    storage.save_token(
+                        _user_id(),
+                        {"api_token": api_token, "auth_level": auth_level},
+                        org_ids,
+                        platform=platform,
+                    )
+                    return redirect(url_for("dashboard"))
             else:  # smartnews
                 client_id = (
                     request.form.get("client_id") or request.form.get("access_token") or ""
@@ -583,11 +655,16 @@ def login():
             err = str(e)
         except Exception as e:
             err = f"Login failed: {e}"
-    default_org = (
-        _cfg_val("NEWSBREAK_DEFAULT_ORG_IDS", "")
-        if platform == "newsbreak"
-        else _cfg_val("SMARTNEWS_DEFAULT_ACCOUNT_IDS", "")
-    )
+    if platform == "newsbreak":
+        default_org = _cfg_val("NEWSBREAK_DEFAULT_ORG_IDS", "")
+    elif platform == "smartnews":
+        default_org = _cfg_val("SMARTNEWS_DEFAULT_ACCOUNT_IDS", "")
+    elif platform == "outbrain":
+        default_org = _cfg_val("OUTBRAIN_DEFAULT_MARKETER_IDS", "")
+    elif platform == "mediago":
+        default_org = _cfg_val("MEDIAGO_DEFAULT_ACCOUNT_IDS", "")
+    else:
+        default_org = ""
     return render_template(
         "login.html",
         error=err,
@@ -691,9 +768,10 @@ def public_creative(filename):
 
 
 def _outbrain_public_base_url() -> str:
-    """Best-effort public base URL for image hosting Outbrain can reach."""
+    """Best-effort public base URL for image hosting Outbrain/MediaGo can reach."""
     base = (
         _cfg_val("OUTBRAIN_PUBLIC_BASE_URL", "")
+        or _cfg_val("MEDIAGO_PUBLIC_BASE_URL", "")
         or _cfg_val("AGENT_BASE_URL", "")
         or os.environ.get("RENDER_EXTERNAL_URL", "")
     ).strip()
@@ -729,6 +807,42 @@ def launch():
     except Exception:
         accounts = []
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
+
+    # MediaGo native launches go through a dedicated handler.
+    if platform == "mediago":
+        from bulk_launcher_mediago import mediago_bulk_launch
+
+        if request.method == "GET":
+            return render_template(
+                "launch.html",
+                accounts=account_options,
+                campaigns=[],
+                pixels=storage.list_pixels(platform=platform),
+                events=storage.list_events(platform=platform),
+                offers=storage.list_offers(platform=platform),
+            )
+        exclusions = []
+        account_id = (request.form.get("account_id") or "").strip()
+        if account_id:
+            exclusions = storage.load_site_exclusions(account_id, platform=platform)
+        result = mediago_bulk_launch(
+            adapter,
+            form=request.form,
+            files=request.files,
+            host_image=_host_creative_image,
+            exclusions=exclusions,
+        )
+        _studio_link_launch_if_any(platform, request.form.get("studio_gen_id"), result)
+        _mark_library_used_if_any(platform, request.form, result)
+        return render_template(
+            "launch.html",
+            accounts=account_options,
+            campaigns=[],
+            pixels=storage.list_pixels(platform=platform),
+            events=storage.list_events(platform=platform),
+            offers=storage.list_offers(platform=platform),
+            result=result,
+        )
 
     # Outbrain / Teads launches go through a dedicated handler.
     if platform == "outbrain":
@@ -1038,6 +1152,136 @@ def scaling():
         "scaling.html",
         accounts=account_options,
         supports_ad_set=adapter.supports_ad_set_scope,
+    )
+
+
+@app.route("/sources")
+def sources_page():
+    adapter = _adapter()
+    if not adapter:
+        return redirect(url_for("login"))
+    try:
+        accounts = adapter.get_accounts()
+    except Exception:
+        accounts = []
+    account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
+    return render_template(
+        "sources.html",
+        accounts=account_options,
+        supports_site_block=hasattr(adapter, "block_sites"),
+        supports_site_report=hasattr(adapter, "fetch_site_report_rows"),
+    )
+
+
+@app.route("/api/sources/report")
+def api_sources_report():
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "not logged in"}), 401
+    account_id = (request.args.get("account_id") or "").strip()
+    if not account_id:
+        return jsonify({"error": "account_id is required"}), 400
+    try:
+        days = int(request.args.get("days") or 7)
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 31))
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+    if not hasattr(adapter, "fetch_site_report_rows"):
+        return jsonify(
+            {
+                "ok": False,
+                "error": f"{adapter.label} does not expose a site-dimension report yet.",
+                "rows": [],
+                "exclusions": storage.load_site_exclusions(
+                    account_id, platform=adapter.platform
+                ),
+            }
+        )
+    try:
+        raw = adapter.fetch_site_report_rows(account_id, start, end)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "rows": []}), 502
+    from platforms.mediago import score_source_rows
+
+    scored = score_source_rows(raw)
+    exclusions = storage.load_site_exclusions(account_id, platform=adapter.platform)
+    excluded_ids = {str(x.get("site_id")) for x in exclusions}
+    for row in scored:
+        row["excluded"] = str(row.get("site_id")) in excluded_ids
+    return jsonify(
+        {
+            "ok": True,
+            "account_id": account_id,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "rows": scored,
+            "exclusions": exclusions,
+        }
+    )
+
+
+@app.route("/api/sources/exclusions", methods=["GET", "POST"])
+def api_sources_exclusions():
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "not logged in"}), 401
+    if request.method == "GET":
+        account_id = (request.args.get("account_id") or "").strip()
+        if not account_id:
+            return jsonify({"error": "account_id is required"}), 400
+        return jsonify(
+            {
+                "ok": True,
+                "account_id": account_id,
+                "sites": storage.load_site_exclusions(account_id, platform=adapter.platform),
+            }
+        )
+    data = request.get_json(silent=True) or {}
+    account_id = str(data.get("account_id") or "").strip()
+    if not account_id:
+        return jsonify({"error": "account_id is required"}), 400
+    sites = data.get("sites") or []
+    if not isinstance(sites, list):
+        return jsonify({"error": "sites must be a list"}), 400
+    saved = storage.save_site_exclusions(account_id, sites, platform=adapter.platform)
+    return jsonify({"ok": True, "account_id": account_id, "sites": saved})
+
+
+@app.route("/api/sources/apply", methods=["POST"])
+def api_sources_apply():
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "not logged in"}), 401
+    if not hasattr(adapter, "block_sites"):
+        return jsonify(
+            {"ok": False, "error": f"{adapter.label} cannot push a site blocklist via API."}
+        ), 400
+    data = request.get_json(silent=True) or {}
+    account_id = str(data.get("account_id") or "").strip()
+    if not account_id:
+        return jsonify({"error": "account_id is required"}), 400
+    sites = data.get("sites")
+    if sites is None:
+        sites = storage.load_site_exclusions(account_id, platform=adapter.platform)
+    campaign_id = str(data.get("campaign_id") or "").strip() or None
+    block = data.get("block", True)
+    try:
+        results = adapter.block_sites(
+            account_id, sites, campaign_id=campaign_id, block=bool(block)
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+    storage.save_site_exclusions(account_id, sites, platform=adapter.platform)
+    return jsonify(
+        {
+            "ok": True,
+            "account_id": account_id,
+            "campaign_id": campaign_id,
+            "applied": len(sites or []),
+            "results": results,
+        }
     )
 
 

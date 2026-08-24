@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}Sources — {{ active_platform_label }}{% endblock %}
+{% block content %}
+<div class="nb-dash-header">
+  <div>
+    <h1>Sources — {{ active_platform_label }}</h1>
+    <p class="nb-muted">
+      Weight traffic sources against the account average. Flag the bottom quartile
+      (or sites with spend and no conversions), exclude them, and push the blocklist
+      when the platform API supports it.
+    </p>
+  </div>
+</div>
+
+<div class="nb-card" style="margin-bottom:16px;">
+  <div class="nb-row-3">
+    <div>
+      <label class="nb-label">Ad account</label>
+      <select id="src-account" class="nb-select">
+        <option value="">— Select —</option>
+        {% for id, name in accounts.items() %}
+        <option value="{{ id }}">{{ name }} ({{ id }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="nb-label">Lookback</label>
+      <select id="src-days" class="nb-select">
+        <option value="1">1 day</option>
+        <option value="3">3 days</option>
+        <option value="7" selected>7 days</option>
+        <option value="14">14 days</option>
+      </select>
+    </div>
+    <div style="align-self:end;">
+      <button type="button" class="nb-btn nb-btn-primary" id="src-load">Analyze sources</button>
+    </div>
+  </div>
+  {% if not supports_site_report %}
+  <p class="nb-hint" style="margin-top:12px;">
+    {{ active_platform_label }} does not expose a site-dimension report yet.
+    Exclusions still persist and will apply on MediaGo launches.
+  </p>
+  {% endif %}
+  <p id="src-status" class="nb-muted" style="margin-top:10px;"></p>
+</div>
+
+<div class="nb-card">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+    <div>
+      <strong id="src-count">0 sites</strong>
+      <span class="nb-muted" id="src-summary"></span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button type="button" class="nb-btn nb-btn-small" id="src-flag-losers">Select flagged</button>
+      <button type="button" class="nb-btn nb-btn-small" id="src-save">Save exclusions</button>
+      {% if supports_site_block %}
+      <button type="button" class="nb-btn nb-btn-small nb-btn-primary" id="src-apply">Push blocklist to {{ active_platform_label }}</button>
+      {% endif %}
+    </div>
+  </div>
+  <div style="overflow:auto;">
+    <table class="nb-table" id="src-table">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="src-check-all" title="Select all"></th>
+          <th data-sort="site_name">Site</th>
+          <th data-sort="spend">Spend</th>
+          <th data-sort="clicks">Clicks</th>
+          <th data-sort="conversions">Conv.</th>
+          <th data-sort="cpa">CPA</th>
+          <th data-sort="cpc">CPC</th>
+          <th data-sort="weight">Weight</th>
+          <th data-sort="flag">Flag</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+(function(){
+  const CURRENCY = {{ active_platform_currency | tojson }};
+  const SUPPORTS_BLOCK = {{ supports_site_block | tojson }};
+  let rows = [];
+  let sortKey = 'spend';
+  let sortDir = -1;
+  const excluded = new Set();
+
+  function money(n){
+    const v = Number(n||0);
+    const sym = CURRENCY === 'JPY' ? '¥' : '$';
+    return sym + v.toFixed(CURRENCY === 'JPY' ? 0 : 2);
+  }
+  function fmt(n, d){ return (Number(n)||0).toFixed(d === undefined ? 2 : d); }
+  function flagLabel(f){
+    if (!f) return '';
+    if (String(f).indexOf('no_conv') >= 0) return 'No conversions';
+    if (f === 'bottom_quartile') return 'Bottom quartile';
+    return f;
+  }
+
+  function render(){
+    const tbody = document.querySelector('#src-table tbody');
+    tbody.innerHTML = '';
+    const sorted = rows.slice().sort(function(a,b){
+      const av = a[sortKey], bv = b[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'string') return av.localeCompare(bv) * sortDir;
+      return (av - bv) * sortDir;
+    });
+    sorted.forEach(function(r){
+      const tr = document.createElement('tr');
+      if (r.flag) tr.style.background = 'rgba(248,113,113,0.08)';
+      const checked = excluded.has(String(r.site_id));
+      tr.innerHTML =
+        '<td><input type="checkbox" data-id="'+r.site_id+'" '+(checked?'checked':'')+'></td>' +
+        '<td><strong>'+escapeHtml(r.site_name||r.site_id)+'</strong><div class="nb-muted" style="font-size:11px;">'+escapeHtml(r.site_id)+'</div></td>' +
+        '<td>'+money(r.spend)+'</td>' +
+        '<td>'+fmt(r.clicks,0)+'</td>' +
+        '<td>'+fmt(r.conversions,0)+'</td>' +
+        '<td>'+(r.cpa==null?'—':money(r.cpa))+'</td>' +
+        '<td>'+(r.cpc==null?'—':money(r.cpc))+'</td>' +
+        '<td>'+fmt(r.weight,2)+'</td>' +
+        '<td>'+escapeHtml(flagLabel(r.flag))+'</td>';
+      tr.querySelector('input[type=checkbox]').addEventListener('change', function(){
+        if (this.checked) excluded.add(String(r.site_id));
+        else excluded.delete(String(r.site_id));
+      });
+      tbody.appendChild(tr);
+    });
+    document.getElementById('src-count').textContent = rows.length + ' site' + (rows.length===1?'':'s');
+    const flagged = rows.filter(function(r){ return r.flag; }).length;
+    document.getElementById('src-summary').textContent = flagged ? (' · '+flagged+' flagged') : '';
+  }
+
+  function escapeHtml(s){
+    return String(s||'').replace(/[&<>"']/g, function(c){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]);
+    });
+  }
+
+  function selectedSites(){
+    return rows.filter(function(r){ return excluded.has(String(r.site_id)); }).map(function(r){
+      return { site_id: r.site_id, domain_name: r.site_name, site_name: r.site_name, reason: r.flag||'' };
+    });
+  }
+
+  document.querySelectorAll('#src-table thead th[data-sort]').forEach(function(th){
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', function(){
+      const key = th.getAttribute('data-sort');
+      if (sortKey === key) sortDir *= -1;
+      else { sortKey = key; sortDir = key === 'site_name' ? 1 : -1; }
+      render();
+    });
+  });
+  document.getElementById('src-check-all').addEventListener('change', function(){
+    const on = this.checked;
+    rows.forEach(function(r){ if (on) excluded.add(String(r.site_id)); else excluded.delete(String(r.site_id)); });
+    render();
+  });
+  document.getElementById('src-flag-losers').addEventListener('click', function(){
+    rows.forEach(function(r){ if (r.flag) excluded.add(String(r.site_id)); });
+    render();
+  });
+
+  document.getElementById('src-load').addEventListener('click', async function(){
+    const account = document.getElementById('src-account').value;
+    const days = document.getElementById('src-days').value;
+    const status = document.getElementById('src-status');
+    if (!account) { status.textContent = 'Pick an account.'; return; }
+    status.textContent = 'Loading site report…';
+    try {
+      const res = await fetch('/api/sources/report?account_id='+encodeURIComponent(account)+'&days='+encodeURIComponent(days));
+      const body = await res.json();
+      if (!body.ok && body.error) {
+        status.textContent = body.error;
+        rows = body.rows || [];
+      } else {
+        status.textContent = 'Window '+body.start+' → '+body.end;
+        rows = body.rows || [];
+      }
+      excluded.clear();
+      (body.exclusions || []).forEach(function(s){ if (s.site_id) excluded.add(String(s.site_id)); });
+      rows.forEach(function(r){ if (r.excluded) excluded.add(String(r.site_id)); });
+      render();
+    } catch (e) {
+      status.textContent = 'Failed: ' + e;
+    }
+  });
+
+  document.getElementById('src-save').addEventListener('click', async function(){
+    const account = document.getElementById('src-account').value;
+    const status = document.getElementById('src-status');
+    if (!account) { status.textContent = 'Pick an account.'; return; }
+    const res = await fetch('/api/sources/exclusions', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ account_id: account, sites: selectedSites() })
+    });
+    const body = await res.json();
+    status.textContent = body.ok ? ('Saved '+ (body.sites||[]).length +' exclusions.') : (body.error || 'Save failed');
+  });
+
+  const applyBtn = document.getElementById('src-apply');
+  if (applyBtn) applyBtn.addEventListener('click', async function(){
+    const account = document.getElementById('src-account').value;
+    const status = document.getElementById('src-status');
+    if (!account) { status.textContent = 'Pick an account.'; return; }
+    if (!confirm('Push the selected sites as an account-level blocklist on {{ active_platform_label }}?')) return;
+    const res = await fetch('/api/sources/apply', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ account_id: account, sites: selectedSites(), block: true })
+    });
+    const body = await res.json();
+    status.textContent = body.ok ? ('Applied '+body.applied+' sites.') : (body.error || 'Apply failed');
+  });
+})();
+</script>
+{% endblock %}

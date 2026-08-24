@@ -10,19 +10,21 @@ from typing import Any, Dict, List, Optional
 
 from .base import AdPlatformAdapter, UnsupportedOperationError
 
-PLATFORMS: List[str] = ["newsbreak", "smartnews", "outbrain"]
+PLATFORMS: List[str] = ["newsbreak", "smartnews", "outbrain", "mediago"]
 DEFAULT_PLATFORM = "newsbreak"
 
 PLATFORM_LABELS: Dict[str, str] = {
     "newsbreak": "NewsBreak",
     "smartnews": "SmartNews",
     "outbrain": "Outbrain / Teads",
+    "mediago": "MediaGo",
 }
 
 PLATFORM_CURRENCIES: Dict[str, str] = {
     "newsbreak": "USD",
     "smartnews": "JPY",
     "outbrain": "USD",
+    "mediago": "USD",
 }
 
 
@@ -44,6 +46,8 @@ def get_adapter(platform: str, **credentials: Any) -> AdPlatformAdapter:
                    client_credentials, not a shared key.
       - outbrain:  access_token (OB-TOKEN-V1 str) OR username+password, plus
                    marketer_ids (list[str], optional).
+      - mediago:   api_token (AM-issued Base64 token), optional auth_level
+                   ("auto" | "client" | "account"), optional account_ids.
     """
     p = normalize_platform(platform)
     if p == "newsbreak":
@@ -90,6 +94,29 @@ def get_adapter(platform: str, **credentials: Any) -> AdPlatformAdapter:
             client,
             credentials.get("marketer_ids")
             or credentials.get("account_ids")
+            or [],
+        )
+
+    if p == "mediago":
+        from mediago_api import MediaGoClient
+
+        from .mediago import MediaGoAdapter
+
+        api_token = (
+            credentials.get("api_token")
+            or credentials.get("access_token")
+            or ""
+        )
+        if not api_token:
+            raise ValueError("mediago adapter requires api_token")
+        client = MediaGoClient(
+            api_token,
+            auth_level=credentials.get("auth_level") or "auto",
+        )
+        return MediaGoAdapter(
+            client,
+            credentials.get("account_ids")
+            or credentials.get("org_ids")
             or [],
         )
 

@@ -54,6 +54,7 @@
         <td>
           <a class="nb-btn nb-btn-small" href="{{ url_for('launch') }}?account={{ a.get('id') }}">Launch</a>
           <a class="nb-btn nb-btn-small" href="{{ url_for('scaling') }}?account_id={{ a.get('id') }}">Scaling</a>
+          <a class="nb-btn nb-btn-small" href="{{ url_for('sources_page') }}">Sources</a>
           <a class="nb-btn nb-btn-small" href="{{ url_for('rules_page', account_id=a.get('id')) }}">Rules</a>
         </td>
       </tr>

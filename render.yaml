@@ -23,3 +23,14 @@ services:
       # (defaults to AGENT_BASE_URL / RENDER_EXTERNAL_URL when blank).
       - key: OUTBRAIN_PUBLIC_BASE_URL
         sync: false
+      # MediaGo (native DSP). AM-issued Base64 API token — exchanged for a
+      # short-lived Bearer token at runtime. Missing vars do not fail boot;
+      # the login form is the fallback.
+      - key: MEDIAGO_API_TOKEN
+        sync: false
+      - key: MEDIAGO_AUTH_LEVEL
+        sync: false
+      - key: MEDIAGO_DEFAULT_ACCOUNT_IDS
+        sync: false
+      - key: MEDIAGO_PUBLIC_BASE_URL
+        sync: false

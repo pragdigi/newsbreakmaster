@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 DEFAULT_PLATFORM = "newsbreak"
-KNOWN_PLATFORMS = ("newsbreak", "smartnews", "outbrain")
+KNOWN_PLATFORMS = ("newsbreak", "smartnews", "outbrain", "mediago")
 
 _LOCAL_STORAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage")
 
@@ -275,7 +275,9 @@ def load_token(user_id: str, *, platform: str = DEFAULT_PLATFORM) -> Optional[Di
     if not data:
         return None
     has_creds = bool(
-        data.get("access_token") or (data.get("client_id") and data.get("client_secret"))
+        data.get("access_token")
+        or data.get("api_token")
+        or (data.get("client_id") and data.get("client_secret"))
     )
     return data if has_creds else None
 
@@ -1034,3 +1036,57 @@ def update_agent_job(
             f.write(json.dumps(r, default=str) + "\n")
     shutil.move(tmp, path)
     return updated
+
+
+# --- Site / source exclusions (per platform + account) ---
+def _site_exclusions_file(platform: str) -> str:
+    return os.path.join(_catalog_dir(platform), "site_exclusions.json")
+
+
+def load_site_exclusions(account_id: str, *, platform: str = DEFAULT_PLATFORM) -> List[Dict[str, Any]]:
+    """Persisted publisher/site blocklist for one account on one platform."""
+    data = _read_json(_site_exclusions_file(platform), {})
+    if not isinstance(data, dict):
+        return []
+    bucket = data.get(str(account_id)) or {}
+    sites = bucket.get("sites") if isinstance(bucket, dict) else bucket
+    if not isinstance(sites, list):
+        return []
+    return [s for s in sites if isinstance(s, dict)]
+
+
+@_locked
+def save_site_exclusions(
+    account_id: str,
+    sites: List[Dict[str, Any]],
+    *,
+    platform: str = DEFAULT_PLATFORM,
+) -> List[Dict[str, Any]]:
+    path = _site_exclusions_file(platform)
+    data = _read_json_strict(path, {})
+    if not isinstance(data, dict):
+        data = {}
+    clean: List[Dict[str, Any]] = []
+    seen = set()
+    for s in sites or []:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("site_id") or "").strip()
+        if not sid or sid in seen or sid in ("0",):
+            continue
+        seen.add(sid)
+        clean.append(
+            {
+                "site_id": sid,
+                "domain_name": s.get("domain_name") or s.get("site_name") or "",
+                "site_name": s.get("site_name") or s.get("domain_name") or "",
+                "excluded_at": s.get("excluded_at") or datetime.now(timezone.utc).isoformat(),
+                "reason": s.get("reason") or s.get("flag") or "",
+            }
+        )
+    data[str(account_id)] = {
+        "sites": clean,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_json(path, data)
+    return clean

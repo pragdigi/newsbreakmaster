@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 _PLATFORM_ASPECT = {
     "smartnews": "1:1",
     "newsbreak": "16:9",
+    "outbrain": "1:1",
+    "mediago": "16:9",  # native 1.91:1 ≈ 16:9; launcher resizes to 1200×628
 }
 
 

@@ -9,6 +9,8 @@
         SmartNews campaigns (Marketing API v3). Upload one 1:1 square per ad — the 1.91:1 landscape is auto-generated.
       {% elif active_platform == 'outbrain' %}
         Outbrain / Teads campaigns (Amplify API). Drop creatives — each is regenerated to your chosen format (1:1 or 16:9) and shipped as a paused campaign.
+      {% elif active_platform == 'mediago' %}
+        MediaGo native campaigns only. Drop creatives — each is regenerated to 1200×628 (1.91:1) and shipped paused. Persisted source exclusions are applied after create.
       {% else %}
         Conversion campaigns. Drag &amp; drop creatives, pick a bid strategy, ship in one click.
       {% endif %}
@@ -1309,6 +1311,284 @@
         function addHidden(name,val){ if (val==null||val==='') return; var h=document.createElement('input'); h.type='hidden'; h.name=name; h.value=val; h.setAttribute('data-ob-generated','1'); holder.appendChild(h); }
         addHidden('headline_'+i, it.headline);
         addHidden('landing_page_url_'+i, it.landing_url);
+      });
+      form.appendChild(holder);
+    });
+  })();
+</script>
+{% elif active_platform == 'mediago' %}
+{% if result %}
+<div class="nb-card" style="margin-bottom:16px;">
+  {% set ok = result.get('ok') %}
+  <h3 style="margin:0 0 8px 0;">{% if ok %}Campaign created (paused, native){% else %}Launch failed{% endif %}</h3>
+  <div class="nb-kpi-grid" style="margin-bottom:12px;">
+    <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#34d399' if ok else '#f87171' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Format</div><div class="nb-kpi-value">{{ result.get('creative_format') or 'native' }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Ads</div><div class="nb-kpi-value">{{ result.get('ads', [])|length }}</div></div>
+    <div class="nb-kpi"><div class="nb-kpi-label">Errors</div><div class="nb-kpi-value" style="color:{{ '#f87171' if result.get('errors') else 'var(--text)' }};">{{ result.get('errors', [])|length }}</div></div>
+  </div>
+  {% if result.get('error') %}
+  <div class="nb-alert nb-alert-danger"><strong>Error:</strong> {{ result.error }}</div>
+  {% endif %}
+  {% if result.get('errors') %}
+  <div class="nb-alert nb-alert-danger">
+    <strong>Errors:</strong>
+    <ul style="margin:6px 0 0 18px;">
+      {% for e in result.errors %}<li style="margin:4px 0;">{{ e | tojson }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% if ok %}
+  <div class="nb-alert nb-alert-info" style="margin-top:8px;">{{ result.get('note') or 'Campaign created paused — review and enable it in MediaGo when ready.' }}</div>
+  {% endif %}
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;color:#6b7280;">Raw response</summary>
+    <pre class="nb-pre" style="max-height:240px;overflow:auto;">{{ result | tojson(indent=2) }}</pre>
+  </details>
+</div>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="mg-launch-form">
+  <div class="nb-field-group">
+    <h3>0 · Offer <span class="nb-muted" style="font-weight:400;font-size:13px;">(optional — prefills brand, headline, landing)</span></h3>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Offer</label>
+        <select id="mg-offer-ref" class="nb-select">
+          <option value="">— None —</option>
+          {% for o in offers %}
+          <option value="{{ o.id }}">{{ o.name }}{% if o.payout %} · ${{ '%.2f'|format(o.payout) }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div id="mg-offer-summary" class="nb-hint" style="align-self:end;"></div>
+    </div>
+  </div>
+
+  <div class="nb-field-group">
+    <h3>1 · Ad account</h3>
+    <select name="account_id" id="mg-account-id" class="nb-select" required>
+      <option value="">— Select —</option>
+      {% for id, name in accounts.items() %}
+      <option value="{{ id }}">{{ name }} ({{ id }})</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="nb-field-group">
+    <h3>2 · Native campaign</h3>
+    <div class="nb-row-2">
+      <div>
+        <label class="nb-label">Campaign name</label>
+        <input type="text" name="campaign_name" id="mg-campaign-name" class="nb-input" required>
+      </div>
+      <div>
+        <label class="nb-label">Brand name <span class="nb-muted" style="font-weight:400;">(max 30)</span></label>
+        <input type="text" name="brand_name" id="mg-brand-name" class="nb-input" maxlength="30" required>
+      </div>
+    </div>
+    <div class="nb-row-3" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Objective</label>
+        <select name="objective" class="nb-select">
+          <option value="conversions" selected>Online purchases</option>
+          <option value="lead">Lead generation</option>
+          <option value="awareness">Website engagement</option>
+        </select>
+      </div>
+      <div>
+        <label class="nb-label">Bid strategy</label>
+        <select name="charge_type" class="nb-select">
+          <option value="smart_bid" selected>Smart bid</option>
+          <option value="cpc">CPC</option>
+          <option value="max_cv">Max conversions</option>
+        </select>
+      </div>
+      <div>
+        <label class="nb-label">Product type</label>
+        <select name="product_type" class="nb-select">
+          <option value="Others" selected>Others</option>
+          <option value="E-commerce">E-commerce</option>
+          <option value="Lead Gen">Lead Gen</option>
+          <option value="Health &amp; Fitness">Health &amp; Fitness</option>
+          <option value="Finance &amp; Insurance">Finance &amp; Insurance</option>
+          <option value="Auto">Auto</option>
+        </select>
+      </div>
+    </div>
+    <div class="nb-row-3" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Daily cap <span class="nb-muted" style="font-weight:400;">(USD, min $20)</span></label>
+        <input type="number" name="daily_cap_usd" class="nb-input" min="20" step="0.01" value="50" required>
+      </div>
+      <div>
+        <label class="nb-label">Spend limit <span class="nb-muted" style="font-weight:400;">(USD, optional)</span></label>
+        <input type="number" name="spend_limit_usd" class="nb-input" min="20" step="0.01" placeholder="defaults to 30× daily">
+      </div>
+      <div>
+        <label class="nb-label">CPC / target <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
+        <input type="number" name="cpc_usd" class="nb-input" min="0.01" max="5" step="0.01" value="0.50">
+        <div class="nb-hint">Required for CPC / smart bid. Max $5. Daily/CPC ≥ 30.</div>
+      </div>
+    </div>
+    <div class="nb-row-2" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Landing page</label>
+        <input type="url" name="landing_page" id="mg-landing" class="nb-input" placeholder="https://..." required>
+      </div>
+      <div>
+        <label class="nb-label">UTM tracking</label>
+        <input type="text" name="utm_tracking" class="nb-input" placeholder="utm_source=mediago&amp;utm_medium=referral…">
+      </div>
+    </div>
+    <div class="nb-row-3" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Country</label>
+        <input type="text" name="location_region" class="nb-input" value="US" maxlength="4">
+      </div>
+      <div>
+        <label class="nb-label">Language</label>
+        <input type="text" name="language" class="nb-input" value="en" maxlength="5">
+      </div>
+      <div>
+        <label class="nb-label">Schedule <span class="nb-muted" style="font-weight:400;">(optional end)</span></label>
+        <div style="display:flex;gap:8px;">
+          <input type="datetime-local" name="start_time" class="nb-input" style="flex:1;">
+          <input type="datetime-local" name="end_time" class="nb-input" style="flex:1;">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="nb-field-group">
+    <h3>3 · Native format</h3>
+    <div>
+      <label style="margin-right:12px;"><input type="radio" name="creative_format" value="1.91:1" checked> 1.91:1 native (1200×628)</label>
+      <label><input type="radio" name="creative_format" value="1:1"> 1:1 native (1200×1200)</label>
+    </div>
+    <div class="nb-hint">Display / banner / video sizes are not offered. Landscape is outpainted from a square so copy is not cropped.</div>
+    <label style="display:block;margin-top:10px;">
+      <input type="checkbox" name="apply_site_exclusions" value="1" checked>
+      Apply saved source exclusions to this campaign after create
+    </label>
+  </div>
+
+  <div class="nb-field-group">
+    <h3>4 · Native ads <span class="nb-muted" style="font-weight:400;">(max 10 per campaign — extras become another campaign)</span></h3>
+    <label for="mg-file-input" class="nb-dropzone" id="mg-dropzone" style="margin-top:8px;">
+      <input type="file" id="mg-file-input" multiple accept="image/*" hidden>
+      <div class="nb-dropzone-icon" aria-hidden="true">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </div>
+      <div class="nb-dropzone-title">Drop native creatives here</div>
+      <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — each becomes one native ad (headline max 80 chars).</div>
+    </label>
+    <div class="nb-defaults-panel">
+      <div class="nb-defaults-title">Defaults</div>
+      <input type="text" id="mg-default-headline" class="nb-input" placeholder="Default headline (max 80 chars)" maxlength="80">
+    </div>
+    <div class="nb-creative-count">
+      <span id="mg-creative-count-text">No creatives yet</span>
+      <button type="button" class="nb-btn nb-btn-small" id="mg-clear-all" style="display:none;">Clear all</button>
+    </div>
+    <div id="mg-creative-grid" class="nb-creative-grid"></div>
+  </div>
+
+  <div class="nb-submit-bar" style="flex-wrap:wrap;gap:16px;align-items:center;">
+    <button type="submit" class="nb-btn nb-btn-primary">Launch MediaGo native campaign (paused)</button>
+    <a href="{{ url_for('dashboard') }}" class="nb-btn">Cancel</a>
+    <a href="{{ url_for('sources_page') }}" class="nb-btn">Review sources</a>
+  </div>
+</form>
+<script>
+  (function(){
+    var OFFERS = {{ offers|tojson }};
+    var sel = document.getElementById('mg-offer-ref');
+    var summary = document.getElementById('mg-offer-summary');
+    if (!sel) return;
+    sel.addEventListener('change', function(){
+      var o = (OFFERS||[]).find(function(x){ return x.id === sel.value; });
+      if (!o) { if (summary) summary.textContent=''; return; }
+      var land = String(o.landing_url||'').trim();
+      var brand = o.brand_name || o.name || '';
+      var landEl = document.getElementById('mg-landing');
+      var brandEl = document.getElementById('mg-brand-name');
+      var defH = document.getElementById('mg-default-headline');
+      if (landEl && land) landEl.value = land;
+      if (brandEl && brand) brandEl.value = String(brand).slice(0,30);
+      if (defH && o.headline) { defH.value = String(o.headline).slice(0,80); defH.dispatchEvent(new Event('input',{bubbles:true})); }
+      if (summary) summary.textContent = brand + (o.payout ? ' · $'+Number(o.payout).toFixed(2) : '');
+    });
+  })();
+  (function(){
+    var dropzone = document.getElementById('mg-dropzone');
+    var fileInput = document.getElementById('mg-file-input');
+    var grid = document.getElementById('mg-creative-grid');
+    var countText = document.getElementById('mg-creative-count-text');
+    var btnClear = document.getElementById('mg-clear-all');
+    var defH = document.getElementById('mg-default-headline');
+    var form = document.getElementById('mg-launch-form');
+    if (!dropzone || !grid || !form) return;
+    var items = [];
+    var prevH = '';
+    function esc(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+    function fmtSize(b){ if (b<1024) return b+' B'; if (b<1024*1024) return (b/1024).toFixed(1)+' KB'; return (b/1024/1024).toFixed(1)+' MB'; }
+    function renderCount(){
+      var n = items.length;
+      countText.textContent = n===0 ? 'No creatives yet' : (n+' native ad'+(n===1?'':'s')+' ready'+(n>10?' · will split into '+Math.ceil(n/10)+' campaigns':''));
+      btnClear.style.display = n>0 ? 'inline-block' : 'none';
+    }
+    function renderAll(){
+      grid.innerHTML='';
+      items.forEach(function(it,idx){
+        var card = document.createElement('div');
+        card.className = 'nb-creative-card';
+        card.innerHTML =
+          '<div class="nb-creative-media"><img src="'+esc(it.url)+'" alt=""><button type="button" class="nb-creative-remove" title="Remove">×</button></div>' +
+          '<div class="nb-creative-fields"><input type="text" data-role="headline" class="nb-input" maxlength="80" required placeholder="Headline (max 80)" value="'+esc(it.headline)+'"></div>';
+        card.querySelector('.nb-creative-remove').addEventListener('click', function(){ items.splice(idx,1); renderAll(); });
+        card.querySelector('[data-role="headline"]').addEventListener('input', function(){ items[idx].headline = this.value; });
+        grid.appendChild(card);
+      });
+      renderCount();
+    }
+    function addFiles(fileList){
+      Array.prototype.slice.call(fileList||[]).filter(function(f){ return f && f.type && f.type.indexOf('image/')===0; })
+        .forEach(function(f){ items.push({ file:f, headline: defH.value||'', url: URL.createObjectURL(f) }); });
+      renderAll();
+    }
+    ['dragenter','dragover'].forEach(function(ev){ dropzone.addEventListener(ev,function(e){ e.preventDefault(); dropzone.classList.add('dragover'); }); });
+    ['dragleave','drop'].forEach(function(ev){ dropzone.addEventListener(ev,function(e){ e.preventDefault(); dropzone.classList.remove('dragover'); }); });
+    dropzone.addEventListener('drop', function(e){ if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files); });
+    fileInput.addEventListener('change', function(e){ if (e.target.files && e.target.files.length) addFiles(e.target.files); fileInput.value=''; });
+    btnClear.addEventListener('click', function(){ items=[]; renderAll(); });
+    defH.addEventListener('input', function(){
+      items.forEach(function(it){ if (!it.headline || it.headline === prevH) it.headline = defH.value; });
+      prevH = defH.value; renderAll();
+    });
+    form.addEventListener('submit', function(e){
+      Array.prototype.slice.call(form.querySelectorAll('[data-mg-generated="1"]')).forEach(function(el){ el.parentNode.removeChild(el); });
+      if (items.length === 0) { e.preventDefault(); alert('Add at least one native creative.'); return; }
+      var invalid = [];
+      items.forEach(function(it,i){
+        var h = (it.headline||'').trim();
+        if (!h) invalid.push('Ad '+(i+1)+': headline required');
+        else if (h.length > 80) invalid.push('Ad '+(i+1)+': headline too long');
+      });
+      if (invalid.length) { e.preventDefault(); alert(invalid.join('\n')); return; }
+      var holder = document.createElement('div');
+      holder.style.display='none'; holder.setAttribute('data-mg-generated','1');
+      items.forEach(function(it,i){
+        var file = document.createElement('input');
+        file.type='file'; file.name='creative_'+i;
+        var dt = new DataTransfer(); dt.items.add(it.file); file.files = dt.files;
+        holder.appendChild(file);
+        var h=document.createElement('input'); h.type='hidden'; h.name='headline_'+i; h.value=it.headline; holder.appendChild(h);
       });
       form.appendChild(holder);
     });

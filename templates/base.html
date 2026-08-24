@@ -18,20 +18,17 @@
       <a href="{{ url_for('scaling') }}">Scaling</a>
       <a href="{{ url_for('rules_page') }}">Rules</a>
       <a href="{{ url_for('settings_page') }}">Offers</a>
+      <a href="{{ url_for('sources_page') }}">Sources</a>
       <a href="{{ url_for('studio_page') }}">AI Studio</a>
-      <span class="nb-platform-switcher" title="Active ad platform">
-        {% for p in available_platforms %}
-          {% if p.id == active_platform %}
-            <span class="nb-platform-active">{{ p.label }}</span>
-          {% else %}
-            <form method="post" action="{{ url_for('platform_switch') }}" style="display:inline;">
-              <input type="hidden" name="platform" value="{{ p.id }}">
-              <input type="hidden" name="next" value="{{ request.path }}">
-              <button type="submit" class="nb-platform-link">Switch to {{ p.label }}</button>
-            </form>
-          {% endif %}
-        {% endfor %}
-      </span>
+      <form method="post" action="{{ url_for('platform_switch') }}" class="nb-platform-switcher" title="Active ad platform">
+        <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+        <label class="nb-platform-label" for="nb-platform-select">Platform</label>
+        <select id="nb-platform-select" name="platform" class="nb-platform-select" onchange="this.form.submit()">
+          {% for p in available_platforms %}
+          <option value="{{ p.id }}" {% if p.id == active_platform %}selected{% endif %}>{{ p.label }}</option>
+          {% endfor %}
+        </select>
+      </form>
       <a href="{{ url_for('logout') }}">Log out</a>
     </nav>
   </header>

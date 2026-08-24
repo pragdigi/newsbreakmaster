@@ -47,10 +47,36 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 2px 8px;
+  padding: 2px 8px 2px 12px;
   border: 1px solid #2d3a4d;
   border-radius: 999px;
   background: rgba(59, 130, 246, 0.08);
+}
+.nb-platform-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.nb-platform-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%2394a3b8' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E") no-repeat right 6px center;
+  border: none;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 4px 22px 4px 2px;
+  cursor: pointer;
+  max-width: 180px;
+}
+.nb-platform-select:focus {
+  outline: none;
+}
+.nb-platform-select option {
+  color: #111;
+  background: #fff;
 }
 .nb-platform-active {
   color: var(--accent);

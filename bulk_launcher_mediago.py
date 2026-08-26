@@ -28,6 +28,8 @@ Expected form fields (see ``templates/launch.html`` mediago block):
     location_region     default US
     platform_*          mobile/desktop/tablet on, xbox off
     campaign_status     0 paused (default) | 1 on
+    dayparting_mode     all (24/7, default) | period
+    daypart_start_hour / daypart_end_hour  used when mode=period
     creative_format     "1.91:1" | "1:1"
     apply_site_exclusions  "1" (default) to push persisted site blocks
     headline_<n>        required per ad, <=80 chars
@@ -333,6 +335,48 @@ def _all_hours_dayparting() -> List[List[int]]:
     return [[1] * 24 for _ in range(7)]
 
 
+def _hour_window_dayparting(start_hour: int, end_hour: int) -> List[List[int]]:
+    """7×24 grid: 1 inside ``[start_hour, end_hour)`` (wraps past midnight)."""
+    start = max(0, min(24, int(start_hour)))
+    end = max(0, min(24, int(end_hour)))
+    if start == end or (start == 0 and end == 24):
+        return _all_hours_dayparting()
+    row = []
+    for h in range(24):
+        if start < end:
+            on = start <= h < end
+        else:
+            on = h >= start or h < end
+        row.append(1 if on else 0)
+    return [list(row) for _ in range(7)]
+
+
+def _parse_hour(v: Any, default: int) -> int:
+    if v in (None, ""):
+        return default
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
+def _day_parting(form: Mapping[str, Any]) -> List[List[int]]:
+    """MediaGo ``day_parting`` — 24/7 unless the operator picked a time period."""
+    raw = form.get("day_parting")
+    if isinstance(raw, list) and len(raw) == 7 and all(
+        isinstance(r, (list, tuple)) and len(r) == 24 for r in raw
+    ):
+        return [[1 if int(x or 0) else 0 for x in r] for r in raw]
+    mode = str(
+        form.get("dayparting_mode") or form.get("day_parting_mode") or "all"
+    ).strip().lower()
+    if mode in ("period", "set", "time", "time_period", "hours"):
+        start = _parse_hour(form.get("daypart_start_hour"), 0)
+        end = _parse_hour(form.get("daypart_end_hour"), 24)
+        return _hour_window_dayparting(start, end)
+    return _all_hours_dayparting()
+
+
 def _chunks(items: Sequence[Any], n: int) -> List[Sequence[Any]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
 
@@ -467,7 +511,7 @@ def build_campaign_payload(
         "campaign_name": name,
         "creative_type": "native",
         "status": _campaign_status(form),
-        "day_parting": _all_hours_dayparting(),
+        "day_parting": _day_parting(form),
         "dp_timezone": (form.get("dp_timezone") or "EST").strip() or "EST",
         "start_time": _fmt_dt(start),
         "end_time": end_s,

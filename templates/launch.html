@@ -1518,6 +1518,21 @@
         </select>
       </div>
       <div>
+        <label class="nb-label">Dayparting</label>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;">
+          <label><input type="radio" name="dayparting_mode" value="all" checked> 24/7</label>
+          <label><input type="radio" name="dayparting_mode" value="period"> Set time period</label>
+        </div>
+        <div id="mg-daypart-period" style="display:none;margin-top:8px;">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="number" name="daypart_start_hour" class="nb-input" min="0" max="23" value="9" title="Start hour">
+            <span class="nb-muted">to</span>
+            <input type="number" name="daypart_end_hour" class="nb-input" min="1" max="24" value="17" title="End hour">
+          </div>
+          <div class="nb-hint">Hours in the campaign timezone (end exclusive). Same window every day.</div>
+        </div>
+      </div>
+      <div>
         <label class="nb-label">Pacing</label>
         <select name="spend_mode" id="mg-pacing" class="nb-select">
           <option value="0" selected>Accelerate (spend ASAP)</option>
@@ -1657,6 +1672,12 @@
         ? 'Launch MediaGo native campaign (active)'
         : 'Launch MediaGo native campaign (paused)';
     }
+    function syncDayparting(){
+      var period = document.getElementById('mg-daypart-period');
+      if (!period) return;
+      var picked = document.querySelector('input[name="dayparting_mode"]:checked');
+      period.style.display = (picked && picked.value === 'period') ? '' : 'none';
+    }
     function selectAccount(ids){
       if (!acct) return;
       var current = String(acct.value || '');
@@ -1770,6 +1791,10 @@
       el.addEventListener('change', syncLaunchButton);
     });
     syncLaunchButton();
+    Array.prototype.slice.call(document.querySelectorAll('input[name="dayparting_mode"]')).forEach(function(el){
+      el.addEventListener('change', syncDayparting);
+    });
+    syncDayparting();
     if (acct) acct.addEventListener('change', loadPixels);
     if (pxBtn) pxBtn.addEventListener('click', loadPixels);
     if (acct && acct.value) loadPixels();

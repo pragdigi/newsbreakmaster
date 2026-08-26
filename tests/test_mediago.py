@@ -208,6 +208,7 @@ class MediaGoLauncherTest(unittest.TestCase):
         self.assertEqual(payload["ad"][0]["headline"], "Hello world")
         self.assertEqual(len(payload["day_parting"]), 7)
         self.assertEqual(len(payload["day_parting"][0]), 24)
+        self.assertTrue(all(h == 1 for day in payload["day_parting"] for h in day))
 
     def test_build_payload_rejects_low_daily(self):
         from bulk_launcher_mediago import build_campaign_payload
@@ -471,6 +472,40 @@ class MediaGoPixelAndCpaTest(unittest.TestCase):
         self.assertEqual(payload["os_targeting"]["type"], "ALL")
         self.assertEqual(payload["browser_targeting"]["type"], "ALL")
         self.assertEqual(payload["optimization_type"], "-1")
+        self.assertEqual(payload["day_parting"], [[1] * 24 for _ in range(7)])
+
+    def test_payload_dayparting_24_7_default_and_period(self):
+        from bulk_launcher_mediago import build_campaign_payload
+
+        base = {
+            "campaign_name": "X",
+            "brand_name": "B",
+            "landing_page": "https://x.com",
+            "daily_cap_usd": "100",
+            "target_cpa_usd": "40",
+        }
+        omitted = build_campaign_payload(base, [{"asset_name": "a", "img": "https://i", "headline": "H"}])
+        self.assertEqual(omitted["day_parting"], [[1] * 24 for _ in range(7)])
+
+        all_mode = build_campaign_payload(
+            {**base, "dayparting_mode": "all"},
+            [{"asset_name": "a", "img": "https://i", "headline": "H"}],
+        )
+        self.assertEqual(all_mode["day_parting"], [[1] * 24 for _ in range(7)])
+
+        period = build_campaign_payload(
+            {
+                **base,
+                "dayparting_mode": "period",
+                "daypart_start_hour": "9",
+                "daypart_end_hour": "17",
+            },
+            [{"asset_name": "a", "img": "https://i", "headline": "H"}],
+        )
+        self.assertEqual(period["day_parting"][0][:9], [0] * 9)
+        self.assertEqual(period["day_parting"][0][9:17], [1] * 8)
+        self.assertEqual(period["day_parting"][0][17:], [0] * 7)
+        self.assertEqual(len(period["day_parting"]), 7)
 
     def test_payload_pacing_standard_and_active_status(self):
         from bulk_launcher_mediago import build_campaign_payload

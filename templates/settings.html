@@ -133,6 +133,15 @@ function offerPixelRef(o) {
   if (o && o.pixels && o.pixels[PLATFORM]) return o.pixels[PLATFORM];
   return (o && o.pixel_id) || '';
 }
+function offerAccountIds(o) {
+  const ids = [];
+  if (o && o.accounts && o.accounts[PLATFORM]) ids.push(String(o.accounts[PLATFORM]));
+  (Array.isArray(o && o.ad_account_ids) ? o.ad_account_ids : []).forEach(id => {
+    id = String(id);
+    if (id && !ids.includes(id)) ids.push(id);
+  });
+  return ids;
+}
 function pixelName(id) { const p = state.pixels.find(x=>x.id===id); return p ? `${p.name} (${p.pixel_id})` : '—'; }
 function eventName(id) {
   const e = state.events.find(x=>x.id===id);
@@ -190,7 +199,7 @@ function renderOffers() {
     <tr>
       <td><strong>${escape(o.name)}</strong><br><span class="nb-muted nb-small">${escape((o.headline||'').slice(0,60))}</span></td>
       <td>${escape(o.brand_name||'—')}${o.cta ? `<br><span class="nb-muted nb-small">CTA: ${escape(o.cta)}</span>` : ''}</td>
-      <td class="nb-muted nb-small">${escape(accountsLabel(o.ad_account_ids))}</td>
+      <td class="nb-muted nb-small">${escape(accountsLabel(offerAccountIds(o)))}</td>
       <td class="nb-muted nb-small">${escape((o.landing_url||'').slice(0,50))}</td>
       <td>${SHOW_PIXELS ? pixelName(offerPixelRef(o)) : '—'}</td>
       <td>${eventName(o.event_id)}</td>
@@ -249,7 +258,7 @@ function formHtml(kind, item) {
     const suffix = idLabel ? ` (${escape(idLabel)})` : '';
     return `<option value="${e.id}" ${item.event_id===e.id?'selected':''}>${escape(e.name)}${suffix}</option>`;
   }).join('');
-  const selectedAccounts = Array.isArray(item.ad_account_ids) ? item.ad_account_ids.map(String) : [];
+  const selectedAccounts = offerAccountIds(item);
   const accountOpts = (state.adAccounts || []).map(a => {
     const sel = selectedAccounts.includes(String(a.id)) ? 'selected' : '';
     return `<option value="${escape(String(a.id))}" ${sel}>${escape(a.name)} (${escape(String(a.id))})</option>`;
@@ -330,6 +339,9 @@ async function saveModal() {
       body[k] = fd.get(k);
     }
     body.ad_account_ids = fd.getAll('ad_account_ids').filter(Boolean).map(String);
+    if (body.ad_account_ids.length) {
+      body.accounts = { [PLATFORM]: body.ad_account_ids[0] };
+    }
   }
   const url = `/api/${kind}s` + (id ? '' : '');
   const res = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });

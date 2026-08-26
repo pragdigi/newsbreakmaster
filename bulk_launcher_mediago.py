@@ -13,17 +13,21 @@ Expected form fields (see ``templates/launch.html`` mediago block):
 
     account_id          required
     campaign_name       required
-    objective           lead | conversions | awareness
-    charge_type         cpc | smart_bid | max_cv
-    daily_cap_usd       required, min $20
+    objective           lead | conversions | awareness   (default conversions)
+    charge_type         cpc | smart_bid | max_cv         (default max_cv)
+    daily_cap_usd       required, min $20                (default 100)
     spend_limit_usd     optional (defaults to daily_cap * 30)
+    spend_mode / pacing 0=accelerate (default), 1=standard
     cpc_usd             required when charge_type is cpc/smart_bid
+    target_cpa_usd      required for lead/conversions    (default 40)
     brand_name          required, <=30 chars
-    landing_page        required
+    landing_page        required (also landing_url / copy-variant aliases)
     utm_tracking        optional
-    product_type        default Others
+    product_type        default Health & Fitness
     language            default en
     location_region     default US
+    platform_*          mobile/desktop/tablet on, xbox off
+    campaign_status     0 paused (default) | 1 on
     creative_format     "1.91:1" | "1:1"
     apply_site_exclusions  "1" (default) to push persisted site blocks
     headline_<n>        required per ad, <=80 chars
@@ -45,7 +49,22 @@ _MAX_ADS_PER_CAMPAIGN = 10
 _HEADLINE_MAX = 80
 _BRAND_MAX = 30
 _MIN_DAILY_CAP = 20.0
+_DEFAULT_DAILY_CAP = 100.0
+_DEFAULT_TARGET_CPA = 40.0
+_DEFAULT_PRODUCT = "Health & Fitness"
+_DEFAULT_CHARGE = "max_cv"
+_DEFAULT_OBJECTIVE = "conversions"
 _NO_END = "2030-01-01 00:00:00"
+_DEFAULT_PLATFORMS = ("Mobile", "Desktop", "Tablet")
+_ALL_PLATFORMS = ("Mobile", "Desktop", "Tablet", "Xbox")
+_LANDING_KEYS = (
+    "landing_page",
+    "landing_page_url",
+    "landing_url",
+    "lander_url",
+    "copy_variant_url",
+    "copy_url",
+)
 
 _FORMAT_DIMS: Dict[str, Tuple[int, int]] = {
     "1.91:1": (1200, 628),
@@ -318,6 +337,90 @@ def _chunks(items: Sequence[Any], n: int) -> List[Sequence[Any]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
 
 
+def _clean_landing(url: str) -> str:
+    s = (url or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"[?&=]+$", "", s)
+    return s
+
+
+def _resolve_landing(form: Mapping[str, Any]) -> str:
+    for key in _LANDING_KEYS:
+        raw = _clean_landing(str(form.get(key) or ""))
+        if raw:
+            return raw
+    return ""
+
+
+def _truthy(v: Any) -> bool:
+    return str(v or "").strip().lower() in ("1", "on", "true", "yes", "checked")
+
+
+def _spend_mode(form: Mapping[str, Any]) -> int:
+    """MediaGo ``spend_mode``: 0 = accelerate, 1 = standard/uniform."""
+    raw = form.get("spend_mode")
+    if raw in (None, ""):
+        raw = form.get("pacing")
+    s = str(raw or "").strip().lower()
+    if s in ("1", "standard", "uniform", "even"):
+        return 1
+    return 0
+
+
+def _campaign_status(form: Mapping[str, Any]) -> int:
+    raw = form.get("campaign_status")
+    if raw in (None, ""):
+        raw = form.get("status")
+    s = str(raw or "").strip().lower()
+    if s in ("1", "on", "true", "active", "enabled"):
+        return 1
+    return 0
+
+
+def _platform_targeting(form: Mapping[str, Any]) -> Dict[str, Any]:
+    selected: List[str] = []
+    for key, label in (
+        ("platform_mobile", "Mobile"),
+        ("platform_desktop", "Desktop"),
+        ("platform_tablet", "Tablet"),
+        ("platform_xbox", "Xbox"),
+    ):
+        if _truthy(form.get(key)):
+            selected.append(label)
+    raw = form.get("platforms") or form.get("platform_targeting")
+    if not selected and raw:
+        if isinstance(raw, (list, tuple)):
+            parts = [str(x) for x in raw]
+        else:
+            parts = str(raw).split(",")
+        for part in parts:
+            label = part.strip().title()
+            if label == "Ios":
+                label = "IOS"
+            if label in _ALL_PLATFORMS and label not in selected:
+                selected.append(label)
+    if not selected:
+        selected = list(_DEFAULT_PLATFORMS)
+    if set(selected) >= set(_ALL_PLATFORMS):
+        return {"type": "ALL", "value": []}
+    return {"type": "INCLUDE", "value": selected}
+
+
+def _location(form: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    region = (form.get("location_region") or "US").strip().upper() or "US"
+    mode = (form.get("location_mode") or "all").strip().lower()
+    option = "zipcode" if mode in ("zip", "zipcode", "zip_code") else "state"
+    raw = form.get("location_value") or form.get("location_values") or ""
+    if isinstance(raw, (list, tuple)):
+        values = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        values = [x.strip() for x in str(raw).split(",") if x.strip()]
+    if mode in ("state", "zip", "zipcode", "zip_code") and values:
+        return [{"type": "INCLUDE", "option": option, "value": values, "region": region}]
+    return [{"type": "ALL", "option": "state", "value": [], "region": region}]
+
+
 # ----------------------------------------------------------------------
 # Payload
 # ----------------------------------------------------------------------
@@ -333,47 +436,49 @@ def build_campaign_payload(
     brand = (form.get("brand_name") or "").strip()
     if not brand:
         raise ValueError("brand_name is required")
-    landing = (form.get("landing_page") or form.get("landing_page_url") or "").strip()
+    landing = _resolve_landing(form)
     if not landing:
         raise ValueError("landing_page is required")
     daily = _usd(form.get("daily_cap_usd") or form.get("daily_cap"))
-    if daily is None or daily < _MIN_DAILY_CAP:
+    if daily is None:
+        daily = _DEFAULT_DAILY_CAP
+    if daily < _MIN_DAILY_CAP:
         raise ValueError(f"daily_cap_usd must be at least ${_MIN_DAILY_CAP:.0f}")
     spend_limit = _usd(form.get("spend_limit_usd") or form.get("spend_limit")) or round(daily * 30, 2)
-    charge = (form.get("charge_type") or "smart_bid").strip().lower()
+    charge = (form.get("charge_type") or _DEFAULT_CHARGE).strip().lower()
     if charge not in _CHARGE_TYPES:
-        charge = "smart_bid"
-    objective = (form.get("objective") or "conversions").strip().lower()
+        charge = _DEFAULT_CHARGE
+    objective = (form.get("objective") or _DEFAULT_OBJECTIVE).strip().lower()
     if objective not in _OBJECTIVES:
-        objective = "conversions"
-    product = (form.get("product_type") or "Others").strip()
+        objective = _DEFAULT_OBJECTIVE
+    product = (form.get("product_type") or _DEFAULT_PRODUCT).strip()
     if product not in _PRODUCT_TYPES:
-        product = "Others"
+        product = _DEFAULT_PRODUCT
 
     start = _parse_dt(form.get("start_time") or "") or datetime.now(timezone.utc)
     end = _parse_dt(form.get("end_time") or "")
     end_s = _fmt_dt(end) if end else _NO_END
 
-    region = (form.get("location_region") or "US").strip().upper() or "US"
     language = (form.get("language") or "en").strip() or "en"
-    utm = (form.get("utm_tracking") or "").strip() or _DEFAULT_UTM
+    utm = (form.get("utm_tracking") or form.get("utm_parameters") or "").strip() or _DEFAULT_UTM
+    spend_mode = _spend_mode(form)
 
     payload: Dict[str, Any] = {
         "campaign_name": name,
         "creative_type": "native",
-        "status": 0,  # paused — operator enables after review
+        "status": _campaign_status(form),
         "day_parting": _all_hours_dayparting(),
         "dp_timezone": (form.get("dp_timezone") or "EST").strip() or "EST",
         "start_time": _fmt_dt(start),
         "end_time": end_s,
         "daily_cap": round(daily, 2),
         "spend_limit": round(spend_limit, 2),
-        "spend_mode": int(form.get("spend_mode") or 0),
+        "spend_mode": spend_mode,
         "charge_type": charge,
         "audience": {"type": "ALL", "value": []},
         "language": language,
-        "location": [{"type": "ALL", "option": "state", "value": [], "region": region}],
-        "platform_targeting": {"type": "ALL", "value": []},
+        "location": _location(form),
+        "platform_targeting": _platform_targeting(form),
         "os_targeting": {"type": "ALL", "value": []},
         "browser_targeting": {"type": "ALL", "value": []},
         "product_type": product,
@@ -392,7 +497,7 @@ def build_campaign_payload(
         # https://apidoc.mediago.io/346347754e0
         tcpa = _usd(form.get("target_cpa_usd") or form.get("target_cpa"))
         if tcpa is None or tcpa <= 0:
-            raise ValueError("target_cpa is required for lead/conversions campaigns (USD)")
+            tcpa = _DEFAULT_TARGET_CPA
         payload["target_cpa"] = round(tcpa, 2)
         if charge == "max_cv" and daily >= tcpa * 30:
             raise ValueError(
@@ -455,7 +560,7 @@ def mediago_bulk_launch(
     brand = (form.get("brand_name") or "").strip()
     if not brand:
         preflight.append({"stage": "validate", "error": "brand_name is required"})
-    landing = (form.get("landing_page") or form.get("landing_page_url") or "").strip()
+    landing = _resolve_landing(form)
     if not landing:
         preflight.append({"stage": "validate", "error": "landing_page is required"})
     if preflight:
@@ -554,6 +659,11 @@ def mediago_bulk_launch(
                 )
 
     first_id = created_campaigns[0]["campaign_id"] if created_campaigns else None
+    created_status = _campaign_status(form)
+    if created_status == 1:
+        note = "Campaign created ACTIVE (native). It can start spending immediately."
+    else:
+        note = "Campaign created PAUSED (native). Review in MediaGo, then enable."
     return {
         "ok": bool(created_campaigns),
         "platform": "mediago",
@@ -562,7 +672,8 @@ def mediago_bulk_launch(
         "creative_format": fmt,
         "ads": all_ads,
         "errors": errors,
-        "note": "Campaign created PAUSED (native only). Review in MediaGo, then enable.",
+        "status": created_status,
+        "note": note,
     }
 
 

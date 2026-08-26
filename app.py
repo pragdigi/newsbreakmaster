@@ -2275,6 +2275,15 @@ def api_offers_save():
     pixels_map = storage.merge_offer_platform_pixels(
         existing_offer, platform, pixel_id, incoming_pixels
     )
+    incoming_accounts = data.get("accounts") if isinstance(data.get("accounts"), dict) else None
+    accounts_map = storage.merge_offer_platform_accounts(
+        existing_offer,
+        platform,
+        ad_account_ids[0] if ad_account_ids else "",
+        incoming_accounts,
+    )
+    if not ad_account_ids and accounts_map.get(platform):
+        ad_account_ids = [accounts_map[platform]]
 
     saved = storage.upsert_offer(
         {
@@ -2293,6 +2302,7 @@ def api_offers_save():
             "utm_parameters": (data.get("utm_parameters") or "").strip(),
             "notes": (data.get("notes") or "").strip(),
             "ad_account_ids": ad_account_ids,
+            "accounts": accounts_map,
         },
         platform=platform,
     )

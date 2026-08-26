@@ -1320,7 +1320,8 @@
 {% if result %}
 <div class="nb-card" style="margin-bottom:16px;">
   {% set ok = result.get('ok') %}
-  <h3 style="margin:0 0 8px 0;">{% if ok %}Campaign created (paused, native){% else %}Launch failed{% endif %}</h3>
+  {% set created_on = result.get('status') == 1 %}
+  <h3 style="margin:0 0 8px 0;">{% if ok %}Campaign created ({% if created_on %}active{% else %}paused{% endif %}, native){% else %}Launch failed{% endif %}</h3>
   <div class="nb-kpi-grid" style="margin-bottom:12px;">
     <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#34d399' if ok else '#f87171' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
     <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}</div></div>
@@ -1400,53 +1401,73 @@
       <div>
         <label class="nb-label">Bid strategy</label>
         <select name="charge_type" id="mg-charge-type" class="nb-select">
-          <option value="smart_bid" selected>Smart bid</option>
+          <option value="max_cv" selected>SmartBid — Maximum Conversion</option>
+          <option value="smart_bid">Smart bid</option>
           <option value="cpc">CPC</option>
-          <option value="max_cv">Max conversions</option>
         </select>
+        <div class="nb-hint">Suggested budget 5–10× Target CPA. Increase daily budget ≤30% once per day.</div>
       </div>
       <div>
-        <label class="nb-label">Product type</label>
+        <label class="nb-label">Campaign category</label>
         <select name="product_type" class="nb-select">
-          <option value="Others" selected>Others</option>
+          <option value="Health &amp; Fitness" selected>Health &amp; Fitness</option>
           <option value="E-commerce">E-commerce</option>
           <option value="Lead Gen">Lead Gen</option>
-          <option value="Health &amp; Fitness">Health &amp; Fitness</option>
           <option value="Finance &amp; Insurance">Finance &amp; Insurance</option>
+          <option value="Real Estate">Real Estate</option>
           <option value="Auto">Auto</option>
+          <option value="Careers">Careers</option>
+          <option value="Technology &amp; Computing">Technology &amp; Computing</option>
+          <option value="Education">Education</option>
+          <option value="Arts &amp; Entertainment">Arts &amp; Entertainment</option>
+          <option value="Style &amp; Fashion">Style &amp; Fashion</option>
+          <option value="Family &amp; Parenting">Family &amp; Parenting</option>
+          <option value="Food">Food</option>
+          <option value="Hobbies &amp; Interests">Hobbies &amp; Interests</option>
+          <option value="Home &amp; Garden">Home &amp; Garden</option>
+          <option value="Law Gov't &amp; Politics">Law Gov't &amp; Politics</option>
+          <option value="News">News</option>
+          <option value="Pets">Pets</option>
+          <option value="Religion &amp; Spirituality">Religion &amp; Spirituality</option>
+          <option value="Science">Science</option>
+          <option value="Sports">Sports</option>
+          <option value="Travel">Travel</option>
+          <option value="Society">Society</option>
+          <option value="Others">Others</option>
         </select>
       </div>
     </div>
     <div class="nb-row-3" style="margin-top:12px;">
       <div>
-        <label class="nb-label">Daily cap <span class="nb-muted" style="font-weight:400;">(USD, min $20)</span></label>
-        <input type="number" name="daily_cap_usd" class="nb-input" min="20" step="0.01" value="50" required>
+        <label class="nb-label">Daily budget <span class="nb-muted" style="font-weight:400;">(USD, min $20)</span></label>
+        <input type="number" name="daily_cap_usd" id="mg-daily-cap" class="nb-input" min="20" step="0.01" value="100" required>
+        <div class="nb-hint">MediaGo recommends $200–$400 (5–10× Target CPA). Default $100.</div>
       </div>
       <div>
-        <label class="nb-label">Spend limit <span class="nb-muted" style="font-weight:400;">(USD, optional)</span></label>
-        <input type="number" name="spend_limit_usd" class="nb-input" min="20" step="0.01" placeholder="defaults to 30× daily">
+        <label class="nb-label">Spending limit <span class="nb-muted" style="font-weight:400;">(USD, optional)</span></label>
+        <input type="number" name="spend_limit_usd" class="nb-input" min="20" step="0.01" placeholder="leave blank">
       </div>
-      <div>
+      <div id="mg-cpc-wrap">
         <label class="nb-label">CPC bid <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
         <input type="number" name="cpc_usd" id="mg-cpc" class="nb-input" min="0.01" max="5" step="0.01" value="0.50">
-        <div class="nb-hint">Required for CPC / smart bid. Max $5. Daily/CPC ≥ 30.</div>
+        <div class="nb-hint">Required for CPC / smart bid. Max $5.</div>
       </div>
     </div>
     <div class="nb-row-2" style="margin-top:12px;" id="mg-conversion-row">
       <div>
         <label class="nb-label">Target CPA <span class="nb-muted" style="font-weight:400;">(USD — required for purchases/leads)</span></label>
-        <input type="number" name="target_cpa_usd" id="mg-target-cpa" class="nb-input" min="0.01" step="0.01" placeholder="e.g. 25.00">
-        <div class="nb-hint">Sent as MediaGo <code>target_cpa</code>. Required when objective is Online purchases or Lead generation. For max conversions, daily cap must be less than target CPA × 30.</div>
+        <input type="number" name="target_cpa_usd" id="mg-target-cpa" class="nb-input" min="0.01" step="0.01" value="40">
+        <div class="nb-hint">Recommended range $3–$124. Default $40. For max conversions, daily budget must be &lt; Target CPA × 30.</div>
       </div>
       <div>
-        <label class="nb-label">MediaGo conversion pixel</label>
+        <label class="nb-label">Conversion goal</label>
         <div style="display:flex;gap:8px;">
           <select name="optimization_type" id="mg-pixel-select" class="nb-select" style="flex:1;">
             <option value="-1">Default optimization</option>
           </select>
           <button type="button" class="nb-btn nb-btn-small" id="mg-pixel-refresh" title="Refresh pixels">Refresh</button>
         </div>
-        <div class="nb-hint" id="mg-pixel-status">Pulled from the account pixel list. Maps to campaign <code>optimization_type</code>.</div>
+        <div class="nb-hint" id="mg-pixel-status">Pulled from the selected ad account. Maps to campaign <code>optimization_type</code>.</div>
       </div>
     </div>
     <div class="nb-row-2" style="margin-top:12px;">
@@ -1456,24 +1477,71 @@
       </div>
       <div>
         <label class="nb-label">UTM tracking</label>
-        <input type="text" name="utm_tracking" class="nb-input" placeholder="utm_source=mediago&amp;utm_medium=referral…">
+        <input type="text" name="utm_tracking" id="mg-utm" class="nb-input" placeholder="utm_source=mediago&amp;utm_medium=referral…">
       </div>
     </div>
     <div class="nb-row-3" style="margin-top:12px;">
       <div>
-        <label class="nb-label">Country</label>
+        <label class="nb-label">Location</label>
         <input type="text" name="location_region" class="nb-input" value="US" maxlength="4">
+        <div style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;">
+          <label><input type="radio" name="location_mode" value="all" checked> Select all</label>
+          <label><input type="radio" name="location_mode" value="state"> State</label>
+          <label><input type="radio" name="location_mode" value="zip"> Zip code</label>
+        </div>
+        <input type="text" name="location_value" class="nb-input" style="margin-top:6px;" placeholder="States or zips (comma-separated)">
       </div>
       <div>
         <label class="nb-label">Language</label>
         <input type="text" name="language" class="nb-input" value="en" maxlength="5">
+        <div class="nb-hint">Audience / OS / Browser default to All.</div>
       </div>
       <div>
-        <label class="nb-label">Schedule <span class="nb-muted" style="font-weight:400;">(optional end)</span></label>
-        <div style="display:flex;gap:8px;">
-          <input type="datetime-local" name="start_time" class="nb-input" style="flex:1;">
-          <input type="datetime-local" name="end_time" class="nb-input" style="flex:1;">
+        <label class="nb-label">Platforms</label>
+        <div style="display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:6px;">
+          <label><input type="checkbox" name="platform_mobile" value="1" checked> Mobile</label>
+          <label><input type="checkbox" name="platform_desktop" value="1" checked> Desktop</label>
+          <label><input type="checkbox" name="platform_tablet" value="1" checked> Tablet</label>
+          <label><input type="checkbox" name="platform_xbox" value="1"> Xbox</label>
         </div>
+      </div>
+    </div>
+    <div class="nb-row-3" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Time zone</label>
+        <select name="dp_timezone" class="nb-select">
+          <option value="EST" selected>UTC-5 (EST: Eastern Standard Time)</option>
+          <option value="UTC-8">UTC-8 (PST)</option>
+          <option value="UTC-7">UTC-7 (MST)</option>
+          <option value="UTC-6">UTC-6 (CST)</option>
+          <option value="UTC+0">UTC+0</option>
+        </select>
+      </div>
+      <div>
+        <label class="nb-label">Pacing</label>
+        <select name="spend_mode" id="mg-pacing" class="nb-select">
+          <option value="0" selected>Accelerate (spend ASAP)</option>
+          <option value="1">Standard (even spend)</option>
+        </select>
+        <div class="nb-hint">MediaGo <code>spend_mode</code>: 0 accelerate, 1 uniform.</div>
+      </div>
+      <div>
+        <label class="nb-label">Campaign status</label>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;">
+          <label><input type="radio" name="campaign_status" value="0" checked> Paused</label>
+          <label><input type="radio" name="campaign_status" value="1"> On / Active</label>
+        </div>
+        <div class="nb-hint">Sent as MediaGo <code>status</code> (0 pause, 1 active). Default paused so you can review first.</div>
+      </div>
+    </div>
+    <div class="nb-row-2" style="margin-top:12px;">
+      <div>
+        <label class="nb-label">Start <span class="nb-muted" style="font-weight:400;">(blank = immediately)</span></label>
+        <input type="datetime-local" name="start_time" class="nb-input">
+      </div>
+      <div>
+        <label class="nb-label">End <span class="nb-muted" style="font-weight:400;">(blank = indefinitely)</span></label>
+        <input type="datetime-local" name="end_time" class="nb-input">
       </div>
     </div>
   </div>
@@ -1517,7 +1585,7 @@
   </div>
 
   <div class="nb-submit-bar" style="flex-wrap:wrap;gap:16px;align-items:center;">
-    <button type="submit" class="nb-btn nb-btn-primary">Launch MediaGo native campaign (paused)</button>
+    <button type="submit" class="nb-btn nb-btn-primary" id="mg-launch-submit">Launch MediaGo native campaign (paused)</button>
     <a href="{{ url_for('dashboard') }}" class="nb-btn">Cancel</a>
     <a href="{{ url_for('sources_page') }}" class="nb-btn">Review sources</a>
   </div>
@@ -1535,11 +1603,86 @@
     var acct = document.getElementById('mg-account-id');
     var tcpaEl = document.getElementById('mg-target-cpa');
     var row = document.getElementById('mg-conversion-row');
+    var chargeSel = document.getElementById('mg-charge-type');
+    var cpcWrap = document.getElementById('mg-cpc-wrap');
+    var launchBtn = document.getElementById('mg-launch-submit');
 
     function offerPixelRef(o){
       if (!o) return '';
       if (o.pixels && o.pixels.mediago) return String(o.pixels.mediago);
       return String(o.pixel_id || '');
+    }
+    function offerAccountIds(o){
+      var ids = [];
+      if (o && o.accounts && o.accounts.mediago) ids.push(String(o.accounts.mediago));
+      (Array.isArray(o && o.ad_account_ids) ? o.ad_account_ids : []).forEach(function(id){
+        id = String(id);
+        if (id && ids.indexOf(id) === -1) ids.push(id);
+      });
+      return ids;
+    }
+    function cleanLanding(u){
+      return String(u || '')
+        .trim()
+        .replace(/[?&=]+$/, '')
+        .replace(/\/+$/, function(m){ return m.length > 1 ? '/' : '/'; });
+    }
+    function offerLanding(o){
+      if (!o) return '';
+      var keys = ['landing_url','landing_page','landing_page_url','lander_url','copy_variant_url','copy_url'];
+      for (var i = 0; i < keys.length; i++) {
+        var v = cleanLanding(o[keys[i]]);
+        if (v) return v;
+      }
+      var variants = o.copy_variants || o.variants || [];
+      if (Array.isArray(variants)) {
+        for (var j = 0; j < variants.length; j++) {
+          var rowv = variants[j] || {};
+          var u = cleanLanding(rowv.landing_url || rowv.landing_page || rowv.url);
+          if (u) return u;
+        }
+      }
+      return '';
+    }
+    function toggleCpc(){
+      if (!cpcWrap) return;
+      var charge = chargeSel ? chargeSel.value : 'max_cv';
+      cpcWrap.style.display = charge === 'max_cv' ? 'none' : '';
+    }
+    function syncLaunchButton(){
+      if (!launchBtn) return;
+      var picked = document.querySelector('input[name="campaign_status"]:checked');
+      var active = picked && String(picked.value) === '1';
+      launchBtn.textContent = active
+        ? 'Launch MediaGo native campaign (active)'
+        : 'Launch MediaGo native campaign (paused)';
+    }
+    function selectAccount(ids){
+      if (!acct) return;
+      var current = String(acct.value || '');
+      var match = null;
+      if (ids && ids.length) {
+        if (ids.indexOf(current) !== -1) match = current;
+        else {
+          match = ids.find(function(id){
+            return Array.prototype.slice.call(acct.options).some(function(op){
+              return String(op.value) === String(id);
+            });
+          }) || null;
+        }
+      }
+      if (!match) {
+        var xe = Array.prototype.slice.call(acct.options).find(function(op){
+          return /xeviola/i.test(op.textContent || '') || /xeviola/i.test(op.value || '');
+        });
+        if (xe) match = xe.value;
+      }
+      if (match && String(acct.value) !== String(match)) {
+        acct.value = match;
+        acct.dispatchEvent(new Event('change', { bubbles: true }));
+      } else if (acct.value) {
+        loadPixels();
+      }
     }
     function findPixelRecord(ref){
       if (!ref) return null;
@@ -1621,6 +1764,12 @@
 
     if (objSel) objSel.addEventListener('change', toggleConversion);
     toggleConversion();
+    if (chargeSel) chargeSel.addEventListener('change', toggleCpc);
+    toggleCpc();
+    Array.prototype.slice.call(document.querySelectorAll('input[name="campaign_status"]')).forEach(function(el){
+      el.addEventListener('change', syncLaunchButton);
+    });
+    syncLaunchButton();
     if (acct) acct.addEventListener('change', loadPixels);
     if (pxBtn) pxBtn.addEventListener('click', loadPixels);
     if (acct && acct.value) loadPixels();
@@ -1629,14 +1778,19 @@
     sel.addEventListener('change', function(){
       var o = (OFFERS||[]).find(function(x){ return x.id === sel.value; });
       if (!o) { if (summary) summary.textContent=''; return; }
-      var land = String(o.landing_url||'').trim();
+      selectAccount(offerAccountIds(o));
+      var land = offerLanding(o);
       var brand = o.brand_name || o.name || '';
       var landEl = document.getElementById('mg-landing');
       var brandEl = document.getElementById('mg-brand-name');
       var defH = document.getElementById('mg-default-headline');
+      var utmEl = document.getElementById('mg-utm');
+      var nameEl = document.getElementById('mg-campaign-name');
       if (landEl && land) landEl.value = land;
       if (brandEl && brand) brandEl.value = String(brand).slice(0,30);
       if (defH && o.headline) { defH.value = String(o.headline).slice(0,80); defH.dispatchEvent(new Event('input',{bubbles:true})); }
+      if (utmEl && o.utm_parameters) utmEl.value = o.utm_parameters;
+      if (nameEl && !nameEl.value && o.name) nameEl.value = o.name;
       if (tcpaEl && o.target_cpa && Number(o.target_cpa) > 0) tcpaEl.value = Number(o.target_cpa).toFixed(2);
       var px = findPixelRecord(offerPixelRef(o));
       if (pxSel && px) {
@@ -1647,10 +1801,11 @@
       }
       var bits = [];
       if (brand) bits.push(brand);
+      if (land) bits.push(land);
       if (o.payout) bits.push('$'+Number(o.payout).toFixed(2));
       if (o.target_cpa) bits.push('Target CPA $'+Number(o.target_cpa).toFixed(2));
       if (px) bits.push('Pixel: '+(px.name || px.pixel_id));
-      if (summary) summary.textContent = bits.join(' · ');
+      if (summary) summary.innerHTML = bits.length ? '<strong>Applied:</strong> ' + bits.join(' · ') : '';
     });
   })();
   (function(){

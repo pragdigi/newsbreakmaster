@@ -239,7 +239,9 @@ class MediaGoClient:
                 headers["Content-Type"] = "application/json"
             else:
                 headers["Content-Type"] = "application/x-www-form-urlencoded;charset=utf-8"
-            if account_id and (self._resolved_level == "client" or self.auth_level_pref == "client"):
+            if account_id:
+                # Always send so the launch-form account dropdown actually
+                # switches the manage/report account (not the first/env one).
                 headers["Account-Id"] = str(account_id)
             try:
                 resp = self._session.request(

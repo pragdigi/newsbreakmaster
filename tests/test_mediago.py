@@ -271,9 +271,48 @@ class MediaGoLauncherTest(unittest.TestCase):
         )
         self.assertTrue(res["ok"])
         self.assertEqual(res["campaign_id"], "999")
+        self.assertEqual(adapter.created[0][0], "acc1")
         self.assertEqual(adapter.created[0][1]["creative_type"], "native")
+        self.assertEqual(adapter.created[0][1]["landing_page"], "https://offer.example")
         self.assertEqual(adapter.created[0][1]["target_cpa"], 20.0)
+        self.assertEqual(adapter.created[0][1]["spend_mode"], 0)
+        self.assertEqual(adapter.created[0][1]["status"], 0)
+        self.assertEqual(res["status"], 0)
         self.assertEqual(adapter.blocked[0][1], "999")
+
+    def test_launch_active_uses_selected_account(self):
+        from bulk_launcher_mediago import mediago_bulk_launch
+
+        class _Adapter:
+            def create_campaign(self, account_id, payload):
+                self.seen = (account_id, payload)
+                return {"campaign_id": "42"}
+
+        adapter = _Adapter()
+        res = mediago_bulk_launch(
+            adapter,
+            form={
+                "account_id": "xeviola-99",
+                "campaign_name": "Live",
+                "brand_name": "Brand",
+                "copy_variant_url": "https://offer.example/v2",
+                "daily_cap_usd": "100",
+                "target_cpa_usd": "40",
+                "campaign_status": "1",
+                "spend_mode": "0",
+                "headline_0": "A native headline that converts",
+            },
+            files={"creative_0": _UploadStub(_png_bytes(), "ad.png")},
+            host_image=lambda img, name: f"https://host.test/{name}",
+            creative_builder=lambda f, *, fmt="1.91:1": (b"jpeg", "ad.jpg"),
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], 1)
+        self.assertIn("ACTIVE", res["note"])
+        self.assertEqual(adapter.seen[0], "xeviola-99")
+        self.assertEqual(adapter.seen[1]["status"], 1)
+        self.assertEqual(adapter.seen[1]["landing_page"], "https://offer.example/v2")
+        self.assertEqual(adapter.seen[1]["spend_mode"], 0)
 
     def test_prepare_native_square(self):
         from bulk_launcher_mediago import prepare_native_creative
@@ -404,21 +443,57 @@ class MediaGoPixelAndCpaTest(unittest.TestCase):
         self.assertEqual(seen["account_id"], "7")
         self.assertEqual(rows[0]["conversion_name"], "purchase")
 
-    def test_payload_requires_target_cpa_for_conversions(self):
+    def test_payload_defaults_target_cpa_and_pacing_and_lander_alias(self):
         from bulk_launcher_mediago import build_campaign_payload
 
-        with self.assertRaises(ValueError) as ctx:
-            build_campaign_payload(
-                {
-                    "campaign_name": "X",
-                    "brand_name": "B",
-                    "landing_page": "https://x.com",
-                    "daily_cap_usd": "40",
-                    "objective": "conversions",
-                },
-                [{"asset_name": "a", "img": "https://i", "headline": "H"}],
-            )
-        self.assertIn("target_cpa", str(ctx.exception))
+        payload = build_campaign_payload(
+            {
+                "campaign_name": "X",
+                "brand_name": "B",
+                "landing_url": "https://offer.example/lander?x=1&",
+                "objective": "conversions",
+            },
+            [{"asset_name": "a", "img": "https://i", "headline": "H"}],
+        )
+        self.assertEqual(payload["landing_page"], "https://offer.example/lander?x=1")
+        self.assertEqual(payload["target_cpa"], 40.0)
+        self.assertEqual(payload["daily_cap"], 100.0)
+        self.assertEqual(payload["spend_mode"], 0)
+        self.assertEqual(payload["charge_type"], "max_cv")
+        self.assertEqual(payload["product_type"], "Health & Fitness")
+        self.assertEqual(payload["status"], 0)
+        self.assertEqual(payload["dp_timezone"], "EST")
+        self.assertEqual(payload["location"][0]["region"], "US")
+        self.assertEqual(payload["location"][0]["type"], "ALL")
+        self.assertEqual(payload["platform_targeting"]["type"], "INCLUDE")
+        self.assertEqual(payload["platform_targeting"]["value"], ["Mobile", "Desktop", "Tablet"])
+        self.assertEqual(payload["audience"]["type"], "ALL")
+        self.assertEqual(payload["os_targeting"]["type"], "ALL")
+        self.assertEqual(payload["browser_targeting"]["type"], "ALL")
+        self.assertEqual(payload["optimization_type"], "-1")
+
+    def test_payload_pacing_standard_and_active_status(self):
+        from bulk_launcher_mediago import build_campaign_payload
+
+        payload = build_campaign_payload(
+            {
+                "campaign_name": "X",
+                "brand_name": "B",
+                "landing_page": "https://x.com",
+                "daily_cap_usd": "100",
+                "target_cpa_usd": "40",
+                "pacing": "standard",
+                "campaign_status": "1",
+                "platform_mobile": "1",
+                "platform_desktop": "1",
+                "platform_tablet": "1",
+                "platform_xbox": "1",
+            },
+            [{"asset_name": "a", "img": "https://i", "headline": "H"}],
+        )
+        self.assertEqual(payload["spend_mode"], 1)
+        self.assertEqual(payload["status"], 1)
+        self.assertEqual(payload["platform_targeting"], {"type": "ALL", "value": []})
 
     def test_payload_omits_target_cpa_for_awareness(self):
         from bulk_launcher_mediago import build_campaign_payload
@@ -466,6 +541,49 @@ class MediaGoPixelAndCpaTest(unittest.TestCase):
         offer = {"pixel_id": "purchase", "pixels": merged}
         self.assertEqual(offer_pixel_ref(offer, "mediago"), "purchase")
         self.assertEqual(offer_pixel_ref(offer, "newsbreak"), "nb1")
+
+    def test_offer_accounts_map_keeps_other_platforms(self):
+        from storage import merge_offer_platform_accounts, offer_account_ids, offer_landing_url
+
+        existing = {"ad_account_ids": ["nb1"], "accounts": {"newsbreak": "nb1"}}
+        merged = merge_offer_platform_accounts(existing, "mediago", "146")
+        self.assertEqual(merged["newsbreak"], "nb1")
+        self.assertEqual(merged["mediago"], "146")
+        offer = {
+            "accounts": merged,
+            "ad_account_ids": ["146"],
+            "landing_page": "https://xeviola.com/pages/tinnito-lander",
+        }
+        self.assertEqual(offer_account_ids(offer, "mediago"), ["146"])
+        self.assertEqual(offer_account_ids(offer, "newsbreak"), ["nb1", "146"])
+        self.assertEqual(offer_landing_url(offer), "https://xeviola.com/pages/tinnito-lander")
+
+    def test_create_campaign_sends_account_id_header(self):
+        from mediago_api import MediaGoClient
+
+        c = MediaGoClient("tok")
+        c._resolved_level = "account"
+        c._access_token = "abc"
+        c._token_expires_at = 1e18
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            text = '{"campaign_id":"9"}'
+
+            def json(self):
+                return {"campaign_id": "9"}
+
+        def fake_request(method, url, params=None, json=None, headers=None, timeout=None):
+            seen["headers"] = headers
+            seen["json"] = json
+            return _Resp()
+
+        c._session.request = fake_request  # type: ignore
+        c.create_campaign("xeviola-99", {"campaign_name": "T", "status": 1})
+        self.assertEqual(seen["headers"]["Account-Id"], "xeviola-99")
+        self.assertEqual(seen["json"]["account_id"], "xeviola-99")
+        self.assertEqual(seen["json"]["status"], 1)
 
 
 class MediaGoAppPixelRoutesTest(unittest.TestCase):
@@ -517,6 +635,8 @@ class MediaGoAppPixelRoutesTest(unittest.TestCase):
                         "name": "Mag",
                         "pixel_id": pix["id"],
                         "target_cpa": 22,
+                        "ad_account_ids": ["acc1"],
+                        "landing_url": "https://xeviola.com/pages/tinnito-lander",
                     },
                 )
                 self.assertEqual(offer_resp.status_code, 200)
@@ -524,6 +644,9 @@ class MediaGoAppPixelRoutesTest(unittest.TestCase):
                 self.assertEqual(offer["pixels"]["mediago"], pix["id"])
                 self.assertEqual(offer["pixel_id"], pix["id"])
                 self.assertEqual(offer["target_cpa"], 22)
+                self.assertEqual(offer["accounts"]["mediago"], "acc1")
+                self.assertEqual(offer["ad_account_ids"], ["acc1"])
+                self.assertEqual(offer["landing_url"], "https://xeviola.com/pages/tinnito-lander")
 
     def test_pixels_route_rejects_wrong_platform(self):
         import app as appmod

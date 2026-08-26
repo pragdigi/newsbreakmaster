@@ -481,6 +481,86 @@ def offer_pixel_ref(offer: Optional[Dict[str, Any]], platform: str) -> str:
     return str(pixels.get(plat) or offer.get("pixel_id") or "").strip()
 
 
+def merge_offer_platform_accounts(
+    existing: Optional[Dict[str, Any]],
+    platform: str,
+    account_id: str,
+    incoming_map: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Keep a per-platform ad-account map (same shape as ``pixels``).
+
+    ``account_id`` is the convenience primary for the *current* platform.
+    ``ad_account_ids`` remains the multi-select list used by the settings UI.
+    """
+    out: Dict[str, str] = {}
+    if existing and isinstance(existing.get("accounts"), dict):
+        for k, v in existing["accounts"].items():
+            if k and v not in (None, ""):
+                out[str(k)] = str(v)
+    if isinstance(incoming_map, dict):
+        for k, v in incoming_map.items():
+            if k and v not in (None, ""):
+                out[str(k)] = str(v)
+    plat = (platform or DEFAULT_PLATFORM).strip() or DEFAULT_PLATFORM
+    aid = (account_id or "").strip()
+    if aid:
+        out[plat] = aid
+    else:
+        out.pop(plat, None)
+    return out
+
+
+def offer_account_ids(offer: Optional[Dict[str, Any]], platform: str) -> List[str]:
+    """Linked ad-account ids for ``platform`` (map first, then ``ad_account_ids``)."""
+    if not offer:
+        return []
+    plat = (platform or DEFAULT_PLATFORM).strip() or DEFAULT_PLATFORM
+    seen: List[str] = []
+    accounts = offer.get("accounts") if isinstance(offer.get("accounts"), dict) else {}
+    primary = str(accounts.get(plat) or "").strip()
+    if primary:
+        seen.append(primary)
+    raw = offer.get("ad_account_ids") or []
+    if isinstance(raw, str):
+        raw = [x.strip() for x in raw.split(",")]
+    for x in raw:
+        aid = str(x).strip()
+        if aid and aid not in seen:
+            seen.append(aid)
+    return seen
+
+
+def offer_landing_url(offer: Optional[Dict[str, Any]]) -> str:
+    """Resolve the offer lander / copy-variant URL."""
+    if not offer:
+        return ""
+    for key in (
+        "landing_url",
+        "landing_page",
+        "landing_page_url",
+        "lander_url",
+        "copy_variant_url",
+        "copy_url",
+    ):
+        raw = str(offer.get(key) or "").strip()
+        if raw:
+            return raw
+    variants = offer.get("copy_variants") or offer.get("variants") or []
+    if isinstance(variants, list):
+        for row in variants:
+            if not isinstance(row, dict):
+                continue
+            raw = str(
+                row.get("landing_url")
+                or row.get("landing_page")
+                or row.get("url")
+                or ""
+            ).strip()
+            if raw:
+                return raw
+    return ""
+
+
 def upsert_offer(item: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     return _upsert_catalog(_offers_file(platform), item)
 

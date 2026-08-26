@@ -1757,6 +1757,133 @@ def api_smartnews_pixels(account_id: str):
     return jsonify({"ok": True, "account_id": account_id, "pixels": pixels})
 
 
+@app.route("/api/mediago/pixels/<account_id>")
+def api_mediago_pixels(account_id: str):
+    """Return conversion pixels for a MediaGo ad account (``GET /manage/v1/account``)."""
+    if _active_platform() != "mediago":
+        return jsonify({"error": "Switch to MediaGo to list pixels"}), 400
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        pixels = adapter.list_pixels(account_id) or []
+    except Exception as e:
+        app.logger.warning("mediago list_pixels failed account=%s err=%s", account_id, e)
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"ok": True, "account_id": account_id, "pixels": pixels})
+
+
+@app.route("/api/mediago/sync-events", methods=["POST"])
+def api_mediago_sync_events():
+    """Import MediaGo conversion pixels + events from every ad account.
+
+    MediaGo does not expose a numeric pixel id. ``GET /manage/v1/account``
+    returns a ``pixels`` array of conversion trackers (``conversion_name``,
+    ``category``, ``status``). Campaign create then uses ``optimization_type``
+    (1–10 / -1) as the conversion goal for that pixel.
+    """
+    if _active_platform() != "mediago":
+        return jsonify({"error": "Switch to MediaGo to sync conversion pixels"}), 400
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "unauthorized"}), 401
+
+    existing_events = {
+        e.get("tracking_id"): e
+        for e in storage.list_events(platform="mediago")
+        if e.get("tracking_id")
+    }
+    existing_pixels = {
+        str(p.get("pixel_id")): p
+        for p in storage.list_pixels(platform="mediago")
+        if p.get("pixel_id")
+    }
+    added = 0
+    updated = 0
+    pixels_added = 0
+    pixels_updated = 0
+    per_account: list = []
+    errors: list = []
+
+    try:
+        raw_accounts = adapter.get_accounts() or []
+    except Exception as e:
+        app.logger.warning("mediago sync: get_accounts failed err=%s", e)
+        raw_accounts = []
+        errors.append({"ad_account_id": "-", "error": f"get_accounts: {e}"})
+
+    for acc in raw_accounts:
+        acc_id = str(acc.get("id") or acc.get("account_id") or "")
+        acc_name = acc.get("name") or acc.get("account_name") or acc_id
+        if not acc_id:
+            continue
+        try:
+            pixels = adapter.list_pixels(acc_id) or []
+        except Exception as e:
+            errors.append({"ad_account_id": acc_id, "error": str(e)})
+            continue
+        imported = 0
+        for px in pixels:
+            pid = str(px.get("pixel_id") or px.get("conversion_name") or "")
+            if not pid:
+                continue
+            pname = px.get("name") or px.get("category") or pid
+            opt = str(px.get("optimization_type") or "") or None
+            prior_px = existing_pixels.get(pid)
+            merged_px = {
+                "name": pname,
+                "pixel_id": pid,
+                "conversion_name": px.get("conversion_name") or pid,
+                "optimization_type": opt,
+                "ad_account_id": acc_id,
+                "ad_account_name": acc_name,
+                "source": "mediago",
+            }
+            if prior_px:
+                merged_px["id"] = prior_px["id"]
+                storage.upsert_pixel(merged_px, platform="mediago")
+                pixels_updated += 1
+            else:
+                storage.upsert_pixel(merged_px, platform="mediago")
+                pixels_added += 1
+            existing_pixels[pid] = {**(prior_px or {}), **merged_px}
+
+            prior_ev = existing_events.get(pid)
+            merged_ev = {
+                "name": pname,
+                "tracking_id": pid,
+                "event_type": pid,
+                "pixel_id": pid,
+                "optimization_type": opt,
+                "ad_account_id": acc_id,
+                "ad_account_name": acc_name,
+                "source": "mediago",
+                "is_custom": False,
+            }
+            if prior_ev:
+                merged_ev["id"] = prior_ev["id"]
+                storage.upsert_event(merged_ev, platform="mediago")
+                updated += 1
+            else:
+                storage.upsert_event(merged_ev, platform="mediago")
+                added += 1
+            existing_events[pid] = {**(prior_ev or {}), **merged_ev}
+            imported += 1
+        per_account.append({"ad_account_id": acc_id, "name": acc_name, "imported": imported})
+
+    return jsonify(
+        {
+            "ok": True,
+            "added": added,
+            "updated": updated,
+            "pixels_added": pixels_added,
+            "pixels_updated": pixels_updated,
+            "accounts": per_account,
+            "errors": errors,
+        }
+    )
+
+
 @app.route("/api/adsets")
 def api_adsets():
     adapter = _adapter()
@@ -2077,14 +2204,18 @@ def api_events_save():
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     name = (data.get("name") or "").strip()
-    event_type = (data.get("event_type") or "").strip()
-    if not name or not event_type:
-        return jsonify({"error": "name and event_type required"}), 400
+    tracking_id = (data.get("tracking_id") or "").strip()
+    event_type = (data.get("event_type") or tracking_id).strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    if not tracking_id and not event_type:
+        return jsonify({"error": "tracking_id or event_type required"}), 400
     saved = storage.upsert_event(
         {
             "id": data.get("id"),
             "name": name,
             "event_type": event_type,
+            "tracking_id": tracking_id or event_type,
             "is_custom": bool(data.get("is_custom")),
         },
         platform=_active_platform(),
@@ -2111,6 +2242,7 @@ def api_offers_list():
 def api_offers_save():
     if not _auth_required():
         return jsonify({"error": "unauthorized"}), 401
+    platform = _active_platform()
     data = request.get_json(force=True, silent=True) or {}
     name = (data.get("name") or "").strip()
     if not name:
@@ -2132,6 +2264,18 @@ def api_offers_save():
         raw_accounts = [x.strip() for x in raw_accounts.split(",")]
     ad_account_ids = [str(x).strip() for x in raw_accounts if str(x).strip()]
 
+    pixel_id = (data.get("pixel_id") or "").strip()
+    incoming_pixels = data.get("pixels") if isinstance(data.get("pixels"), dict) else None
+    existing_offer = None
+    if data.get("id"):
+        for o in storage.list_offers(platform=platform):
+            if o.get("id") == data.get("id"):
+                existing_offer = o
+                break
+    pixels_map = storage.merge_offer_platform_pixels(
+        existing_offer, platform, pixel_id, incoming_pixels
+    )
+
     saved = storage.upsert_offer(
         {
             "id": data.get("id"),
@@ -2141,7 +2285,8 @@ def api_offers_save():
             "landing_url": (data.get("landing_url") or "").strip(),
             "headline": (data.get("headline") or "").strip(),
             "body": (data.get("body") or "").strip(),
-            "pixel_id": (data.get("pixel_id") or "").strip(),
+            "pixel_id": pixel_id or pixels_map.get(platform, ""),
+            "pixels": pixels_map,
             "event_id": (data.get("event_id") or "").strip(),
             "payout": payout,
             "target_cpa": target_cpa,
@@ -2149,7 +2294,7 @@ def api_offers_save():
             "notes": (data.get("notes") or "").strip(),
             "ad_account_ids": ad_account_ids,
         },
-        platform=_active_platform(),
+        platform=platform,
     )
     return jsonify({"ok": True, "offer": saved})
 

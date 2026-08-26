@@ -1351,7 +1351,7 @@
 
 <form method="post" enctype="multipart/form-data" class="nb-form nb-stack" id="mg-launch-form">
   <div class="nb-field-group">
-    <h3>0 · Offer <span class="nb-muted" style="font-weight:400;font-size:13px;">(optional — prefills brand, headline, landing)</span></h3>
+    <h3>0 · Offer <span class="nb-muted" style="font-weight:400;font-size:13px;">(optional — prefills brand, headline, landing, pixel &amp; target CPA)</span></h3>
     <div class="nb-row-2">
       <div>
         <label class="nb-label">Offer</label>
@@ -1391,7 +1391,7 @@
     <div class="nb-row-3" style="margin-top:12px;">
       <div>
         <label class="nb-label">Objective</label>
-        <select name="objective" class="nb-select">
+        <select name="objective" id="mg-objective" class="nb-select">
           <option value="conversions" selected>Online purchases</option>
           <option value="lead">Lead generation</option>
           <option value="awareness">Website engagement</option>
@@ -1399,7 +1399,7 @@
       </div>
       <div>
         <label class="nb-label">Bid strategy</label>
-        <select name="charge_type" class="nb-select">
+        <select name="charge_type" id="mg-charge-type" class="nb-select">
           <option value="smart_bid" selected>Smart bid</option>
           <option value="cpc">CPC</option>
           <option value="max_cv">Max conversions</option>
@@ -1427,9 +1427,26 @@
         <input type="number" name="spend_limit_usd" class="nb-input" min="20" step="0.01" placeholder="defaults to 30× daily">
       </div>
       <div>
-        <label class="nb-label">CPC / target <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
-        <input type="number" name="cpc_usd" class="nb-input" min="0.01" max="5" step="0.01" value="0.50">
+        <label class="nb-label">CPC bid <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
+        <input type="number" name="cpc_usd" id="mg-cpc" class="nb-input" min="0.01" max="5" step="0.01" value="0.50">
         <div class="nb-hint">Required for CPC / smart bid. Max $5. Daily/CPC ≥ 30.</div>
+      </div>
+    </div>
+    <div class="nb-row-2" style="margin-top:12px;" id="mg-conversion-row">
+      <div>
+        <label class="nb-label">Target CPA <span class="nb-muted" style="font-weight:400;">(USD — required for purchases/leads)</span></label>
+        <input type="number" name="target_cpa_usd" id="mg-target-cpa" class="nb-input" min="0.01" step="0.01" placeholder="e.g. 25.00">
+        <div class="nb-hint">Sent as MediaGo <code>target_cpa</code>. Required when objective is Online purchases or Lead generation. For max conversions, daily cap must be less than target CPA × 30.</div>
+      </div>
+      <div>
+        <label class="nb-label">MediaGo conversion pixel</label>
+        <div style="display:flex;gap:8px;">
+          <select name="optimization_type" id="mg-pixel-select" class="nb-select" style="flex:1;">
+            <option value="-1">Default optimization</option>
+          </select>
+          <button type="button" class="nb-btn nb-btn-small" id="mg-pixel-refresh" title="Refresh pixels">Refresh</button>
+        </div>
+        <div class="nb-hint" id="mg-pixel-status">Pulled from the account pixel list. Maps to campaign <code>optimization_type</code>.</div>
       </div>
     </div>
     <div class="nb-row-2" style="margin-top:12px;">
@@ -1508,8 +1525,106 @@
 <script>
   (function(){
     var OFFERS = {{ offers|tojson }};
+    var PIXELS = {{ pixels|tojson }};
     var sel = document.getElementById('mg-offer-ref');
     var summary = document.getElementById('mg-offer-summary');
+    var objSel = document.getElementById('mg-objective');
+    var pxSel = document.getElementById('mg-pixel-select');
+    var pxBtn = document.getElementById('mg-pixel-refresh');
+    var pxStatus = document.getElementById('mg-pixel-status');
+    var acct = document.getElementById('mg-account-id');
+    var tcpaEl = document.getElementById('mg-target-cpa');
+    var row = document.getElementById('mg-conversion-row');
+
+    function offerPixelRef(o){
+      if (!o) return '';
+      if (o.pixels && o.pixels.mediago) return String(o.pixels.mediago);
+      return String(o.pixel_id || '');
+    }
+    function findPixelRecord(ref){
+      if (!ref) return null;
+      return (PIXELS || []).find(function(p){ return p.id === ref || String(p.pixel_id) === String(ref); }) || null;
+    }
+    function optFromPixel(p){
+      if (!p) return '';
+      if (p.optimization_type) return String(p.optimization_type);
+      var n = String(p.conversion_name || p.pixel_id || '').toLowerCase().replace(/[-\s]/g, '_');
+      var map = {view_content:'1', app_install:'2', complete_registration:'3', add_to_cart:'4', add_payment_info:'5', search:'6', start_checkout:'7', initiate_checkout:'7', purchase:'8', add_to_wishlist:'9', lead:'10'};
+      return map[n] || '';
+    }
+    function toggleConversion(){
+      var conv = !objSel || objSel.value === 'conversions' || objSel.value === 'lead';
+      if (row) row.style.display = conv ? '' : 'none';
+      if (tcpaEl) tcpaEl.required = !!conv;
+    }
+    function setPxStatus(msg, color){
+      if (!pxStatus) return;
+      pxStatus.textContent = msg || '';
+      pxStatus.style.color = color || '';
+    }
+    function applyPendingPixel(){
+      if (!pxSel) return;
+      var pending = pxSel.getAttribute('data-preselect-opt') || pxSel.getAttribute('data-preselect-pixel');
+      if (!pending) return;
+      var matched = false;
+      Array.prototype.slice.call(pxSel.options).forEach(function(op){
+        if (String(op.value) === String(pending) || String(op.getAttribute('data-pixel-id')) === String(pending)) {
+          pxSel.value = op.value;
+          matched = true;
+        }
+      });
+      if (matched) {
+        pxSel.removeAttribute('data-preselect-opt');
+        pxSel.removeAttribute('data-preselect-pixel');
+        setPxStatus('Loaded pixels. Preselected from offer.', '#34d399');
+      }
+    }
+    function loadPixels(){
+      if (!pxSel || !acct) return;
+      var id = acct.value;
+      if (!id) {
+        pxSel.innerHTML = '<option value="-1">Default optimization</option>';
+        setPxStatus('Select an ad account to load conversion pixels.', '#9ca3af');
+        return;
+      }
+      setPxStatus('Fetching conversion pixels from MediaGo…', '#9ca3af');
+      fetch('/api/mediago/pixels/' + encodeURIComponent(id), { credentials: 'same-origin' })
+        .then(function(r){ return r.json().then(function(body){ return { ok: r.ok, body: body }; }); })
+        .then(function(res){
+          if (!res.ok) {
+            pxSel.innerHTML = '<option value="-1">Default optimization</option>';
+            setPxStatus((res.body && res.body.error) || 'Failed to load pixels', '#f87171');
+            return;
+          }
+          var pixels = (res.body && res.body.pixels) || [];
+          pxSel.innerHTML = '<option value="-1">Default optimization</option>';
+          pixels.forEach(function(p){
+            var opt = document.createElement('option');
+            var code = optFromPixel(p) || '-1';
+            opt.value = code;
+            opt.setAttribute('data-pixel-id', p.pixel_id || p.conversion_name || '');
+            opt.textContent = (p.name || p.conversion_name || p.pixel_id || code) + (p.pixel_id ? ' · ' + p.pixel_id : '');
+            pxSel.appendChild(opt);
+          });
+          if (!pixels.length) {
+            setPxStatus('No conversion pixels on this account. Use Default optimization, or Sync from MediaGo on Offers.', '#9ca3af');
+          } else {
+            setPxStatus('Loaded ' + pixels.length + ' conversion pixel' + (pixels.length === 1 ? '' : 's') + '.', '#34d399');
+          }
+          applyPendingPixel();
+        })
+        .catch(function(){
+          pxSel.innerHTML = '<option value="-1">Default optimization</option>';
+          setPxStatus('Error loading pixels', '#f87171');
+        });
+    }
+
+    if (objSel) objSel.addEventListener('change', toggleConversion);
+    toggleConversion();
+    if (acct) acct.addEventListener('change', loadPixels);
+    if (pxBtn) pxBtn.addEventListener('click', loadPixels);
+    if (acct && acct.value) loadPixels();
+
     if (!sel) return;
     sel.addEventListener('change', function(){
       var o = (OFFERS||[]).find(function(x){ return x.id === sel.value; });
@@ -1522,7 +1637,20 @@
       if (landEl && land) landEl.value = land;
       if (brandEl && brand) brandEl.value = String(brand).slice(0,30);
       if (defH && o.headline) { defH.value = String(o.headline).slice(0,80); defH.dispatchEvent(new Event('input',{bubbles:true})); }
-      if (summary) summary.textContent = brand + (o.payout ? ' · $'+Number(o.payout).toFixed(2) : '');
+      if (tcpaEl && o.target_cpa && Number(o.target_cpa) > 0) tcpaEl.value = Number(o.target_cpa).toFixed(2);
+      var px = findPixelRecord(offerPixelRef(o));
+      if (pxSel && px) {
+        var code = optFromPixel(px) || String(px.pixel_id || '');
+        pxSel.setAttribute('data-preselect-opt', code);
+        pxSel.setAttribute('data-preselect-pixel', String(px.pixel_id || ''));
+        applyPendingPixel();
+      }
+      var bits = [];
+      if (brand) bits.push(brand);
+      if (o.payout) bits.push('$'+Number(o.payout).toFixed(2));
+      if (o.target_cpa) bits.push('Target CPA $'+Number(o.target_cpa).toFixed(2));
+      if (px) bits.push('Pixel: '+(px.name || px.pixel_id));
+      if (summary) summary.textContent = bits.join(' · ');
     });
   })();
   (function(){

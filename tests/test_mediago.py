@@ -195,12 +195,16 @@ class MediaGoLauncherTest(unittest.TestCase):
                 "charge_type": "smart_bid",
                 "objective": "conversions",
                 "cpc_usd": "0.40",
+                "target_cpa_usd": "25",
+                "optimization_type": "8",
             },
             [{"asset_name": "a1", "img": "https://img/1.jpg", "headline": "Hello world"}],
         )
         self.assertEqual(payload["creative_type"], "native")
         self.assertEqual(payload["status"], 0)
         self.assertEqual(payload["daily_cap"], 40.0)
+        self.assertEqual(payload["target_cpa"], 25.0)
+        self.assertEqual(payload["optimization_type"], "8")
         self.assertEqual(payload["ad"][0]["headline"], "Hello world")
         self.assertEqual(len(payload["day_parting"]), 7)
         self.assertEqual(len(payload["day_parting"][0]), 24)
@@ -245,6 +249,7 @@ class MediaGoLauncherTest(unittest.TestCase):
             "landing_page": "https://offer.example",
             "daily_cap_usd": "25",
             "cpc_usd": "0.50",
+            "target_cpa_usd": "20",
             "headline_0": "A native headline that converts",
             "apply_site_exclusions": "1",
         }
@@ -267,6 +272,7 @@ class MediaGoLauncherTest(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["campaign_id"], "999")
         self.assertEqual(adapter.created[0][1]["creative_type"], "native")
+        self.assertEqual(adapter.created[0][1]["target_cpa"], 20.0)
         self.assertEqual(adapter.blocked[0][1], "999")
 
     def test_prepare_native_square(self):
@@ -316,6 +322,219 @@ class MediaGoRegistryTest(unittest.TestCase):
             loaded = storage.load_site_exclusions("acc1", platform="mediago")
             self.assertEqual(loaded[0]["site_id"], "2007904")
             self.assertEqual(storage.load_site_exclusions("other", platform="mediago"), [])
+
+
+class MediaGoPixelAndCpaTest(unittest.TestCase):
+    def test_optimization_type_mapping(self):
+        from platforms.mediago import optimization_type_for_conversion
+
+        self.assertEqual(optimization_type_for_conversion("purchase"), "8")
+        self.assertEqual(optimization_type_for_conversion("Lead"), "10")
+        self.assertEqual(optimization_type_for_conversion("add to cart"), "4")
+        self.assertEqual(optimization_type_for_conversion("8"), "8")
+        self.assertEqual(optimization_type_for_conversion(""), "-1")
+        self.assertEqual(optimization_type_for_conversion("unknown"), "-1")
+
+    def test_normalize_account_pixel(self):
+        from platforms.mediago import normalize_account_pixel
+
+        n = normalize_account_pixel(
+            {
+                "conversion_name": "purchase",
+                "category": "Purchase",
+                "status": 1,
+                "include_in_total_conversion": 1,
+            },
+            "acc1",
+        )
+        self.assertEqual(n["pixel_id"], "purchase")
+        self.assertEqual(n["optimization_type"], "8")
+        self.assertEqual(n["name"], "Purchase")
+        self.assertEqual(n["ad_account_id"], "acc1")
+
+    def test_list_pixels_uses_manage_api_not_client_accounts(self):
+        from platforms.mediago import MediaGoAdapter
+
+        class _C:
+            def list_account_pixels(self, account_id):
+                self.called = account_id
+                return [{"conversion_name": "lead", "category": "Lead", "status": 1}]
+
+        c = _C()
+        a = MediaGoAdapter(c)
+        rows = a.list_pixels("99")
+        self.assertEqual(c.called, "99")
+        self.assertEqual(rows[0]["pixel_id"], "lead")
+        self.assertEqual(rows[0]["optimization_type"], "10")
+
+    def test_list_events_sets_pixel_id_from_conversion_name(self):
+        from platforms.mediago import MediaGoAdapter
+
+        class _C:
+            def list_account_pixels(self, account_id):
+                return [{"conversion_name": "purchase", "category": "Purchase", "status": 1}]
+
+        events = MediaGoAdapter(_C()).list_events("acc")
+        self.assertEqual(events[0]["pixel_id"], "purchase")
+        self.assertEqual(events[0]["optimization_type"], "8")
+
+    def test_client_list_account_pixels_hits_manage_account(self):
+        from mediago_api import MediaGoClient
+
+        c = MediaGoClient("tok")
+        c._resolved_level = "client"
+        c._access_token = "abc"
+        c._token_expires_at = 1e18
+        seen = {}
+
+        def fake_get(path, params=None, account_id=None):
+            seen["path"] = path
+            seen["account_id"] = account_id
+            return [
+                {
+                    "account_id": "7",
+                    "account_name": "A",
+                    "pixels": [{"conversion_name": "purchase", "category": "Purchase"}],
+                }
+            ]
+
+        c.get = fake_get  # type: ignore
+        rows = c.list_account_pixels("7")
+        self.assertEqual(seen["path"], "/manage/v1/account")
+        self.assertEqual(seen["account_id"], "7")
+        self.assertEqual(rows[0]["conversion_name"], "purchase")
+
+    def test_payload_requires_target_cpa_for_conversions(self):
+        from bulk_launcher_mediago import build_campaign_payload
+
+        with self.assertRaises(ValueError) as ctx:
+            build_campaign_payload(
+                {
+                    "campaign_name": "X",
+                    "brand_name": "B",
+                    "landing_page": "https://x.com",
+                    "daily_cap_usd": "40",
+                    "objective": "conversions",
+                },
+                [{"asset_name": "a", "img": "https://i", "headline": "H"}],
+            )
+        self.assertIn("target_cpa", str(ctx.exception))
+
+    def test_payload_omits_target_cpa_for_awareness(self):
+        from bulk_launcher_mediago import build_campaign_payload
+
+        payload = build_campaign_payload(
+            {
+                "campaign_name": "X",
+                "brand_name": "B",
+                "landing_page": "https://x.com",
+                "daily_cap_usd": "40",
+                "objective": "awareness",
+                "cpc_usd": "0.40",
+            },
+            [{"asset_name": "a", "img": "https://i", "headline": "H"}],
+        )
+        self.assertNotIn("target_cpa", payload)
+        self.assertNotIn("optimization_type", payload)
+
+    def test_payload_maps_pixel_id_to_optimization_type(self):
+        from bulk_launcher_mediago import build_campaign_payload
+
+        payload = build_campaign_payload(
+            {
+                "campaign_name": "X",
+                "brand_name": "B",
+                "landing_page": "https://x.com",
+                "daily_cap_usd": "40",
+                "objective": "lead",
+                "target_cpa_usd": "15",
+                "cpc_usd": "0.40",
+                "pixel_id": "lead",
+            },
+            [{"asset_name": "a", "img": "https://i", "headline": "H"}],
+        )
+        self.assertEqual(payload["target_cpa"], 15.0)
+        self.assertEqual(payload["optimization_type"], "10")
+
+    def test_offer_pixels_map_keeps_other_platforms(self):
+        from storage import merge_offer_platform_pixels, offer_pixel_ref
+
+        existing = {"pixel_id": "nb1", "pixels": {"newsbreak": "nb1"}}
+        merged = merge_offer_platform_pixels(existing, "mediago", "purchase")
+        self.assertEqual(merged["newsbreak"], "nb1")
+        self.assertEqual(merged["mediago"], "purchase")
+        offer = {"pixel_id": "purchase", "pixels": merged}
+        self.assertEqual(offer_pixel_ref(offer, "mediago"), "purchase")
+        self.assertEqual(offer_pixel_ref(offer, "newsbreak"), "nb1")
+
+
+class MediaGoAppPixelRoutesTest(unittest.TestCase):
+    def test_sync_list_and_offer_pixels_map(self):
+        from tests.test_ai_studio import _TempStorage
+
+        with _TempStorage():
+            import app as appmod
+
+            class FakeAdapter:
+                platform = "mediago"
+
+                def get_accounts(self):
+                    return [{"id": "acc1", "name": "Acme"}]
+
+                def list_pixels(self, account_id):
+                    return [
+                        {
+                            "pixel_id": "purchase",
+                            "name": "Purchase",
+                            "conversion_name": "purchase",
+                            "optimization_type": "8",
+                        }
+                    ]
+
+            with (
+                patch.object(appmod, "_adapter", return_value=FakeAdapter()),
+                patch.object(appmod, "_effective_token", return_value={"api_token": "x"}),
+                patch.object(appmod, "_active_platform", return_value="mediago"),
+            ):
+                client = appmod.app.test_client()
+                with client.session_transaction() as s:
+                    s["platform"] = "mediago"
+                    s["uid"] = "u1"
+                resp = client.post("/api/mediago/sync-events")
+                self.assertEqual(resp.status_code, 200)
+                data = resp.get_json()
+                self.assertEqual(data["pixels_added"], 1)
+                self.assertEqual(data["added"], 1)
+
+                listed = client.get("/api/mediago/pixels/acc1")
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(listed.get_json()["pixels"][0]["pixel_id"], "purchase")
+
+                pix = client.get("/api/pixels").get_json()["pixels"][0]
+                offer_resp = client.post(
+                    "/api/offers",
+                    json={
+                        "name": "Mag",
+                        "pixel_id": pix["id"],
+                        "target_cpa": 22,
+                    },
+                )
+                self.assertEqual(offer_resp.status_code, 200)
+                offer = offer_resp.get_json()["offer"]
+                self.assertEqual(offer["pixels"]["mediago"], pix["id"])
+                self.assertEqual(offer["pixel_id"], pix["id"])
+                self.assertEqual(offer["target_cpa"], 22)
+
+    def test_pixels_route_rejects_wrong_platform(self):
+        import app as appmod
+
+        with (
+            patch.object(appmod, "_effective_token", return_value={"api_token": "x"}),
+            patch.object(appmod, "_active_platform", return_value="newsbreak"),
+        ):
+            client = appmod.app.test_client()
+            resp = client.get("/api/mediago/pixels/acc1")
+            self.assertEqual(resp.status_code, 400)
 
 
 if __name__ == "__main__":

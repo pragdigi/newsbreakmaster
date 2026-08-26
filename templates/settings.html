@@ -8,6 +8,10 @@
       <p class="nb-muted">
         {% if active_platform == 'smartnews' %}
           SmartNews v3 exposes real tracking pixels per ad account and a fixed list of built-in conversion events (purchase, addToCart, viewContent, …). Click <strong>Sync from SmartNews</strong> to pull every pixel from every ad account you can see and seed the built-in events in one shot.
+        {% elif active_platform == 'mediago' %}
+          MediaGo conversion pixels live on each ad account (<code>GET /manage/v1/account</code> → <code>pixels[]</code>). They are conversion trackers (purchase, lead, …), not NewsBreak pixel IDs. Click <strong>Sync from MediaGo</strong> to pull them into the offer dropdown. Launch sends the matching <code>optimization_type</code> plus <code>target_cpa</code>.
+        {% elif active_platform == 'outbrain' %}
+          Outbrain/Teads uses conversion pixels configured in Amplify, not a NewsBreak pixel ID. Sync conversions as events, or leave the pixel field empty.
         {% else %}
           Save your pixels, conversion events, and offer bundles so they show up as dropdowns on the bulk launcher.
         {% endif %}
@@ -17,25 +21,29 @@
 </section>
 
 <section class="nb-section">
+  {% if active_platform != 'outbrain' %}
   <div class="nb-card">
     <div class="nb-card-head">
-      <h2>Pixels</h2>
+      <h2>{% if active_platform == 'mediago' %}MediaGo conversion pixels{% else %}Pixels{% endif %}</h2>
       <button type="button" class="nb-btn nb-btn-sm" data-new="pixel">Add pixel</button>
     </div>
     <p class="nb-muted nb-small">
       {% if active_platform == 'smartnews' %}
         Pixels here are pulled from every SmartNews ad account you can see (<code>/ad_accounts/{id}/pixels</code>). Hit <strong>Sync from SmartNews</strong> in the Conversion events card to refresh both pixels and events.
+      {% elif active_platform == 'mediago' %}
+        Each row is a conversion tracker from MediaGo (e.g. <code>purchase</code>, <code>lead</code>). Pixel ID is the conversion name — MediaGo has no separate numeric pixel object. Hit <strong>Sync from MediaGo</strong> to import from every account on this token.
       {% else %}
         NewsBreak doesn't expose a pixel list API — add them here once and reuse everywhere.
       {% endif %}
     </p>
     <table class="nb-table" id="pixels-table">
       <thead>
-        <tr><th>Name</th><th>Pixel ID</th><th>Notes</th><th></th></tr>
+        <tr><th>Name</th><th>{% if active_platform == 'mediago' %}Conversion{% else %}Pixel ID{% endif %}</th><th>Notes</th><th></th></tr>
       </thead>
       <tbody></tbody>
     </table>
   </div>
+  {% endif %}
 
   <div class="nb-card">
     <div class="nb-card-head">
@@ -43,6 +51,10 @@
       <div style="display:flex;gap:8px;">
         {% if active_platform == 'smartnews' %}
           <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Seed built-in conversion events and pull every pixel from every ad account">Sync from SmartNews</button>
+        {% elif active_platform == 'mediago' %}
+          <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Pull conversion pixels from every MediaGo ad account">Sync from MediaGo</button>
+        {% elif active_platform == 'outbrain' %}
+          <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Outbrain conversions are managed in Amplify" disabled>No pixel sync</button>
         {% else %}
           <button type="button" class="nb-btn nb-btn-sm" id="btn-sync-events" title="Pull events from every ad account on your token">Sync from NewsBreak</button>
         {% endif %}
@@ -52,6 +64,10 @@
     <p class="nb-muted nb-small">
       {% if active_platform == 'smartnews' %}
         SmartNews Insights reports against built-in event keys (e.g. <code>purchase</code>, <code>addToCart</code>, <code>viewContent</code>). Click <strong>Sync from SmartNews</strong> to seed them locally <em>and</em> import every tracking pixel from your ad accounts, so both show up in the Offer builder.
+      {% elif active_platform == 'mediago' %}
+        MediaGo conversion events are the same objects as the account pixel list. Sync imports both. On launch they map to <code>optimization_type</code> (purchase → 8, lead → 10, …).
+      {% elif active_platform == 'outbrain' %}
+        Outbrain conversions are configured in Amplify. Add an event here if you want to tag offers; there is no NewsBreak pixel to attach.
       {% else %}
         Grab the <strong>tracking ID</strong> for each conversion event from NewsBreak Ad Manager → Tools → Event Management. Or click <strong>Sync from NewsBreak</strong> to auto-import all events from every ad account on your token.
       {% endif %}
@@ -70,7 +86,7 @@
       <h2>Offers</h2>
       <button type="button" class="nb-btn nb-btn-sm nb-btn-primary" data-new="offer">New offer</button>
     </div>
-    <p class="nb-muted nb-small">Bundle a pixel, event, default creative copy, landing URL and payout. Selecting an offer on the launch page auto-fills everything.</p>
+    <p class="nb-muted nb-small">Bundle a {% if active_platform == 'mediago' %}MediaGo conversion pixel{% elif active_platform == 'outbrain' %}conversion event{% else %}pixel{% endif %}, event, default creative copy, landing URL, payout and target CPA. Selecting an offer on the launch page auto-fills everything.</p>
     <table class="nb-table" id="offers-table">
       <thead>
         <tr><th>Offer</th><th>Brand</th><th>Ad accounts</th><th>Landing URL</th><th>Pixel</th><th>Event</th><th>Payout</th><th>Target CPA</th><th></th></tr>
@@ -97,6 +113,9 @@
 
 <script>
 const STANDARD_EVENTS = ["PURCHASE","LEAD","ADD_TO_CART","INITIATE_CHECKOUT","COMPLETE_REGISTRATION","SUBSCRIBE","VIEW_CONTENT","SEARCH","CONTACT","ADD_PAYMENT_INFO","ADD_TO_WISHLIST","START_TRIAL","COMPLETE_PAYMENT"];
+const PLATFORM = {{ active_platform | tojson }};
+const PLATFORM_LABEL = {{ active_platform_label | tojson }};
+const SHOW_PIXELS = PLATFORM !== 'outbrain';
 
 let state = {
   pixels: {{ pixels|tojson }},
@@ -105,6 +124,15 @@ let state = {
   adAccounts: [],
 };
 
+function pixelLabel() {
+  if (PLATFORM === 'mediago') return 'MediaGo conversion pixel';
+  if (PLATFORM === 'smartnews') return 'SmartNews pixel';
+  return 'Pixel';
+}
+function offerPixelRef(o) {
+  if (o && o.pixels && o.pixels[PLATFORM]) return o.pixels[PLATFORM];
+  return (o && o.pixel_id) || '';
+}
 function pixelName(id) { const p = state.pixels.find(x=>x.id===id); return p ? `${p.name} (${p.pixel_id})` : '—'; }
 function eventName(id) {
   const e = state.events.find(x=>x.id===id);
@@ -123,6 +151,7 @@ function fmtMoney(v) { return v == null || v === '' ? '—' : `$${Number(v).toFi
 
 function renderPixels() {
   const tb = document.querySelector('#pixels-table tbody');
+  if (!tb) return;
   tb.innerHTML = state.pixels.length ? state.pixels.map(p => `
     <tr>
       <td><strong>${escape(p.name)}</strong></td>
@@ -132,7 +161,7 @@ function renderPixels() {
         <button type="button" class="nb-btn-ghost" data-edit="pixel" data-id="${p.id}">Edit</button>
         <button type="button" class="nb-btn-ghost nb-danger" data-del="pixel" data-id="${p.id}">Delete</button>
       </td>
-    </tr>`).join('') : `<tr><td colspan="4" class="nb-muted">No pixels yet.</td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="4" class="nb-muted">${PLATFORM === 'mediago' ? 'No MediaGo conversion pixels yet. Click Sync from MediaGo.' : 'No pixels yet.'}</td></tr>`;
 }
 
 function renderEvents() {
@@ -163,7 +192,7 @@ function renderOffers() {
       <td>${escape(o.brand_name||'—')}${o.cta ? `<br><span class="nb-muted nb-small">CTA: ${escape(o.cta)}</span>` : ''}</td>
       <td class="nb-muted nb-small">${escape(accountsLabel(o.ad_account_ids))}</td>
       <td class="nb-muted nb-small">${escape((o.landing_url||'').slice(0,50))}</td>
-      <td>${pixelName(o.pixel_id)}</td>
+      <td>${SHOW_PIXELS ? pixelName(offerPixelRef(o)) : '—'}</td>
       <td>${eventName(o.event_id)}</td>
       <td>${fmtMoney(o.payout)}</td>
       <td>${fmtMoney(o.target_cpa)}</td>
@@ -179,19 +208,33 @@ function escape(s) { return (s||'').toString().replace(/[&<>"]/g, c=>({"&":"&amp
 function formHtml(kind, item) {
   item = item || {};
   if (kind === 'pixel') {
+    const pidLabel = PLATFORM === 'mediago' ? 'Conversion name' : 'Pixel ID';
+    const pidPh = PLATFORM === 'mediago' ? 'purchase' : '123456789';
     return `
       <label class="nb-field"><span>Name</span><input name="name" required value="${escape(item.name||'')}" placeholder="e.g. Main store pixel"></label>
-      <label class="nb-field"><span>Pixel ID</span><input name="pixel_id" required value="${escape(item.pixel_id||'')}" placeholder="123456789"></label>
+      <label class="nb-field"><span>${pidLabel}</span><input name="pixel_id" required value="${escape(item.pixel_id||'')}" placeholder="${pidPh}"></label>
       <label class="nb-field"><span>Notes (optional)</span><input name="notes" value="${escape(item.notes||'')}"></label>`;
   }
   if (kind === 'event') {
     const opts = STANDARD_EVENTS.map(e => `<option value="${e}" ${item.event_type===e?'selected':''}>${e}</option>`).join('');
+    const tidLabel = PLATFORM === 'mediago'
+      ? 'Conversion name (from MediaGo pixel list, e.g. purchase)'
+      : PLATFORM === 'smartnews'
+        ? 'Event key (e.g. purchase, addToCart)'
+        : PLATFORM === 'outbrain'
+          ? 'Outbrain conversion ID'
+          : 'Tracking ID (from NewsBreak Ad Manager → Event Management)';
+    const tidHint = PLATFORM === 'mediago'
+      ? 'This is the MediaGo conversion_name. Launch maps it to optimization_type on the campaign.'
+      : PLATFORM === 'newsbreak'
+        ? 'This is the exact ID NewsBreak returns after you create the conversion event. It gets sent as <code>trackingId</code> in the ad set payload and is required whenever you use <code>TARGET_CPA</code>, <code>MAX_CONVERSION</code>, <code>MAX_CONVERSION_VALUE</code>, or <code>TARGET_ROAS</code>.'
+        : 'Saved so the offer builder and launch form can pick this event.';
     return `
       <label class="nb-field"><span>Name</span><input name="name" required value="${escape(item.name||'')}" placeholder="e.g. Lead form submit"></label>
-      <label class="nb-field"><span>Tracking ID (from NewsBreak Ad Manager → Event Management)</span>
+      <label class="nb-field"><span>${tidLabel}</span>
         <input name="tracking_id" required value="${escape(item.tracking_id || item.event_type || '')}" placeholder="e.g. 29384756 or evt_abc123">
       </label>
-      <p class="nb-muted nb-small" style="margin:0;">This is the exact ID NewsBreak returns after you create the conversion event. It gets sent as <code>trackingId</code> in the ad set payload and is required whenever you use <code>TARGET_CPA</code>, <code>MAX_CONVERSION</code>, <code>MAX_CONVERSION_VALUE</code>, or <code>TARGET_ROAS</code>.</p>
+      <p class="nb-muted nb-small" style="margin:0;">${tidHint}</p>
       <label class="nb-field"><span>Event category (optional label, for your notes)</span>
         <select name="event_type_std">
           <option value="">— optional —</option>${opts}
@@ -199,7 +242,8 @@ function formHtml(kind, item) {
       </label>`;
   }
   // offer
-  const pixelOpts = state.pixels.map(p => `<option value="${p.id}" ${item.pixel_id===p.id?'selected':''}>${escape(p.name)} (${escape(p.pixel_id)})</option>`).join('');
+  const selectedPixel = offerPixelRef(item);
+  const pixelOpts = state.pixels.map(p => `<option value="${p.id}" ${selectedPixel===p.id?'selected':''}>${escape(p.name)} (${escape(p.pixel_id)})</option>`).join('');
   const eventOpts = state.events.map(e => {
     const idLabel = e.tracking_id || e.event_type || '';
     const suffix = idLabel ? ` (${escape(idLabel)})` : '';
@@ -212,6 +256,13 @@ function formHtml(kind, item) {
   }).join('');
   const CTA_OPTIONS = ['Learn More','Shop Now','Sign Up','Get Offer','Subscribe','Download','Get Quote','Apply Now','Book Now','Contact Us'];
   const ctaOpts = CTA_OPTIONS.map(c => `<option value="${c}" ${(item.cta||'Learn More')===c?'selected':''}>${c}</option>`).join('');
+  const pixelField = SHOW_PIXELS ? `
+      <label class="nb-field"><span>${pixelLabel()}</span>
+        <select name="pixel_id"><option value="">— none —</option>${pixelOpts}</select>
+      </label>` : `<input type="hidden" name="pixel_id" value="">`;
+  const utmPh = PLATFORM === 'mediago'
+    ? 'utm_source=mediago&utm_medium=referral'
+    : 'utm_source=newsbreak';
   return `
     <div class="nb-row-2">
       <label class="nb-field"><span>Offer name</span><input name="name" required value="${escape(item.name||'')}" placeholder="e.g. Magnura Q2"></label>
@@ -223,13 +274,11 @@ function formHtml(kind, item) {
     </div>
     <div class="nb-row-2">
       <label class="nb-field"><span>Default headline</span><input name="headline" value="${escape(item.headline||'')}"></label>
-      <label class="nb-field"><span>UTM parameters (appended)</span><input name="utm_parameters" value="${escape(item.utm_parameters||'')}" placeholder="utm_source=newsbreak&utm_campaign={{ '{{offer}}' }}"></label>
+      <label class="nb-field"><span>UTM parameters (appended)</span><input name="utm_parameters" value="${escape(item.utm_parameters||'')}" placeholder="${utmPh}"></label>
     </div>
     <label class="nb-field"><span>Default body text</span><textarea name="body" rows="2">${escape(item.body||'')}</textarea></label>
     <div class="nb-row-2">
-      <label class="nb-field"><span>Pixel</span>
-        <select name="pixel_id"><option value="">— none —</option>${pixelOpts}</select>
-      </label>
+      ${pixelField}
       <label class="nb-field"><span>Conversion event</span>
         <select name="event_id"><option value="">— none —</option>${eventOpts}</select>
       </label>
@@ -270,7 +319,12 @@ async function saveModal() {
     body.tracking_id = (fd.get('tracking_id') || '').trim();
     body.event_type = (fd.get('event_type_std') || '').trim();
     body.is_custom = !!body.event_type && !STANDARD_EVENTS.includes(body.event_type) ? true : false;
-    if (!body.tracking_id) { alert('Tracking ID is required — grab it from NewsBreak Ad Manager → Event Management.'); return; }
+    if (!body.tracking_id) {
+      alert(PLATFORM === 'mediago'
+        ? 'Conversion name is required — sync from MediaGo or enter e.g. purchase.'
+        : 'Tracking ID is required — grab it from Event Management.');
+      return;
+    }
   } else {
     for (const k of ['name','brand_name','cta','landing_url','headline','body','pixel_id','event_id','payout','target_cpa','utm_parameters','notes']) {
       body[k] = fd.get(k);
@@ -335,24 +389,32 @@ document.addEventListener('click', (e) => {
 });
 document.getElementById('nb-modal-save').addEventListener('click', saveModal);
 
-document.getElementById('btn-sync-events').addEventListener('click', async () => {
+document.getElementById('btn-sync-events')?.addEventListener('click', async () => {
   const btn = document.getElementById('btn-sync-events');
   const status = document.getElementById('sync-status');
-  const platform = {{ active_platform | tojson }};
-  const endpoint = platform === 'smartnews' ? '/api/smartnews/sync-events' : '/api/newsbreak/sync-events';
+  const platform = PLATFORM;
+  const endpoints = {
+    smartnews: '/api/smartnews/sync-events',
+    mediago: '/api/mediago/sync-events',
+    newsbreak: '/api/newsbreak/sync-events',
+  };
+  const endpoint = endpoints[platform];
+  if (!endpoint || btn.disabled) return;
   btn.disabled = true;
   const oldText = btn.textContent;
   btn.textContent = 'Syncing…';
   status.style.display = 'block';
   status.textContent = platform === 'smartnews'
     ? 'Seeding built-in events and pulling pixels from every ad account…'
-    : 'Fetching events from every ad account on your token…';
+    : platform === 'mediago'
+      ? 'Pulling conversion pixels from every MediaGo ad account…'
+      : 'Fetching events from every ad account on your token…';
   try {
     const r = await fetch(endpoint, { method: 'POST' });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'sync failed');
     let msg;
-    if (platform === 'smartnews') {
+    if (platform === 'smartnews' || platform === 'mediago') {
       const accSummary = (data.accounts || []).map(a => `${a.name}: ${a.imported}`).join(' · ') || 'no ad accounts returned pixels';
       msg = `Seeded ${data.added} new event(s), updated ${data.updated}. Imported ${data.pixels_added || 0} new pixel(s), updated ${data.pixels_updated || 0}. (${accSummary})`;
     } else {

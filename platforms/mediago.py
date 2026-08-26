@@ -154,6 +154,79 @@ _OPTIMIZATION_EVENTS = {
     "-1": "default",
 }
 
+# Inverse of ``_OPTIMIZATION_EVENTS`` plus human labels from the account pixel list.
+_CONVERSION_NAME_TO_OPTIMIZATION = {
+    "view_content": "1",
+    "view content": "1",
+    "app_install": "2",
+    "app install": "2",
+    "complete_registration": "3",
+    "complete registration": "3",
+    "add_to_cart": "4",
+    "add to cart": "4",
+    "add_payment_info": "5",
+    "add payment info": "5",
+    "search": "6",
+    "start_checkout": "7",
+    "start checkout": "7",
+    "initiate_checkout": "7",
+    "purchase": "8",
+    "add_to_wishlist": "9",
+    "add to wishlist": "9",
+    "lead": "10",
+    "default": "-1",
+    "default_optimization": "-1",
+}
+
+
+def optimization_type_for_conversion(name: Any) -> str:
+    """Map a MediaGo conversion name / pixel to campaign ``optimization_type``.
+
+    Create-campaign docs: "1" View Content … "8" Purchase … "10" Lead, "-1" default.
+    Account pixels identify conversions by ``conversion_name`` (e.g. ``purchase``),
+    not a numeric pixel id.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return "-1"
+    if raw in _OPTIMIZATION_EVENTS:
+        return raw
+    key = raw.lower().replace("-", "_")
+    if key in _CONVERSION_NAME_TO_OPTIMIZATION:
+        return _CONVERSION_NAME_TO_OPTIMIZATION[key]
+    spaced = key.replace("_", " ")
+    if spaced in _CONVERSION_NAME_TO_OPTIMIZATION:
+        return _CONVERSION_NAME_TO_OPTIMIZATION[spaced]
+    return "-1"
+
+
+def normalize_account_pixel(px: Dict[str, Any], account_id: str = "") -> Dict[str, Any]:
+    """Flatten a ``GET /manage/v1/account`` pixel row into catalog shape."""
+    conv = str(
+        px.get("conversion_name")
+        or px.get("category")
+        or px.get("pixel_id")
+        or ""
+    ).strip()
+    if not conv:
+        return {}
+    name = str(px.get("category") or conv).strip() or conv
+    opt = optimization_type_for_conversion(
+        px.get("optimization_type") or conv or px.get("category")
+    )
+    status_raw = px.get("status")
+    return {
+        "pixel_id": conv,
+        "name": name,
+        "conversion_name": conv,
+        "optimization_type": opt,
+        "include_in_total_conversion": px.get("include_in_total_conversion"),
+        "status": status_raw,
+        "ad_account_id": str(account_id) if account_id else "",
+        "source": "mediago",
+        "raw": px,
+    }
+
 
 class MediaGoAdapter:
     platform = "mediago"
@@ -360,32 +433,62 @@ class MediaGoAdapter:
         return [self._canonicalize_report_row(r, "campaign") for r in raw]
 
     # ------------------------------------------------------------------
-    # Events / assets
+    # Events / pixels
     # ------------------------------------------------------------------
-    def list_events(self, account_id: str) -> List[Dict[str, Any]]:
-        pixels = self._account_pixels.get(str(account_id))
-        if pixels is None:
-            try:
-                for acc in self.get_accounts():
-                    if acc["id"] == str(account_id):
-                        pixels = acc.get("pixels") or []
-                        break
-            except Exception:
-                pixels = []
+    def list_pixels(self, account_id: str) -> List[Dict[str, Any]]:
+        """Conversion pixels for ``account_id`` (MediaGo has no numeric pixel id).
+
+        Hits ``GET /manage/v1/account`` so client-level tokens still see the
+        ``pixels`` array. Falls back to whatever ``get_accounts`` cached.
+        """
+        aid = str(account_id or "")
+        raw: List[Dict[str, Any]] = []
+        try:
+            raw = self.client.list_account_pixels(aid) or []
+        except Exception:
+            raw = []
+        if not raw:
+            cached = self._account_pixels.get(aid)
+            if cached:
+                raw = list(cached)
+            else:
+                try:
+                    for acc in self.get_accounts():
+                        if acc["id"] == aid:
+                            raw = list(acc.get("pixels") or [])
+                            break
+                except Exception:
+                    raw = []
         out: List[Dict[str, Any]] = []
-        for px in pixels or []:
-            name = px.get("conversion_name") or px.get("category") or "event"
+        seen = set()
+        for px in raw:
+            if not isinstance(px, dict):
+                continue
+            n = normalize_account_pixel(px, aid)
+            pid = n.get("pixel_id")
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            out.append(n)
+        return out
+
+    def list_events(self, account_id: str) -> List[Dict[str, Any]]:
+        pixels = self.list_pixels(account_id)
+        out: List[Dict[str, Any]] = []
+        for px in pixels:
+            name = px.get("conversion_name") or px.get("name") or "event"
             out.append(
                 {
                     "tracking_id": name,
-                    "name": px.get("category") or name,
+                    "name": px.get("name") or name,
                     "event_type": name,
-                    "pixel_id": None,
+                    "pixel_id": px.get("pixel_id") or name,
+                    "optimization_type": px.get("optimization_type") or "-1",
                     "tracking_type": "pixel",
                     "status": "ACTIVE" if px.get("status") else "PAUSED",
                     "ad_account_id": account_id,
                     "source": "mediago",
-                    "raw": px,
+                    "raw": px.get("raw") or px,
                 }
             )
         if out:
@@ -395,6 +498,8 @@ class MediaGoAdapter:
                 "tracking_id": key,
                 "name": label,
                 "event_type": key,
+                "pixel_id": key,
+                "optimization_type": optimization_type_for_conversion(key),
                 "source": "mediago",
                 "ad_account_id": account_id,
             }
@@ -523,4 +628,9 @@ def _all_hours_dayparting() -> List[List[int]]:
     return [[1] * 24 for _ in range(7)]
 
 
-__all__ = ["MediaGoAdapter", "score_source_rows"]
+__all__ = [
+    "MediaGoAdapter",
+    "score_source_rows",
+    "normalize_account_pixel",
+    "optimization_type_for_conversion",
+]

@@ -443,6 +443,44 @@ def list_offers(*, platform: str = DEFAULT_PLATFORM) -> List[Dict[str, Any]]:
     return _load_catalog(_offers_file(platform))
 
 
+def merge_offer_platform_pixels(
+    existing: Optional[Dict[str, Any]],
+    platform: str,
+    pixel_id: str,
+    incoming_map: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Keep a per-platform pixel map so switching platforms cannot overwrite.
+
+    Catalogs are already namespaced, but offers may be copied or later shared.
+    ``pixel_id`` is the convenience field for the *current* platform.
+    """
+    out: Dict[str, str] = {}
+    if existing and isinstance(existing.get("pixels"), dict):
+        for k, v in existing["pixels"].items():
+            if k and v not in (None, ""):
+                out[str(k)] = str(v)
+    if isinstance(incoming_map, dict):
+        for k, v in incoming_map.items():
+            if k and v not in (None, ""):
+                out[str(k)] = str(v)
+    plat = (platform or DEFAULT_PLATFORM).strip() or DEFAULT_PLATFORM
+    pid = (pixel_id or "").strip()
+    if pid:
+        out[plat] = pid
+    else:
+        out.pop(plat, None)
+    return out
+
+
+def offer_pixel_ref(offer: Optional[Dict[str, Any]], platform: str) -> str:
+    """Resolve the catalog pixel id / conversion name for ``platform``."""
+    if not offer:
+        return ""
+    pixels = offer.get("pixels") if isinstance(offer.get("pixels"), dict) else {}
+    plat = (platform or DEFAULT_PLATFORM).strip() or DEFAULT_PLATFORM
+    return str(pixels.get(plat) or offer.get("pixel_id") or "").strip()
+
+
 def upsert_offer(item: Dict[str, Any], *, platform: str = DEFAULT_PLATFORM) -> Dict[str, Any]:
     return _upsert_catalog(_offers_file(platform), item)
 

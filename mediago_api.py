@@ -378,6 +378,33 @@ class MediaGoClient:
                 return rows
         return self.get_authorized_accounts()
 
+    def list_account_pixels(self, account_id: str) -> List[Dict[str, Any]]:
+        """Conversion pixels for one account from ``GET /manage/v1/account``.
+
+        MediaGo has no standalone pixel-id object. Each account returns a
+        ``pixels`` array of conversion trackers (``conversion_name``,
+        ``category``, ``status``, ``include_in_total_conversion``). Client-level
+        ``/data/v1/client/accounts`` often omits this array, so we always hit
+        the manage endpoint with ``Account-Id``.
+        """
+        aid = str(account_id or "").strip()
+        if not aid:
+            return []
+        rows = self.get_authorized_accounts(account_id=aid)
+        matched: Optional[Dict[str, Any]] = None
+        for acc in rows:
+            if str(acc.get("account_id") or acc.get("id") or "") == aid:
+                matched = acc
+                break
+        if matched is None and len(rows) == 1:
+            matched = rows[0]
+        if not matched:
+            return []
+        pixels = matched.get("pixels")
+        if not isinstance(pixels, list):
+            return []
+        return [p for p in pixels if isinstance(p, dict)]
+
     # ------------------------------------------------------------------
     # Campaigns / ads
     # ------------------------------------------------------------------

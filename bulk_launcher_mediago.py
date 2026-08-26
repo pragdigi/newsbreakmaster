@@ -387,10 +387,25 @@ def build_campaign_payload(
         cpc = _usd(form.get("cpc_usd") or form.get("cpc")) or 0.50
         payload["cpc"] = round(min(cpc, 5.0), 3)
     if objective in ("lead", "conversions"):
+        # Official create-campaign field is ``target_cpa`` (USD). Required when
+        # objective is Lead Generation or Online Purchases.
+        # https://apidoc.mediago.io/346347754e0
         tcpa = _usd(form.get("target_cpa_usd") or form.get("target_cpa"))
-        if tcpa:
-            payload["target_cpa"] = round(tcpa, 2)
-        payload["optimization_type"] = (form.get("optimization_type") or "-1").strip() or "-1"
+        if tcpa is None or tcpa <= 0:
+            raise ValueError("target_cpa is required for lead/conversions campaigns (USD)")
+        payload["target_cpa"] = round(tcpa, 2)
+        if charge == "max_cv" and daily >= tcpa * 30:
+            raise ValueError(
+                "When bid strategy is max conversions, daily_cap must be less than target_cpa × 30"
+            )
+        from platforms.mediago import optimization_type_for_conversion
+
+        opt = (form.get("optimization_type") or "").strip()
+        if not opt:
+            opt = optimization_type_for_conversion(
+                form.get("mediago_pixel") or form.get("pixel_id") or ""
+            )
+        payload["optimization_type"] = opt or "-1"
     return payload
 
 

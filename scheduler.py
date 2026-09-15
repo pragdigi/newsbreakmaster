@@ -297,17 +297,53 @@ def run_public_scout() -> None:
                 )
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def library_auto_enabled() -> bool:
+    """True only when the operator opts into interval library topup.
+
+    Default is OFF (``AD_STUDIO_LIBRARY_HOURS=0``). Historical library
+    rows stay on disk; Studio "Generate" / "Top up now" remain manual.
+    """
+    return _env_int("AD_STUDIO_LIBRARY_HOURS", 0) > 0
+
+
+def idea_auto_enabled() -> bool:
+    """True when any scheduled style-idea scout is opted in.
+
+    Defaults are all OFF so we stop banking new library ideas. Manual
+    Research → Discover and the agent scout endpoints still work.
+    """
+    return (
+        _env_int("AD_STUDIO_SCOUT_HOURS", 0) > 0
+        or _env_int("AD_STUDIO_PUBLIC_SCOUT_HOURS", 0) > 0
+        or _env_int("AD_STUDIO_SCHOLAR_HOURS", 0) > 0
+        or nightly_discover_enabled()
+    )
+
+
+def nightly_discover_enabled() -> bool:
+    return (os.environ.get("AD_STUDIO_NIGHTLY_DISCOVER") or "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def run_studio_library_topup() -> None:
-    """Daily prebuilt-ad library topup.
+    """Optional prebuilt-ad library topup (manual or opted-in interval).
 
     For every saved offer on every platform, render any missing images
     until the library has ``AD_STUDIO_LIBRARY_TARGET_PER_OFFER`` ready.
-    Tied to the same env hour/minute as the nightly winners pass by
-    default (see scheduler.start_scheduler).
 
-    The library is the cache that powers the "instant Generate" feel in
-    the AI Studio UI: when the user clicks Generate, we drain from this
-    library FIFO and only render fresh images for the gap.
+    Auto-schedule is OFF by default — call this from
+    ``/api/studio/library/topup`` or set ``AD_STUDIO_LIBRARY_HOURS`` > 0.
     """
     try:
         from ai_studio import library as _library
@@ -422,32 +458,30 @@ def run_ad_studio_nightly(*, mode: str = "full") -> None:
                     "ai_studio.winners failed platform=%s uid=%s: %s", platform, uid, e
                 )
 
-            # 2) Research discovery — scan catalog for candidate styles
-            #    across every available mode. ``scan_all_offers=True`` makes
-            #    the nightly pass derive search keywords per saved offer and
-            #    call GetHookd / brainstorm for each, instead of running
-            #    with an empty query.
-            try:
-                from ai_studio.research import discover_all
+            # 2) Research discovery — opt-in (AD_STUDIO_NIGHTLY_DISCOVER=1).
+            #    Default OFF so we stop auto-banking new style ideas.
+            if nightly_discover_enabled():
+                try:
+                    from ai_studio.research import discover_all
 
-                discovered = discover_all(
-                    platform=platform,
-                    scan_all_offers=True,
-                    keywords_per_offer=int(os.environ.get("AD_STUDIO_NIGHTLY_KEYWORDS_PER_OFFER", "5")),
-                    gethookd_limit_per_offer=int(os.environ.get("AD_STUDIO_NIGHTLY_GETHOOKD_LIMIT", "40")),
-                    brainstorm_count=int(os.environ.get("AD_STUDIO_NIGHTLY_BRAINSTORM_COUNT", "3")),
-                )
-                logger.info(
-                    "ai_studio.research platform=%s uid=%s modes=%s candidates=%s",
-                    platform,
-                    uid,
-                    list(discovered.keys()),
-                    sum(len(v or []) for v in discovered.values()),
-                )
-            except Exception as e:
-                logger.exception(
-                    "ai_studio.research failed platform=%s uid=%s: %s", platform, uid, e
-                )
+                    discovered = discover_all(
+                        platform=platform,
+                        scan_all_offers=True,
+                        keywords_per_offer=int(os.environ.get("AD_STUDIO_NIGHTLY_KEYWORDS_PER_OFFER", "5")),
+                        gethookd_limit_per_offer=int(os.environ.get("AD_STUDIO_NIGHTLY_GETHOOKD_LIMIT", "40")),
+                        brainstorm_count=int(os.environ.get("AD_STUDIO_NIGHTLY_BRAINSTORM_COUNT", "3")),
+                    )
+                    logger.info(
+                        "ai_studio.research platform=%s uid=%s modes=%s candidates=%s",
+                        platform,
+                        uid,
+                        list(discovered.keys()),
+                        sum(len(v or []) for v in discovered.values()),
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "ai_studio.research failed platform=%s uid=%s: %s", platform, uid, e
+                    )
 
             # 3) Lifecycle reconciliation — promote/archive/demote-flag.
             try:
@@ -490,11 +524,8 @@ def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
         id="ai_studio_nightly",
         replace_existing=True,
     )
-    # Every-N-hour scout pass — keeps GetHookd + brainstorm sweeping for new
-    # ad concepts per saved offer in the background. Defaults to every 6h
-    # which matches the user's original ask. Set AD_STUDIO_SCOUT_HOURS=0 to
-    # disable.
-    scout_hours = int(os.environ.get("AD_STUDIO_SCOUT_HOURS", "6"))
+    # Style-idea scouts — default OFF. Set AD_STUDIO_*_HOURS > 0 to opt in.
+    scout_hours = _env_int("AD_STUDIO_SCOUT_HOURS", 0)
     if scout_hours > 0:
         sched.add_job(
             lambda: run_ad_studio_nightly(mode="scout"),
@@ -504,11 +535,7 @@ def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
             replace_existing=True,
         )
 
-    # Public-libraries scout — Meta Ad Library + TikTok Creative Center.
-    # Runs alongside the GetHookd scout so each pulls a different supply
-    # of competitor ads. Default 12h, set AD_STUDIO_PUBLIC_SCOUT_HOURS=0
-    # to disable.
-    public_hours = int(os.environ.get("AD_STUDIO_PUBLIC_SCOUT_HOURS", "12"))
+    public_hours = _env_int("AD_STUDIO_PUBLIC_SCOUT_HOURS", 0)
     if public_hours > 0:
         sched.add_job(
             run_public_scout,
@@ -518,11 +545,7 @@ def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
             replace_existing=True,
         )
 
-    # Copywriting Scholar — LLM-only deep-research agent. Cycles through
-    # frameworks per offer per run. Default 12h, set
-    # AD_STUDIO_SCHOLAR_HOURS=0 to disable. (Set higher than the scout
-    # cadence to keep Opus token spend predictable.)
-    scholar_hours = int(os.environ.get("AD_STUDIO_SCHOLAR_HOURS", "12"))
+    scholar_hours = _env_int("AD_STUDIO_SCHOLAR_HOURS", 0)
     if scholar_hours > 0:
         sched.add_job(
             run_scholar_scout,
@@ -532,12 +555,11 @@ def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
             replace_existing=True,
         )
 
-    # Prebuilt-ad library topup — daily at AD_STUDIO_LIBRARY_HOUR/MINUTE
-    # UTC (default 06:15, well after the nightly winners refresh so the
-    # library can ride on freshly-updated insights). Set
-    # AD_STUDIO_LIBRARY_HOURS to 0 to disable the daily cron, or to a
-    # positive number to switch to interval-mode (e.g. 6 = every 6h).
-    library_hours = int(os.environ.get("AD_STUDIO_LIBRARY_HOURS", "0"))
+    # Prebuilt-ad library topup — default OFF. Previously a 0 here still
+    # scheduled a daily 06:15 UTC cron. Now 0 means no job; set
+    # AD_STUDIO_LIBRARY_HOURS > 0 for interval-mode (e.g. 6 = every 6h).
+    # Manual /api/studio/library/topup is unchanged.
+    library_hours = _env_int("AD_STUDIO_LIBRARY_HOURS", 0)
     if library_hours > 0:
         sched.add_job(
             run_studio_library_topup,
@@ -548,18 +570,7 @@ def start_scheduler(interval_minutes: int = 15) -> BackgroundScheduler:
         )
         library_schedule_label = f"every {library_hours}h"
     else:
-        sched.add_job(
-            run_studio_library_topup,
-            "cron",
-            hour=int(os.environ.get("AD_STUDIO_LIBRARY_HOUR", "6")),
-            minute=int(os.environ.get("AD_STUDIO_LIBRARY_MINUTE", "15")),
-            id="ai_studio_library_topup",
-            replace_existing=True,
-        )
-        library_schedule_label = (
-            f"daily {os.environ.get('AD_STUDIO_LIBRARY_HOUR', '6')}:"
-            f"{os.environ.get('AD_STUDIO_LIBRARY_MINUTE', '15')} UTC"
-        )
+        library_schedule_label = "off"
 
     sched.start()
     _scheduler = sched

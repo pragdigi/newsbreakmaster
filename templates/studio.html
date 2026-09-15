@@ -244,6 +244,7 @@
           <button type="button" class="chip-filter active" data-platform="">All</button>
           <button type="button" class="chip-filter" data-platform="newsbreak">NewsBreak</button>
           <button type="button" class="chip-filter" data-platform="smartnews">SmartNews</button>
+          <button type="button" class="chip-filter" data-platform="mediago">MediaGo</button>
         </div>
         <div class="research-filter-group" data-filter="library-offer">
           <span class="research-filter-label">Offer:</span>
@@ -256,6 +257,7 @@
           <button type="button" class="chip-filter active" data-aspect="">All</button>
           <button type="button" class="chip-filter" data-aspect="1:1">1:1</button>
           <button type="button" class="chip-filter" data-aspect="16:9">16:9</button>
+          <button type="button" class="chip-filter" data-aspect="1.91:1">1.91:1</button>
           <button type="button" class="chip-filter" data-aspect="9:16">9:16</button>
         </div>
         <div class="research-filter-group" data-filter="library-status">
@@ -1024,6 +1026,7 @@
           <span class="candidate-chips">
             <span class="chip ${escapeHtml(c.status || 'candidate')}">${escapeHtml(c.status || 'candidate')}</span>
             ${c.source ? `<span class="chip source">${escapeHtml(prettySourceLabel(c))}</span>` : ''}
+            ${c.source_platform ? `<span class="chip source">${escapeHtml(c.source_platform)}</span>` : ''}
             ${isNew ? '<span class="chip new">new</span>' : ''}
           </span>
           ${whenShort ? `<span class="candidate-when nb-muted nb-small" title="${escapeHtml(whenFull)}">${escapeHtml(whenShort)}</span>` : ''}
@@ -1343,13 +1346,14 @@
     const whenShort = ts ? formatRelativeShort(ts) : '';
     const whenFull = ts ? new Date(ts).toLocaleString() : '';
     const aspect = it.aspect || '?';
-    const aspectCss = aspect === '16:9' ? '16 / 9'
+    const aspectCss = aspect === '16:9' || aspect === '1.91:1' ? '16 / 9'
                     : aspect === '9:16' ? '9 / 16'
                     : '1 / 1';
     const isConsumed = !!it.consumed_at;
-    const platform = String(it.platform || '');
+    const platform = String(it.source_platform || it.platform || '');
     const platformLabel = platform === 'smartnews' ? 'SmartNews'
                         : platform === 'newsbreak' ? 'NewsBreak'
+                        : platform === 'mediago' ? 'MediaGo'
                         : platform;
     let usedTitle = 'Already consumed by a Generate batch';
     if (it.used_in) {
@@ -2008,6 +2012,11 @@
   background: rgba(56, 189, 248, 0.85);
   color: #0f172a;
   border-color: rgba(56,189,248,0.9);
+}
+.library-tile-platform-chip.platform-mediago {
+  background: rgba(52, 211, 153, 0.85);
+  color: #052e16;
+  border-color: rgba(52,211,153,0.9);
 }
 .library-tile-consumed-chip {
   top: 6px; right: 6px;

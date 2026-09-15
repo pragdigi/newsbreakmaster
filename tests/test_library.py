@@ -344,5 +344,175 @@ class LibraryTopupTests(unittest.TestCase):
             self.assertEqual(res["total"], 2)
 
 
+class LibraryShareTests(unittest.TestCase):
+    def test_mediago_reads_unused_nb_sn_and_skips_portrait(self):
+        with _TempStorage():
+            import storage
+
+            self.assertEqual(
+                storage.library_share_platforms("mediago"),
+                ["newsbreak", "smartnews", "mediago"],
+            )
+            self.assertEqual(storage.mediago_library_fit("16:9"), "native")
+            self.assertEqual(storage.mediago_library_fit("1.91:1"), "native")
+            self.assertEqual(storage.mediago_library_fit("1:1"), "square")
+            self.assertIsNone(storage.mediago_library_fit("9:16"))
+
+            storage.append_library_item(
+                {"offer_id": "of1", "aspect": "16:9", "filename": "wide.png"},
+                platform="newsbreak",
+            )
+            storage.append_library_item(
+                {"offer_id": "of1", "aspect": "9:16", "filename": "tall.png"},
+                platform="newsbreak",
+            )
+            used = storage.append_library_item(
+                {"offer_id": "of1", "aspect": "1:1", "filename": "used.png"},
+                platform="smartnews",
+            )
+            storage.set_library_consumed(
+                [used["library_id"]], True, platform="smartnews"
+            )
+            storage.append_library_item(
+                {"offer_id": "of1", "aspect": "1:1", "filename": "sq.png"},
+                platform="smartnews",
+            )
+
+            counts = storage.library_counts(platform="mediago", shared=True)
+            self.assertEqual(counts.get("of1"), 2)
+
+    def test_consume_shared_marks_source_catalog(self):
+        with _TempStorage():
+            import storage
+
+            row = storage.append_library_item(
+                {"offer_id": "of1", "aspect": "16:9"}, platform="newsbreak"
+            )
+            popped = storage.consume_library_items_shared(
+                "of1",
+                1,
+                platform="mediago",
+                aspects=["16:9", "1.91:1", "1:1"],
+            )
+            self.assertEqual(len(popped), 1)
+            self.assertEqual(popped[0]["library_id"], row["library_id"])
+            self.assertEqual(popped[0]["source_platform"], "newsbreak")
+            leftover = storage.list_library_items(
+                platform="newsbreak", offer_id="of1"
+            )
+            self.assertEqual(leftover, [])
+
+    def test_style_ideas_shared_for_mediago_dedupe(self):
+        with _TempStorage():
+            import storage
+
+            storage.upsert_style_candidate(
+                {
+                    "style_id": "stack",
+                    "name": "Stack",
+                    "prompt_template": "Photo of {{headline}}",
+                    "status": "candidate",
+                },
+                platform="newsbreak",
+            )
+            storage.upsert_style_candidate(
+                {
+                    "style_id": "stack",
+                    "name": "Stack SN",
+                    "status": "candidate",
+                },
+                platform="smartnews",
+            )
+            rows = storage.list_style_candidates_shared(platform="mediago")
+            ids = [r["style_id"] for r in rows]
+            self.assertEqual(ids.count("stack"), 1)
+            self.assertEqual(rows[0]["source_platform"], "newsbreak")
+            self.assertEqual(rows[0]["prompt_template"], "Photo of {{headline}}")
+
+
+class SchedulerLibraryOffTests(unittest.TestCase):
+    def test_library_and_idea_autos_off_by_default(self):
+        import scheduler
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AD_STUDIO_LIBRARY_HOURS": "0",
+                "AD_STUDIO_SCOUT_HOURS": "0",
+                "AD_STUDIO_PUBLIC_SCOUT_HOURS": "0",
+                "AD_STUDIO_SCHOLAR_HOURS": "0",
+                "AD_STUDIO_NIGHTLY_DISCOVER": "0",
+            },
+            clear=False,
+        ):
+            self.assertFalse(scheduler.library_auto_enabled())
+            self.assertFalse(scheduler.idea_auto_enabled())
+            self.assertFalse(scheduler.nightly_discover_enabled())
+
+        with mock.patch.dict(os.environ, {"AD_STUDIO_LIBRARY_HOURS": "6"}):
+            self.assertTrue(scheduler.library_auto_enabled())
+
+
+class MediaGoLibraryApiTests(unittest.TestCase):
+    def test_list_and_candidates_share_newsbreak_smartnews(self):
+        with _TempStorage():
+            import app as _app
+            import storage
+
+            storage.append_library_item(
+                {
+                    "offer_id": "of1",
+                    "aspect": "16:9",
+                    "filename": "wide.png",
+                    "style_name": "Wide",
+                },
+                platform="newsbreak",
+            )
+            storage.append_library_item(
+                {
+                    "offer_id": "of1",
+                    "aspect": "9:16",
+                    "filename": "tall.png",
+                    "style_name": "Tall",
+                },
+                platform="newsbreak",
+            )
+            storage.upsert_style_candidate(
+                {
+                    "style_id": "value-stack",
+                    "name": "Value Stack",
+                    "prompt_template": "pt",
+                    "status": "candidate",
+                },
+                platform="newsbreak",
+            )
+
+            client = _app.app.test_client()
+            with mock.patch.object(_app, "_auth_required", return_value=True), \
+                 mock.patch.object(_app, "_AI_STUDIO_AVAILABLE", True), \
+                 mock.patch.object(_app, "_active_platform", return_value="mediago"):
+                resp = client.get("/api/studio/library/list?platform=mediago")
+                self.assertEqual(resp.status_code, 200)
+                data = resp.get_json()
+                names = [i["style_name"] for i in data["items"]]
+                self.assertIn("Wide", names)
+                self.assertNotIn("Tall", names)
+                wide = next(i for i in data["items"] if i["style_name"] == "Wide")
+                self.assertEqual(wide["source_platform"], "newsbreak")
+                self.assertEqual(wide["mediago_fit"], "native")
+
+                resp = client.get("/api/studio/research/candidates")
+                self.assertEqual(resp.status_code, 200)
+                cands = resp.get_json()["candidates"]
+                self.assertTrue(any(c.get("style_id") == "value-stack" for c in cands))
+
+                exp = client.get(
+                    "/api/studio/research/candidates/export?format=json&status=all"
+                )
+                self.assertEqual(exp.status_code, 200)
+                items = exp.get_json()["items"]
+                self.assertTrue(any(r.get("style_id") == "value-stack" for r in items))
+
+
 if __name__ == "__main__":
     unittest.main()

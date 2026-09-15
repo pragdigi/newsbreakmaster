@@ -519,9 +519,17 @@ def _mark_library_used_if_any(platform: str, form, result) -> None:
         "via": "launch_form",
     }
     try:
-        updated = storage.set_library_consumed(
-            ids, True, platform=platform, used_in=used_in
-        )
+        remaining = list(ids)
+        updated: List[Dict[str, Any]] = []
+        for plat in storage.library_share_platforms(platform):
+            if not remaining:
+                break
+            found = storage.set_library_consumed(
+                remaining, True, platform=plat, used_in=used_in
+            )
+            found_ids = {str(r.get("library_id")) for r in found}
+            remaining = [i for i in remaining if i not in found_ids]
+            updated.extend(found)
         app.logger.info(
             "library mark-off: %d/%d items marked used (platform=%s campaign=%s)",
             len(updated), len(ids), platform, result.get("campaign_id"),
@@ -2806,20 +2814,30 @@ def api_studio_generate():
         research_ratio = None
 
     use_library = bool(data.get("use_library", True))
-    if aspect and platform == "mediago" and aspect not in ("16:9", "1.91:1"):
-        use_library = False
+    aspects = None
+    if platform == "mediago":
+        usable = set(storage.mediago_usable_aspects(include_square=True))
+        if aspect:
+            want = storage.normalize_library_aspect(aspect)
+            if storage.mediago_library_fit(want) is None and want not in usable:
+                use_library = False
+            elif want == "1:1":
+                aspects = ["1:1"]
+            else:
+                aspects = [a for a in ("1.91:1", "16:9", "1:1") if a in usable]
+        else:
+            aspects = list(usable)
 
     # ------------------------------------------------------------------
-    # Step 1: drain the prebuilt library FIFO. This makes the user-facing
-    # "Generate" button feel near-instant when the daily topup has had a
-    # chance to run. We still fall through to fresh rendering for the
-    # gap if there aren't enough library items.
+    # Step 1: drain the prebuilt library FIFO (MediaGo reads unused
+    # NewsBreak / SmartNews rows that already fit native). Fresh render
+    # fills any gap. Auto top-up is off — this only spends existing stock.
     # ------------------------------------------------------------------
     library_rows = []
     if use_library and not style_mix:
         try:
-            library_rows = storage.consume_library_items(
-                offer_id, count, platform=platform
+            library_rows = storage.consume_library_items_shared(
+                offer_id, count, platform=platform, aspects=aspects
             )
         except Exception as exc:  # noqa: BLE001
             app.logger.exception("studio/generate: library drain failed: %s", exc)
@@ -2919,12 +2937,13 @@ def api_studio_library_status():
     if guard is not None:
         return guard
     platform = normalize_platform(request.args.get("platform") or _active_platform())
-    counts = storage.library_counts(platform=platform)
+    counts = storage.library_counts(platform=platform, shared=True)
     return jsonify(
         {
             "active_platform": platform,
             "counts": counts,
             "target_per_offer": _studio_library.DEFAULT_TARGET_PER_OFFER,
+            "shared_platforms": storage.library_share_platforms(platform),
         }
     )
 
@@ -2953,11 +2972,14 @@ def api_studio_library_list():
     if raw_platform in ("", "all"):
         targets = list(PLATFORMS)  # newsbreak + smartnews + …
     else:
-        targets = [normalize_platform(raw_platform)]
+        targets = list(storage.library_share_platforms(normalize_platform(raw_platform)))
     offer_id = (request.args.get("offer_id") or "").strip() or None
     include_consumed = (request.args.get("include_consumed") or "").lower() in (
         "1", "true", "yes",
     )
+    usable_for = (request.args.get("usable_for") or "").strip().lower()
+    if raw_platform == "mediago" and not usable_for:
+        usable_for = "mediago"
     out = []
     per_platform_counts: Dict[str, int] = {}
     per_platform_usage: Dict[str, Dict[str, int]] = {}
@@ -2991,8 +3013,14 @@ def api_studio_library_list():
                 n_unused += 1
             if is_consumed and not include_consumed:
                 continue
+            fit = storage.mediago_library_fit(row.get("aspect"))
+            if usable_for == "mediago" and fit is None:
+                continue
             item = dict(row)
             item["platform"] = plat
+            item["source_platform"] = row.get("source_platform") or plat
+            item["mediago_fit"] = fit
+            item["needs_resize"] = fit == "square"
             item["image_url"] = url_for(
                 "library_image", platform=plat, filename=filename
             )
@@ -3140,7 +3168,7 @@ def api_studio_library_export():
     if raw_platform in ("", "all"):
         targets = list(PLATFORMS)
     else:
-        targets = [normalize_platform(raw_platform)]
+        targets = list(storage.library_share_platforms(normalize_platform(raw_platform)))
     offer_id = (request.args.get("offer_id") or "").strip() or None
 
     rows: List[Dict[str, Any]] = []
@@ -3245,14 +3273,16 @@ def api_studio_research_candidates():
     guard = _studio_required()
     if guard is not None:
         return guard
+    plat = _active_platform()
     return jsonify(
-        {"candidates": storage.list_style_candidates(platform=_active_platform())}
+        {"candidates": storage.list_style_candidates_shared(platform=plat)}
     )
 
 
 _CANDIDATE_EXPORT_FIELDS = [
     "style_id",
     "platform",
+    "source_platform",
     "name",
     "description",
     "visual_cues",
@@ -3318,9 +3348,9 @@ def api_studio_research_candidates_export():
     if raw_platform == "all":
         targets = list(PLATFORMS)
     elif raw_platform:
-        targets = [normalize_platform(raw_platform)]
+        targets = list(storage.library_share_platforms(normalize_platform(raw_platform)))
     else:
-        targets = [_active_platform()]
+        targets = list(storage.library_share_platforms(_active_platform()))
 
     rows: List[Dict[str, Any]] = []
     for plat in targets:
@@ -3344,6 +3374,7 @@ def api_studio_research_candidates_export():
                 {
                     "style_id": sid,
                     "platform": plat,
+                    "source_platform": c.get("source_platform") or plat,
                     "name": c.get("name"),
                     "description": c.get("description"),
                     "visual_cues": " | ".join(str(x) for x in cues) if fmt == "csv" else cues,

@@ -144,7 +144,7 @@ def _allocate_styles(
 
     catalog_ids = [s.id for s in prompt_gen.STYLE_CATALOG]
     candidates = [
-        c for c in storage.list_style_candidates(platform=platform)
+        c for c in storage.list_style_candidates_shared(platform=platform)
         if c.get("status") in (None, "candidate", "testing")
     ]
 
@@ -220,7 +220,7 @@ def generate_ads(
     catalog_index = {s.id: s for s in prompt_gen.STYLE_CATALOG}
     candidates_index = {
         c.get("style_id") or c.get("id"): c
-        for c in storage.list_style_candidates(platform=platform)
+        for c in storage.list_style_candidates_shared(platform=platform)
     }
 
     # ------------------------------------------------------------------

@@ -1,12 +1,10 @@
 """Prebuilt-ad library — pre-render a stash of ads per offer × platform.
 
-The daily scheduler hook calls :func:`topup_all` to walk every saved offer
-on every platform, ensure ``AD_STUDIO_LIBRARY_TARGET_PER_OFFER`` ads are
-ready, and stash any missing ones to disk. When the operator hits
-"Generate" in the UI, the API drains from the library first (FIFO,
-oldest images first) and only renders fresh images for the gap. That
-makes the "Generate" button feel near-instant on the typical
-"give me 10 ads for offer X" workflow.
+Auto top-up is OFF by default (see ``scheduler.library_auto_enabled``).
+``/api/studio/library/topup`` and Studio "Generate" / "Top up now" still
+call :func:`topup_offer` on demand. When the operator hits Generate, the
+API drains unused library rows first (MediaGo reads NewsBreak/SmartNews
+stock) and only renders fresh images for the gap.
 
 Storage layout (under ``catalog/<platform>/``)::
 

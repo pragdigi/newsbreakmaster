@@ -37,10 +37,39 @@ import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Sequence, TypeVar
 
 DEFAULT_PLATFORM = "newsbreak"
 KNOWN_PLATFORMS = ("newsbreak", "smartnews", "outbrain", "mediago")
+
+# MediaGo does not bank its own prebuilts. Unused NewsBreak / SmartNews
+# library images and style ideas are shared read-through (no file copy).
+LIBRARY_SHARE_SOURCES = {
+    "mediago": ("newsbreak", "smartnews", "mediago"),
+}
+
+# Native MediaGo is 1200×628 (1.91:1). 16:9 is close enough that launch
+# already outpaints to 1200×628. 1:1 is optional (same outpaint path).
+# Portrait / odd ratios cannot run native without a dedicated resize.
+_ASPECT_ALIASES = {
+    "16:9": "16:9",
+    "16/9": "16:9",
+    "169": "16:9",
+    "landscape": "16:9",
+    "1.91:1": "1.91:1",
+    "1.91": "1.91:1",
+    "191": "1.91:1",
+    "1:91": "1.91:1",
+    "1200x628": "1.91:1",
+    "1200×628": "1.91:1",
+    "1:1": "1:1",
+    "1": "1:1",
+    "square": "1:1",
+    "9:16": "9:16",
+    "portrait": "9:16",
+}
+MEDIAGO_NATIVE_ASPECTS = frozenset({"1.91:1", "16:9"})
+MEDIAGO_OPTIONAL_ASPECTS = frozenset({"1:1"})
 
 _LOCAL_STORAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage")
 
@@ -95,6 +124,42 @@ def _norm_platform(platform: Optional[str]) -> str:
     if p not in KNOWN_PLATFORMS:
         return DEFAULT_PLATFORM
     return p
+
+
+def library_share_platforms(platform: str) -> List[str]:
+    """Catalogs whose unused prebuilts / ideas are visible to ``platform``.
+
+    MediaGo reads NewsBreak + SmartNews (plus its own, usually empty).
+    Every other platform stays namespaced to itself.
+    """
+    p = _norm_platform(platform)
+    return list(LIBRARY_SHARE_SOURCES.get(p, (p,)))
+
+
+def normalize_library_aspect(aspect: Optional[str]) -> str:
+    raw = (aspect or "").strip().lower().replace(" ", "")
+    return _ASPECT_ALIASES.get(raw, raw)
+
+
+def mediago_library_fit(aspect: Optional[str]) -> Optional[str]:
+    """How a library image maps onto MediaGo native.
+
+    Returns ``"native"`` (1.91:1 / 16:9), ``"square"`` (1:1, outpaint at
+    launch), or ``None`` when the size cannot run native.
+    """
+    n = normalize_library_aspect(aspect)
+    if n in MEDIAGO_NATIVE_ASPECTS:
+        return "native"
+    if n in MEDIAGO_OPTIONAL_ASPECTS:
+        return "square"
+    return None
+
+
+def mediago_usable_aspects(*, include_square: bool = True) -> List[str]:
+    out = list(MEDIAGO_NATIVE_ASPECTS)
+    if include_square:
+        out.extend(MEDIAGO_OPTIONAL_ASPECTS)
+    return out
 
 
 def _tokens_dir(platform: str) -> str:
@@ -842,16 +907,27 @@ def list_library_items(
                 continue
             if not include_consumed and row.get("consumed_at"):
                 continue
+            row.setdefault("source_platform", _norm_platform(platform))
             out.append(row)
     return out
 
 
-def library_counts(*, platform: str = DEFAULT_PLATFORM) -> Dict[str, int]:
-    """Per-offer count of unconsumed library items for the given platform."""
+def library_counts(*, platform: str = DEFAULT_PLATFORM, shared: bool = False) -> Dict[str, int]:
+    """Per-offer count of unconsumed library items for the given platform.
+
+    ``shared=True`` walks :func:`library_share_platforms` so MediaGo status
+    includes unused NewsBreak / SmartNews stock. Portrait / unusable
+    aspects are skipped when the viewer is MediaGo.
+    """
+    plats = library_share_platforms(platform) if shared else [_norm_platform(platform)]
+    filter_mediago = _norm_platform(platform) == "mediago"
     counts: Dict[str, int] = {}
-    for row in list_library_items(platform=platform, include_consumed=False):
-        oid = str(row.get("offer_id") or "")
-        counts[oid] = counts.get(oid, 0) + 1
+    for p in plats:
+        for row in list_library_items(platform=p, include_consumed=False):
+            if filter_mediago and mediago_library_fit(row.get("aspect")) is None:
+                continue
+            oid = str(row.get("offer_id") or "")
+            counts[oid] = counts.get(oid, 0) + 1
     return counts
 
 
@@ -861,6 +937,7 @@ def consume_library_items(
     n: int,
     *,
     platform: str = DEFAULT_PLATFORM,
+    aspects: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Pop up to ``n`` unconsumed items for the offer, FIFO (oldest first).
 
@@ -869,22 +946,33 @@ def consume_library_items(
     response payloads. We rewrite the entire file because the library
     file stays small in practice (a few hundred rows max — the
     background topup job caps total stock).
+
+    ``aspects`` restricts the drain to normalized aspect values
+    (``1.91:1``, ``16:9``, ``1:1``, …). Used by MediaGo so portrait
+    stock is never burned on a native launch.
     """
     if n <= 0:
         return []
     path = _library_file(platform)
     if not os.path.exists(path):
         return []
+    wanted_aspects = None
+    if aspects:
+        wanted_aspects = {normalize_library_aspect(a) for a in aspects if a}
     with open(path, "r", encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     chosen: List[Dict[str, Any]] = []
     now = datetime.now(timezone.utc).isoformat()
+    src = _norm_platform(platform)
     for row in rows:
         if row.get("consumed_at"):
             continue
         if str(row.get("offer_id")) != str(offer_id):
             continue
+        if wanted_aspects and normalize_library_aspect(row.get("aspect")) not in wanted_aspects:
+            continue
         row["consumed_at"] = now
+        row.setdefault("source_platform", src)
         chosen.append(row)
         if len(chosen) >= n:
             break
@@ -896,6 +984,29 @@ def consume_library_items(
         for r in rows:
             f.write(json.dumps(r, default=str) + "\n")
     shutil.move(tmp, path)
+    return chosen
+
+
+def consume_library_items_shared(
+    offer_id: str,
+    n: int,
+    *,
+    platform: str,
+    aspects: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """FIFO drain across :func:`library_share_platforms`.
+
+    Marks consumed on the *source* catalog so a MediaGo Generate/launch
+    reallocates unused NewsBreak / SmartNews rows without copying files.
+    """
+    chosen: List[Dict[str, Any]] = []
+    for p in library_share_platforms(platform):
+        need = n - len(chosen)
+        if need <= 0:
+            break
+        chosen.extend(
+            consume_library_items(offer_id, need, platform=p, aspects=aspects)
+        )
     return chosen
 
 
@@ -981,6 +1092,35 @@ def update_generation(gen_id: str, patch: Dict[str, Any], *, platform: str = DEF
 # Style candidates ------------------------------------------------------
 def list_style_candidates(*, platform: str = DEFAULT_PLATFORM) -> List[Dict[str, Any]]:
     return _load_catalog(_style_candidates_file(platform))
+
+
+def list_style_candidates_shared(*, platform: str) -> List[Dict[str, Any]]:
+    """Style ideas visible to ``platform``, including shared catalogs.
+
+    Dedupes by ``style_id`` (first source wins) and tags
+    ``source_platform``. MediaGo Research / Generate / export read this
+    so NewsBreak + SmartNews prompt templates appear without copying
+    ``style_candidates.json``.
+    """
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for p in library_share_platforms(platform):
+        try:
+            rows = list_style_candidates(platform=p)
+        except Exception:
+            rows = []
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            sid = str(row.get("style_id") or row.get("id") or "")
+            if sid:
+                if sid in seen:
+                    continue
+                seen.add(sid)
+            row.setdefault("source_platform", p)
+            out.append(row)
+    return out
 
 
 @_locked

@@ -1595,6 +1595,15 @@
 
   <div class="nb-field-group">
     <h3>4 · Ads <span class="nb-muted" style="font-weight:400;">(max 10 per campaign — extras become another campaign)</span></h3>
+    <div class="nb-ai-studio-bar" style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+      <button type="button" class="nb-btn" id="mg-library-use">
+        📚 Use from library
+      </button>
+      <span class="nb-muted" style="font-size:13px;">
+        Unused NewsBreak / SmartNews prebuilts that fit native (1.91:1 / 16:9). 1:1 is optional — outpainted to 1200×628 at launch.
+      </span>
+      <span id="mg-studio-gen-status" class="nb-muted" style="font-size:13px;"></span>
+    </div>
     <label for="mg-file-input" class="nb-dropzone" id="mg-dropzone" style="margin-top:8px;">
       <input type="file" id="mg-file-input" multiple accept="image/*" hidden>
       <div class="nb-dropzone-icon" aria-hidden="true">
@@ -1908,11 +1917,20 @@
       });
       renderCount();
     }
-    function addFiles(fileList){
+    function addFiles(fileList, opts){
+      opts = opts || {};
       Array.prototype.slice.call(fileList||[]).filter(function(f){ return f && f.type && f.type.indexOf('image/')===0; })
-        .forEach(function(f){ items.push({ file:f, headline: defH.value||'', url: URL.createObjectURL(f) }); });
+        .forEach(function(f, i){
+          items.push({
+            file: f,
+            headline: (opts.headlines && opts.headlines[i]) || defH.value || '',
+            url: URL.createObjectURL(f),
+            libraryId: (opts.libraryIds && opts.libraryIds[i]) || null,
+          });
+        });
       renderAll();
     }
+    window.mgDropzone = { addFiles: addFiles, count: function(){ return items.length; } };
     ['dragenter','dragover'].forEach(function(ev){ dropzone.addEventListener(ev,function(e){ e.preventDefault(); dropzone.classList.add('dragover'); }); });
     ['dragleave','drop'].forEach(function(ev){ dropzone.addEventListener(ev,function(e){ e.preventDefault(); dropzone.classList.remove('dragover'); }); });
     dropzone.addEventListener('drop', function(e){ if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files); });
@@ -1945,6 +1963,14 @@
         holder.appendChild(file);
         var h=document.createElement('input'); h.type='hidden'; h.name='headline_'+i; h.value=it.headline; holder.appendChild(h);
       });
+      var submitLibIds = items.map(function(it){ return it.libraryId; }).filter(Boolean);
+      if (submitLibIds.length) {
+        var lh = document.createElement('input');
+        lh.type = 'hidden';
+        lh.name = 'library_ids';
+        lh.value = submitLibIds.join(',');
+        holder.appendChild(lh);
+      }
       form.appendChild(holder);
     });
   })();
@@ -3123,13 +3149,17 @@
   var platform = {{ active_platform|tojson }};
   var cfg = platform === 'smartnews'
     ? { buttonId: 'sn-library-use', statusId: 'sn-studio-gen-status', offerSelectId: 'sn-offer-ref' }
+    : platform === 'mediago'
+    ? { buttonId: 'mg-library-use', statusId: 'mg-studio-gen-status', offerSelectId: 'mg-offer-ref' }
     : { buttonId: 'nb-library-use', statusId: 'nb-studio-gen-status', offerSelectId: 'offer_ref' };
   var btn = document.getElementById(cfg.buttonId);
   if (!btn) return;
   var statusEl = document.getElementById(cfg.statusId);
   function setStatus(msg) { if (statusEl) statusEl.textContent = msg || ''; }
   function getDropzoneApi() {
-    return platform === 'smartnews' ? window.snDropzone : window.nbDropzone;
+    if (platform === 'smartnews') return window.snDropzone;
+    if (platform === 'mediago') return window.mgDropzone;
+    return window.nbDropzone;
   }
   function esc(s) {
     return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
@@ -3163,7 +3193,10 @@
           '<img src="' + esc(it.image_url) + '" alt="" loading="lazy">' +
           '<span class="lib-picker-check">✓</span>' +
           '<div class="lib-picker-caption" title="' + esc(it.headline || it.style_name || '') + '">' +
-            esc(it.style_name || it.style_id || '') + (it.aspect ? ' · ' + esc(it.aspect) : '') +
+            esc(it.style_name || it.style_id || '') +
+            (it.aspect ? ' · ' + esc(it.aspect) : '') +
+            (it.source_platform && it.source_platform !== platform ? ' · ' + esc(it.source_platform) : '') +
+            (it.needs_resize ? ' · outpaint' : '') +
           '</div></div>';
       }).join('');
     }
@@ -3244,7 +3277,8 @@
         '<div class="lib-picker-panel">' +
           '<div class="lib-picker-head">' +
             '<strong>Use from library</strong>' +
-            '<span class="nb-muted" style="font-size:13px;">' + allItems.length + ' unused prebuilt image' + (allItems.length === 1 ? '' : 's') + ' on ' + esc(platform) + '</span>' +
+            '<span class="nb-muted" style="font-size:13px;">' + allItems.length + ' unused prebuilt image' + (allItems.length === 1 ? '' : 's') +
+              (platform === 'mediago' ? ' (NewsBreak / SmartNews, native-fit)' : (' on ' + esc(platform))) + '</span>' +
             '<select id="lib-picker-offer" class="nb-select" style="width:auto;margin-left:auto;">' +
               '<option value="">All offers (' + allItems.length + ')</option>' + offerOpts +
             '</select>' +

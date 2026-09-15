@@ -1161,13 +1161,31 @@ def _site_exclusions_file(platform: str) -> str:
     return os.path.join(_catalog_dir(platform), "site_exclusions.json")
 
 
-def load_site_exclusions(account_id: str, *, platform: str = DEFAULT_PLATFORM) -> List[Dict[str, Any]]:
-    """Persisted publisher/site blocklist for one account on one platform."""
+def load_site_exclusions(
+    account_id: str,
+    *,
+    platform: str = DEFAULT_PLATFORM,
+    campaign_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Persisted publisher/site blocklist for one account on one platform.
+
+    When ``campaign_id`` is set, return that campaign's list without mixing
+    in account-level exclusions.
+    """
     data = _read_json(_site_exclusions_file(platform), {})
     if not isinstance(data, dict):
         return []
     bucket = data.get(str(account_id)) or {}
-    sites = bucket.get("sites") if isinstance(bucket, dict) else bucket
+    if not isinstance(bucket, dict):
+        return []
+    if campaign_id:
+        camps = bucket.get("campaigns") or {}
+        if not isinstance(camps, dict):
+            return []
+        inner = camps.get(str(campaign_id)) or {}
+        sites = inner.get("sites") if isinstance(inner, dict) else inner
+    else:
+        sites = bucket.get("sites") if isinstance(bucket, dict) else bucket
     if not isinstance(sites, list):
         return []
     return [s for s in sites if isinstance(s, dict)]
@@ -1179,6 +1197,7 @@ def save_site_exclusions(
     sites: List[Dict[str, Any]],
     *,
     platform: str = DEFAULT_PLATFORM,
+    campaign_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     path = _site_exclusions_file(platform)
     data = _read_json_strict(path, {})
@@ -1202,9 +1221,20 @@ def save_site_exclusions(
                 "reason": s.get("reason") or s.get("flag") or "",
             }
         )
-    data[str(account_id)] = {
-        "sites": clean,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    existing = data.get(str(account_id))
+    if not isinstance(existing, dict):
+        existing = {}
+    now = datetime.now(timezone.utc).isoformat()
+    if campaign_id:
+        camps = existing.get("campaigns")
+        if not isinstance(camps, dict):
+            camps = {}
+        camps[str(campaign_id)] = {"sites": clean, "updated_at": now}
+        existing["campaigns"] = camps
+        existing["updated_at"] = now
+    else:
+        existing["sites"] = clean
+        existing["updated_at"] = now
+    data[str(account_id)] = existing
     _write_json(path, data)
     return clean

@@ -6,14 +6,81 @@ Hierarchy is Account → Campaign → Ad (no ad-set), so
 ``supports_ad_set_scope`` is False. Money is USD floats; our internal
 integer "cents" is converted at the edge.
 
-Native only: this adapter never emits ``creative_type=display``.
+Campaigns are ``creative_type=native`` by default (MediaGo API default).
+Display is opt-in via ``creative_type=display`` plus an allowed banner size.
 """
 from __future__ import annotations
 
+import logging
+import os
 from datetime import date, timedelta
-from typing import Any, BinaryIO, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, BinaryIO, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from mediago_api import MediaGoClient
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_CUT_OVER_MULTIPLE = 1.5
+DEFAULT_CUT_OVER_SPEND_FLOOR = 20.0
+DEFAULT_CUT_NO_CONV_SPEND_FLOOR = 10.0
+
+# Create-campaign ``creative_type``: native (API default) or display.
+# Display ``img`` must be one of these exact pixel sizes (GIF allowed).
+# https://apidoc.mediago.io/346347754e0
+DISPLAY_SIZES: Dict[str, Tuple[int, int]] = {
+    "300x250": (300, 250),
+    "728x90": (728, 90),
+    "160x600": (160, 600),
+    "320x50": (320, 50),
+    "300x600": (300, 600),
+    "970x250": (970, 250),
+    "300x50": (300, 50),
+    "320x100": (320, 100),
+    "336x280": (336, 280),
+}
+DEFAULT_DISPLAY_SIZE = "300x250"
+DISPLAY_SIZE_LABELS: Dict[str, str] = {
+    "300x250": "300×250 Medium Rectangle",
+    "728x90": "728×90 Leaderboard",
+    "160x600": "160×600 Wide Skyscraper",
+    "320x50": "320×50 Mobile Banner",
+    "300x600": "300×600 Half Page",
+    "970x250": "970×250 Billboard",
+    "300x50": "300×50 Mobile Banner",
+    "320x100": "320×100 Large Mobile",
+    "336x280": "336×280 Large Rectangle",
+}
+
+
+def normalize_creative_type(value: Any) -> str:
+    """Return ``display`` only when explicitly requested; else ``native``."""
+    return "display" if str(value or "").strip().lower() == "display" else "native"
+
+
+def normalize_display_size(value: Any) -> str:
+    key = (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace("×", "x")
+        .replace(" ", "")
+    )
+    return key if key in DISPLAY_SIZES else DEFAULT_DISPLAY_SIZE
+
+
+def generation_aspect_for_display_size(size: Any) -> str:
+    """Nearest studio/Gemini aspect for a MediaGo display pixel size."""
+    w, h = DISPLAY_SIZES[normalize_display_size(size)]
+    ratio = w / float(h)
+    if ratio >= 1.6:
+        return "16:9"
+    if ratio <= 0.6:
+        return "9:16"
+    if ratio >= 1.15:
+        return "4:3"
+    if ratio <= 0.87:
+        return "3:4"
+    return "1:1"
 
 
 def _num(v: Any) -> Optional[float]:
@@ -38,10 +105,36 @@ def _usd_to_cents(amount: Any) -> Optional[int]:
     return int(round(n * 100))
 
 
+def _usd_label(n: Optional[float]) -> str:
+    if n is None:
+        return "—"
+    v = float(n)
+    if abs(v - round(v)) < 0.005:
+        return f"${int(round(v))}"
+    return f"${v:.2f}"
+
+
+def _vs_target_fields(cpa: Optional[float], target_cpa: Optional[float]) -> Dict[str, Any]:
+    vs_target = None
+    vs_target_ratio = None
+    over_target = False
+    if target_cpa and target_cpa > 0 and cpa is not None:
+        vs_target = cpa - target_cpa
+        vs_target_ratio = cpa / target_cpa
+        over_target = cpa > target_cpa
+    return {
+        "target_cpa": target_cpa,
+        "vs_target": vs_target,
+        "vs_target_ratio": vs_target_ratio,
+        "over_target": over_target,
+    }
+
+
 def score_source_rows(
     rows: Iterable[Dict[str, Any]],
     *,
     min_spend: float = 1.0,
+    target_cpa: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Aggregate site rows and score them vs the account average.
 
@@ -49,6 +142,9 @@ def score_source_rows(
     average, higher is better). Sites with spend but no conversions get
     weight 0 and ``flag="no_conv"``. Among sites meeting ``min_spend``,
     the bottom quartile by weight is flagged ``bottom_quartile``.
+
+    When ``target_cpa`` is set, each row also gets ``vs_target`` /
+    ``over_target`` against that campaign target.
     """
     buckets: Dict[str, Dict[str, Any]] = {}
     for raw in rows:
@@ -123,6 +219,7 @@ def score_source_rows(
                 "flag": flag,
                 "account_cpa": account_cpa,
                 "account_cpc": account_cpc,
+                **_vs_target_fields(cpa, target_cpa),
             }
         )
 
@@ -138,6 +235,199 @@ def score_source_rows(
 
     scored.sort(key=lambda r: r["spend"], reverse=True)
     return scored
+
+
+def recommend_sites_to_cut(
+    rows: Iterable[Dict[str, Any]],
+    target_cpa: Optional[float],
+    *,
+    over_multiple: float = DEFAULT_CUT_OVER_MULTIPLE,
+    over_spend_floor: float = DEFAULT_CUT_OVER_SPEND_FLOOR,
+    no_conv_spend_floor: float = DEFAULT_CUT_NO_CONV_SPEND_FLOOR,
+) -> List[Dict[str, Any]]:
+    """Deterministic cut list: high CPA vs target, or spend with no conversions.
+
+    Always computed in-process so recommendations work without Gemini.
+    Does not apply blocks — callers must confirm.
+    """
+    target = _num(target_cpa)
+    recs: List[Dict[str, Any]] = []
+    seen = set()
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        sid = str(raw.get("site_id") or "").strip()
+        if not sid or sid in seen:
+            continue
+        spend = _num(raw.get("spend")) or 0.0
+        conv = _num(raw.get("conversions") or raw.get("conversion")) or 0.0
+        cpa = _num(raw.get("cpa"))
+        if cpa is None and conv > 0 and spend:
+            cpa = spend / conv
+        name = raw.get("site_name") or raw.get("domain_name") or sid
+        rule = ""
+        reason = ""
+        if conv <= 0 and spend >= no_conv_spend_floor:
+            rule = "no_conv"
+            reason = f"0 conversions, {_usd_label(spend)} spend"
+        elif (
+            target
+            and target > 0
+            and cpa is not None
+            and cpa > target * over_multiple
+            and spend >= over_spend_floor
+        ):
+            rule = "high_cpa"
+            reason = (
+                f"CPA {_usd_label(cpa)} vs target {_usd_label(target)}, "
+                f"{_usd_label(spend)} spend"
+            )
+        if not rule:
+            continue
+        seen.add(sid)
+        recs.append(
+            {
+                "site_id": sid,
+                "site_name": name,
+                "domain_name": name,
+                "rule": rule,
+                "reason": reason,
+                "cpa": cpa,
+                "spend": spend,
+                "conversions": conv,
+                "target_cpa": target,
+            }
+        )
+    recs.sort(key=lambda r: r["spend"], reverse=True)
+    return recs
+
+
+def gemini_cut_note(
+    recs: Sequence[Dict[str, Any]],
+    target_cpa: Optional[float],
+    *,
+    call_gemini: Optional[Callable[[str], Optional[str]]] = None,
+) -> Optional[str]:
+    """Optional short ranked note. Returns None without a key or on failure."""
+    if not recs:
+        return None
+    caller = call_gemini
+    if caller is None:
+        key = (
+            os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_GENAI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY")
+            or ""
+        ).strip()
+        if not key:
+            return None
+        caller = lambda prompt, _key=key: _gemini_cut_text(prompt, _key)
+    lines = []
+    for r in recs[:12]:
+        lines.append(
+            f"- {r.get('site_name') or r.get('site_id')}: {r.get('reason') or r.get('rule')}"
+        )
+    prompt = (
+        "You are helping a media buyer cut losing publishers. "
+        f"Campaign target CPA is {_usd_label(target_cpa)}. "
+        "Here are rule-based cut candidates:\n"
+        + "\n".join(lines)
+        + "\nWrite 1-3 short sentences ranking which to cut first and why. "
+        "Do not invent sites. Do not tell the user to auto-block."
+    )
+    try:
+        text = caller(prompt)
+    except Exception as exc:
+        logger.warning("gemini cut note failed: %s", exc)
+        return None
+    if not text:
+        return None
+    return str(text).strip() or None
+
+
+def _gemini_cut_text(prompt: str, api_key: str) -> Optional[str]:
+    import requests
+
+    model = (
+        os.environ.get("AD_STUDIO_GEMINI_FLASH_MODEL")
+        or os.environ.get("AD_STUDIO_GEMINI_MODEL")
+        or "gemini-3.1-flash"
+    )
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent"
+    )
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 220},
+    }
+    try:
+        resp = requests.post(url, params={"key": api_key}, json=body, timeout=20)
+    except requests.RequestException as exc:
+        logger.warning("gemini cut note network: %s", exc)
+        return None
+    if resp.status_code != 200:
+        logger.warning("gemini cut note HTTP %s %s", resp.status_code, resp.text[:300])
+        return None
+    try:
+        parts = resp.json()["candidates"][0]["content"]["parts"]
+        return "".join(p.get("text", "") for p in parts).strip()
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
+def rollup_campaign_source_stats(
+    campaigns: Iterable[Dict[str, Any]],
+    report_rows: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Merge campaign objects (target CPA) with live report spend/conv."""
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for c in campaigns or []:
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id") or c.get("campaign_id") or "").strip()
+        if not cid:
+            continue
+        buckets[cid] = {
+            "id": cid,
+            "name": c.get("name") or c.get("campaign_name") or "",
+            "status": c.get("status") or "",
+            "target_cpa": _num(c.get("target_cpa")),
+            "spend": 0.0,
+            "clicks": 0,
+            "conversions": 0.0,
+        }
+    for r in report_rows or []:
+        if not isinstance(r, dict):
+            continue
+        cid = str(r.get("campaign_id") or r.get("id") or "").strip()
+        if not cid:
+            continue
+        b = buckets.setdefault(
+            cid,
+            {
+                "id": cid,
+                "name": r.get("name") or r.get("campaign_name") or "",
+                "status": r.get("status") or "",
+                "target_cpa": _num(r.get("target_cpa")),
+                "spend": 0.0,
+                "clicks": 0,
+                "conversions": 0.0,
+            },
+        )
+        if r.get("name") and not b.get("name"):
+            b["name"] = r.get("name")
+        b["spend"] += _num(r.get("spend")) or 0.0
+        b["clicks"] += int(_num(r.get("clicks") or r.get("click")) or 0)
+        b["conversions"] += _num(r.get("conversions") or r.get("conversion")) or 0.0
+    out: List[Dict[str, Any]] = []
+    for b in buckets.values():
+        spend = b["spend"]
+        conv = b["conversions"]
+        cpa = (spend / conv) if conv > 0 else None
+        out.append({**b, "cpa": cpa, **_vs_target_fields(cpa, b.get("target_cpa"))})
+    out.sort(key=lambda r: r["spend"], reverse=True)
+    return out
 
 
 _OPTIMIZATION_EVENTS = {
@@ -413,6 +703,37 @@ class MediaGoAdapter:
             guard += 1
         return rows
 
+    def fetch_campaign_site_report_rows(
+        self,
+        account_id: str,
+        campaign_id: str,
+        start: date,
+        end: date,
+        *,
+        timezone: str = "est",
+    ) -> List[Dict[str, Any]]:
+        """Pull campaign site rows in ≤7-day windows (API max), cap 31 days."""
+        rows: List[Dict[str, Any]] = []
+        cursor = start
+        consumed = 0
+        while cursor <= end and consumed < 31:
+            remaining = min(7, 31 - consumed)
+            chunk_end = min(cursor + timedelta(days=remaining - 1), end)
+            rows.extend(
+                list(
+                    self.client.campaign_site_report(
+                        account_id,
+                        campaign_id,
+                        cursor.strftime("%Y-%m-%d"),
+                        chunk_end.strftime("%Y-%m-%d"),
+                        timezone=timezone,
+                    )
+                )
+            )
+            consumed += (chunk_end - cursor).days + 1
+            cursor = chunk_end + timedelta(days=1)
+        return rows
+
     # ------------------------------------------------------------------
     # Reporting
     # ------------------------------------------------------------------
@@ -519,7 +840,7 @@ class MediaGoAdapter:
         **kwargs: Any,
     ) -> Dict[str, Any]:
         raise NotImplementedError(
-            "MediaGo native creatives take a public image URL (img), "
+            "MediaGo creatives take a public image URL (img), "
             "not a binary upload. Host the file and pass the URL."
         )
 
@@ -528,7 +849,7 @@ class MediaGoAdapter:
     # ------------------------------------------------------------------
     def _prepare_campaign_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         out = dict(payload)
-        out["creative_type"] = "native"
+        out["creative_type"] = normalize_creative_type(out.get("creative_type"))
         if "daily_budget_cents" in out and "daily_cap" not in out:
             out["daily_cap"] = _cents_to_usd(out.pop("daily_budget_cents"))
         if "spend_limit_cents" in out and "spend_limit" not in out:
@@ -552,6 +873,7 @@ class MediaGoAdapter:
             "daily_budget_cents": _usd_to_cents(c.get("daily_cap")),
             "objective": c.get("objective"),
             "creative_type": c.get("creative_type") or "native",
+            "target_cpa": _num(c.get("target_cpa")),
             "ads": c.get("ads") or [],
             "raw": c,
         }
@@ -630,7 +952,16 @@ def _all_hours_dayparting() -> List[List[int]]:
 
 __all__ = [
     "MediaGoAdapter",
+    "DISPLAY_SIZES",
+    "DEFAULT_DISPLAY_SIZE",
+    "DISPLAY_SIZE_LABELS",
+    "normalize_creative_type",
+    "normalize_display_size",
+    "generation_aspect_for_display_size",
     "score_source_rows",
+    "recommend_sites_to_cut",
+    "gemini_cut_note",
+    "rollup_campaign_source_stats",
     "normalize_account_pixel",
     "optimization_type_for_conversion",
 ]

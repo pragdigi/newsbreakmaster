@@ -1170,6 +1170,80 @@ def sources_page():
         accounts=account_options,
         supports_site_block=hasattr(adapter, "block_sites"),
         supports_site_report=hasattr(adapter, "fetch_site_report_rows"),
+        supports_campaign_site_report=hasattr(adapter, "fetch_campaign_site_report_rows"),
+        has_gemini=bool(
+            (_cfg_val("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY") or "").strip()
+        ),
+    )
+
+
+def _sources_date_window():
+    try:
+        days = int(request.args.get("days") or 7)
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 31))
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+    return start, end, days
+
+
+def _campaign_target_cpa(adapter, account_id: str, campaign_id: str) -> Optional[float]:
+    if not campaign_id or not hasattr(adapter, "get_campaigns"):
+        return None
+    try:
+        campaigns = adapter.get_campaigns(account_id) or []
+    except Exception:
+        return None
+    for c in campaigns:
+        if not isinstance(c, dict):
+            continue
+        if str(c.get("id") or c.get("campaign_id") or "") == str(campaign_id):
+            v = c.get("target_cpa")
+            try:
+                return float(v) if v not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+@app.route("/api/sources/campaigns")
+def api_sources_campaigns():
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "not logged in"}), 401
+    account_id = (request.args.get("account_id") or "").strip()
+    if not account_id:
+        return jsonify({"error": "account_id is required"}), 400
+    start, end, days = _sources_date_window()
+    if not hasattr(adapter, "get_campaigns") or not hasattr(adapter, "fetch_report_rows"):
+        return jsonify(
+            {
+                "ok": False,
+                "error": f"{adapter.label} does not expose live campaign stats.",
+                "campaigns": [],
+            }
+        )
+    try:
+        campaigns = adapter.get_campaigns(account_id) or []
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "campaigns": []}), 502
+    try:
+        report = adapter.fetch_report_rows(account_id, "campaign", start, end) or []
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "campaigns": []}), 502
+    from platforms.mediago import rollup_campaign_source_stats
+
+    rows = rollup_campaign_source_stats(campaigns, report)
+    return jsonify(
+        {
+            "ok": True,
+            "account_id": account_id,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "days": days,
+            "campaigns": rows,
+        }
     )
 
 
@@ -1181,13 +1255,58 @@ def api_sources_report():
     account_id = (request.args.get("account_id") or "").strip()
     if not account_id:
         return jsonify({"error": "account_id is required"}), 400
-    try:
-        days = int(request.args.get("days") or 7)
-    except (TypeError, ValueError):
-        days = 7
-    days = max(1, min(days, 31))
-    end = date.today()
-    start = end - timedelta(days=days - 1)
+    campaign_id = (request.args.get("campaign_id") or "").strip()
+    start, end, days = _sources_date_window()
+    from platforms.mediago import gemini_cut_note, recommend_sites_to_cut, score_source_rows
+
+    target_cpa = _campaign_target_cpa(adapter, account_id, campaign_id) if campaign_id else None
+    if campaign_id:
+        if not hasattr(adapter, "fetch_campaign_site_report_rows"):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": f"{adapter.label} does not expose a site-dimension report yet.",
+                    "rows": [],
+                    "recommendations": [],
+                    "campaign_id": campaign_id,
+                    "target_cpa": target_cpa,
+                    "auto_blocked": False,
+                    "exclusions": storage.load_site_exclusions(
+                        account_id, platform=adapter.platform, campaign_id=campaign_id
+                    ),
+                }
+            )
+        try:
+            raw = adapter.fetch_campaign_site_report_rows(
+                account_id, campaign_id, start, end
+            )
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e), "rows": [], "campaign_id": campaign_id}), 502
+        scored = score_source_rows(raw, target_cpa=target_cpa)
+        exclusions = storage.load_site_exclusions(
+            account_id, platform=adapter.platform, campaign_id=campaign_id
+        )
+        excluded_ids = {str(x.get("site_id")) for x in exclusions}
+        for row in scored:
+            row["excluded"] = str(row.get("site_id")) in excluded_ids
+        recs = recommend_sites_to_cut(scored, target_cpa)
+        note = gemini_cut_note(recs, target_cpa)
+        return jsonify(
+            {
+                "ok": True,
+                "account_id": account_id,
+                "campaign_id": campaign_id,
+                "target_cpa": target_cpa,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "days": days,
+                "rows": scored,
+                "exclusions": exclusions,
+                "recommendations": recs,
+                "gemini_note": note,
+                "auto_blocked": False,
+            }
+        )
     if not hasattr(adapter, "fetch_site_report_rows"):
         return jsonify(
             {
@@ -1203,21 +1322,24 @@ def api_sources_report():
         raw = adapter.fetch_site_report_rows(account_id, start, end)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "rows": []}), 502
-    from platforms.mediago import score_source_rows
-
     scored = score_source_rows(raw)
     exclusions = storage.load_site_exclusions(account_id, platform=adapter.platform)
     excluded_ids = {str(x.get("site_id")) for x in exclusions}
     for row in scored:
         row["excluded"] = str(row.get("site_id")) in excluded_ids
+    recs = recommend_sites_to_cut(scored, None)
     return jsonify(
         {
             "ok": True,
             "account_id": account_id,
             "start": start.isoformat(),
             "end": end.isoformat(),
+            "days": days,
             "rows": scored,
             "exclusions": exclusions,
+            "recommendations": recs,
+            "gemini_note": None,
+            "auto_blocked": False,
         }
     )
 
@@ -1231,11 +1353,15 @@ def api_sources_exclusions():
         account_id = (request.args.get("account_id") or "").strip()
         if not account_id:
             return jsonify({"error": "account_id is required"}), 400
+        campaign_id = (request.args.get("campaign_id") or "").strip() or None
         return jsonify(
             {
                 "ok": True,
                 "account_id": account_id,
-                "sites": storage.load_site_exclusions(account_id, platform=adapter.platform),
+                "campaign_id": campaign_id,
+                "sites": storage.load_site_exclusions(
+                    account_id, platform=adapter.platform, campaign_id=campaign_id
+                ),
             }
         )
     data = request.get_json(silent=True) or {}
@@ -1245,8 +1371,18 @@ def api_sources_exclusions():
     sites = data.get("sites") or []
     if not isinstance(sites, list):
         return jsonify({"error": "sites must be a list"}), 400
-    saved = storage.save_site_exclusions(account_id, sites, platform=adapter.platform)
-    return jsonify({"ok": True, "account_id": account_id, "sites": saved})
+    campaign_id = str(data.get("campaign_id") or "").strip() or None
+    saved = storage.save_site_exclusions(
+        account_id, sites, platform=adapter.platform, campaign_id=campaign_id
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "account_id": account_id,
+            "campaign_id": campaign_id,
+            "sites": saved,
+        }
+    )
 
 
 @app.route("/api/sources/apply", methods=["POST"])
@@ -1262,10 +1398,12 @@ def api_sources_apply():
     account_id = str(data.get("account_id") or "").strip()
     if not account_id:
         return jsonify({"error": "account_id is required"}), 400
+    campaign_id = str(data.get("campaign_id") or "").strip() or None
     sites = data.get("sites")
     if sites is None:
-        sites = storage.load_site_exclusions(account_id, platform=adapter.platform)
-    campaign_id = str(data.get("campaign_id") or "").strip() or None
+        sites = storage.load_site_exclusions(
+            account_id, platform=adapter.platform, campaign_id=campaign_id
+        )
     block = data.get("block", True)
     try:
         results = adapter.block_sites(
@@ -1273,7 +1411,9 @@ def api_sources_apply():
         )
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
-    storage.save_site_exclusions(account_id, sites, platform=adapter.platform)
+    storage.save_site_exclusions(
+        account_id, sites, platform=adapter.platform, campaign_id=campaign_id
+    )
     return jsonify(
         {
             "ok": True,

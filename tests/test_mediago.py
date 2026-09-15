@@ -695,5 +695,392 @@ class MediaGoAppPixelRoutesTest(unittest.TestCase):
             self.assertEqual(resp.status_code, 400)
 
 
+class MediaGoSourceCutRecommendationsTest(unittest.TestCase):
+    def test_score_rows_include_vs_target_cpa(self):
+        from platforms.mediago import score_source_rows
+
+        rows = [
+            {"site_id": "1", "site_name": "good.com", "spend": 40, "click": 20, "conversion": 2},
+            {"site_id": "2", "site_name": "bad.com", "spend": 82, "click": 10, "conversion": 1},
+        ]
+        scored = score_source_rows(rows, min_spend=1, target_cpa=40.0)
+        by_id = {r["site_id"]: r for r in scored}
+        self.assertAlmostEqual(by_id["1"]["cpa"], 20.0)
+        self.assertAlmostEqual(by_id["1"]["vs_target"], -20.0)
+        self.assertFalse(by_id["1"]["over_target"])
+        self.assertAlmostEqual(by_id["2"]["cpa"], 82.0)
+        self.assertAlmostEqual(by_id["2"]["vs_target"], 42.0)
+        self.assertTrue(by_id["2"]["over_target"])
+        self.assertGreater(by_id["2"]["vs_target_ratio"], 2.0)
+
+    def test_recommend_high_cpa_and_no_conv_with_reasons(self):
+        from platforms.mediago import recommend_sites_to_cut
+
+        rows = [
+            {
+                "site_id": "a",
+                "site_name": "msn.com",
+                "spend": 120,
+                "cpa": 82,
+                "conversions": 1.46,
+            },
+            {
+                "site_id": "b",
+                "site_name": "dead.com",
+                "spend": 25,
+                "cpa": None,
+                "conversions": 0,
+            },
+            {
+                "site_id": "c",
+                "site_name": "ok.com",
+                "spend": 80,
+                "cpa": 38,
+                "conversions": 2,
+            },
+            {
+                "site_id": "d",
+                "site_name": "tiny.com",
+                "spend": 5,
+                "cpa": 200,
+                "conversions": 0.02,
+            },
+        ]
+        recs = recommend_sites_to_cut(rows, target_cpa=40.0)
+        ids = [r["site_id"] for r in recs]
+        self.assertEqual(ids, ["a", "b"])
+        self.assertEqual(recs[0]["rule"], "high_cpa")
+        self.assertIn("CPA $82 vs target $40", recs[0]["reason"])
+        self.assertIn("$120 spend", recs[0]["reason"])
+        self.assertEqual(recs[1]["rule"], "no_conv")
+        self.assertIn("0 conversions", recs[1]["reason"])
+        self.assertIn("$25 spend", recs[1]["reason"])
+
+    def test_recommend_works_without_target_cpa_for_no_conv_only(self):
+        from platforms.mediago import recommend_sites_to_cut
+
+        rows = [
+            {"site_id": "1", "site_name": "dead.com", "spend": 30, "conversions": 0, "cpa": None},
+            {"site_id": "2", "site_name": "pricey.com", "spend": 200, "conversions": 2, "cpa": 100},
+        ]
+        recs = recommend_sites_to_cut(rows, target_cpa=None)
+        self.assertEqual([r["site_id"] for r in recs], ["1"])
+        self.assertEqual(recs[0]["rule"], "no_conv")
+
+    def test_gemini_note_skipped_without_key(self):
+        from platforms.mediago import gemini_cut_note
+
+        recs = [{"site_id": "a", "reason": "CPA $82 vs target $40, $120 spend"}]
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "", "GOOGLE_GENAI_API_KEY": ""}, clear=False):
+            os.environ.pop("GEMINI_API_KEY", None)
+            os.environ.pop("GOOGLE_GENAI_API_KEY", None)
+            os.environ.pop("GOOGLE_API_KEY", None)
+            self.assertIsNone(gemini_cut_note(recs, target_cpa=40.0))
+
+    def test_gemini_note_uses_injected_caller(self):
+        from platforms.mediago import gemini_cut_note
+
+        recs = [{"site_id": "a", "site_name": "msn.com", "reason": "CPA $82 vs target $40"}]
+        note = gemini_cut_note(
+            recs,
+            target_cpa=40.0,
+            call_gemini=lambda prompt: "Cut msn.com first — CPA is more than 2x target.",
+        )
+        self.assertIn("msn.com", note)
+
+
+class MediaGoCampaignSourceRollupTest(unittest.TestCase):
+    def test_normalize_campaign_includes_target_cpa(self):
+        from platforms.mediago import MediaGoAdapter
+
+        n = MediaGoAdapter._normalize_campaign(
+            {
+                "campaign_id": "c1",
+                "campaign_name": "Native",
+                "status": 1,
+                "daily_cap": 50,
+                "target_cpa": 40,
+            },
+            "acc",
+        )
+        self.assertEqual(n["target_cpa"], 40.0)
+
+    def test_rollup_merges_live_report_with_target_cpa(self):
+        from platforms.mediago import rollup_campaign_source_stats
+
+        campaigns = [
+            {"id": "c1", "name": "A", "status": "on", "target_cpa": 40.0},
+            {"id": "c2", "name": "B", "status": "off", "target_cpa": 25.0},
+        ]
+        report = [
+            {"campaign_id": "c1", "spend": 80, "clicks": 40, "conversions": 2, "cpa": 40},
+            {"campaign_id": "c1", "spend": 40, "clicks": 20, "conversions": 0, "cpa": None},
+            {"id": "c2", "spend": 50, "clicks": 10, "conversions": 1, "cpa": 50},
+        ]
+        rows = rollup_campaign_source_stats(campaigns, report)
+        by_id = {r["id"]: r for r in rows}
+        self.assertAlmostEqual(by_id["c1"]["spend"], 120.0)
+        self.assertAlmostEqual(by_id["c1"]["conversions"], 2.0)
+        self.assertAlmostEqual(by_id["c1"]["cpa"], 60.0)
+        self.assertAlmostEqual(by_id["c1"]["target_cpa"], 40.0)
+        self.assertAlmostEqual(by_id["c1"]["vs_target"], 20.0)
+        self.assertTrue(by_id["c1"]["over_target"])
+        self.assertAlmostEqual(by_id["c2"]["cpa"], 50.0)
+        self.assertTrue(by_id["c2"]["over_target"])
+
+    def test_fetch_campaign_site_report_chunks_seven_day_windows(self):
+        from datetime import date
+
+        from platforms.mediago import MediaGoAdapter
+
+        class _C:
+            def __init__(self):
+                self.calls = []
+
+            def campaign_site_report(self, account_id, campaign_id, start, end, timezone="est"):
+                self.calls.append((account_id, campaign_id, start, end, timezone))
+                return [{"site_id": "9", "site_name": "msn.com", "spend": 1, "click": 1, "conversion": 0}]
+
+        c = _C()
+        a = MediaGoAdapter(c)
+        rows = a.fetch_campaign_site_report_rows(
+            "acc", "99", date(2026, 1, 1), date(2026, 1, 20)
+        )
+        self.assertEqual(len(c.calls), 3)
+        self.assertEqual(c.calls[0][1], "99")
+        self.assertEqual(c.calls[0][2], "2026-01-01")
+        self.assertEqual(c.calls[0][3], "2026-01-07")
+        self.assertEqual(c.calls[1][2], "2026-01-08")
+        self.assertEqual(c.calls[1][3], "2026-01-14")
+        self.assertEqual(c.calls[2][2], "2026-01-15")
+        self.assertEqual(c.calls[2][3], "2026-01-20")
+        self.assertEqual(len(rows), 3)
+
+
+class MediaGoCampaignExclusionsStorageTest(unittest.TestCase):
+    def test_campaign_exclusions_do_not_clobber_account(self):
+        from tests.test_ai_studio import _TempStorage
+
+        with _TempStorage():
+            import storage
+
+            storage.save_site_exclusions(
+                "acc1",
+                [{"site_id": "1", "domain_name": "account.com"}],
+                platform="mediago",
+            )
+            storage.save_site_exclusions(
+                "acc1",
+                [{"site_id": "2", "domain_name": "campaign.com"}],
+                platform="mediago",
+                campaign_id="99",
+            )
+            account = storage.load_site_exclusions("acc1", platform="mediago")
+            campaign = storage.load_site_exclusions(
+                "acc1", platform="mediago", campaign_id="99"
+            )
+            self.assertEqual([s["site_id"] for s in account], ["1"])
+            self.assertEqual([s["site_id"] for s in campaign], ["2"])
+            self.assertEqual(
+                storage.load_site_exclusions("acc1", platform="mediago", campaign_id="other"),
+                [],
+            )
+
+
+class MediaGoSourcesApiTest(unittest.TestCase):
+    def _client(self, adapter):
+        import app as appmod
+
+        self._appmod = appmod
+        patches = (
+            patch.object(appmod, "_adapter", return_value=adapter),
+            patch.object(appmod, "_effective_token", return_value={"api_token": "x"}),
+            patch.object(appmod, "_active_platform", return_value="mediago"),
+        )
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        client = appmod.app.test_client()
+        with client.session_transaction() as s:
+            s["platform"] = "mediago"
+            s["uid"] = "u1"
+        return client
+
+    def test_campaigns_endpoint_returns_live_stats_vs_target(self):
+        from tests.test_ai_studio import _TempStorage
+
+        class FakeAdapter:
+            platform = "mediago"
+            label = "MediaGo"
+
+            def get_campaigns(self, account_id):
+                return [
+                    {"id": "c1", "name": "Native", "status": "on", "target_cpa": 40.0},
+                ]
+
+            def fetch_report_rows(self, account_id, scope, start, end):
+                return [
+                    {
+                        "campaign_id": "c1",
+                        "id": "c1",
+                        "spend": 80,
+                        "clicks": 20,
+                        "conversions": 1,
+                    }
+                ]
+
+        with _TempStorage():
+            client = self._client(FakeAdapter())
+            resp = client.get("/api/sources/campaigns?account_id=acc1&days=7")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertTrue(data["ok"])
+            row = data["campaigns"][0]
+            self.assertEqual(row["id"], "c1")
+            self.assertAlmostEqual(row["spend"], 80)
+            self.assertAlmostEqual(row["cpa"], 80)
+            self.assertAlmostEqual(row["target_cpa"], 40.0)
+            self.assertTrue(row["over_target"])
+
+    def test_report_campaign_drill_in_includes_recs_and_does_not_auto_block(self):
+        from tests.test_ai_studio import _TempStorage
+
+        class FakeAdapter:
+            platform = "mediago"
+            label = "MediaGo"
+
+            def get_campaigns(self, account_id):
+                return [{"id": "c1", "name": "Native", "status": "on", "target_cpa": 40.0}]
+
+            def fetch_campaign_site_report_rows(self, account_id, campaign_id, start, end):
+                self.seen = (account_id, campaign_id, start, end)
+                return [
+                    {
+                        "site_id": "2007904",
+                        "site_name": "msn.com",
+                        "spend": 120,
+                        "click": 30,
+                        "conversion": 1,
+                    },
+                    {
+                        "site_id": "7",
+                        "site_name": "ok.com",
+                        "spend": 40,
+                        "click": 20,
+                        "conversion": 2,
+                    },
+                ]
+
+            def block_sites(self, *a, **k):
+                raise AssertionError("must not auto-block on recommend")
+
+        with _TempStorage():
+            client = self._client(FakeAdapter())
+            resp = client.get(
+                "/api/sources/report?account_id=acc1&days=7&campaign_id=c1"
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["campaign_id"], "c1")
+            self.assertAlmostEqual(data["target_cpa"], 40.0)
+            self.assertEqual(len(data["rows"]), 2)
+            msn = next(r for r in data["rows"] if r["site_id"] == "2007904")
+            self.assertTrue(msn["over_target"])
+            rec_ids = [r["site_id"] for r in data["recommendations"]]
+            self.assertIn("2007904", rec_ids)
+            self.assertNotIn("7", rec_ids)
+            self.assertIsNone(data.get("gemini_note") or None)
+            self.assertFalse(data.get("auto_blocked"))
+
+    def test_apply_campaign_block_persists_campaign_exclusions(self):
+        from tests.test_ai_studio import _TempStorage
+
+        class FakeAdapter:
+            platform = "mediago"
+            label = "MediaGo"
+            blocked = []
+
+            def block_sites(self, account_id, sites, *, campaign_id=None, block=True):
+                self.blocked.append((account_id, campaign_id, list(sites), block))
+                return [{"ok": True}]
+
+        adapter = FakeAdapter()
+        with _TempStorage():
+            import storage
+
+            storage.save_site_exclusions(
+                "acc1",
+                [{"site_id": "keep", "domain_name": "keep.com"}],
+                platform="mediago",
+            )
+            client = self._client(adapter)
+            resp = client.post(
+                "/api/sources/apply",
+                json={
+                    "account_id": "acc1",
+                    "campaign_id": "c1",
+                    "sites": [{"site_id": "2007904", "domain_name": "msn.com"}],
+                    "block": True,
+                },
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["campaign_id"], "c1")
+            self.assertEqual(adapter.blocked[0][1], "c1")
+            account = storage.load_site_exclusions("acc1", platform="mediago")
+            campaign = storage.load_site_exclusions(
+                "acc1", platform="mediago", campaign_id="c1"
+            )
+            self.assertEqual([s["site_id"] for s in account], ["keep"])
+            self.assertEqual([s["site_id"] for s in campaign], ["2007904"])
+
+    def test_newsbreak_site_report_does_not_fake_rows(self):
+        class FakeAdapter:
+            platform = "newsbreak"
+            label = "NewsBreak"
+
+            def get_campaigns(self, account_id):
+                return [{"id": "c1", "name": "NB", "status": "on"}]
+
+            def fetch_report_rows(self, account_id, scope, start, end):
+                return [{"campaign_id": "c1", "id": "c1", "spend": 10, "clicks": 2, "conversions": 0}]
+
+        client = self._client(FakeAdapter())
+        resp = client.get("/api/sources/report?account_id=acc1&days=7&campaign_id=c1")
+        data = resp.get_json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["rows"], [])
+        self.assertIn("site", (data.get("error") or "").lower())
+
+    def test_sources_page_renders_campaign_table(self):
+        class FakeAdapter:
+            platform = "mediago"
+            label = "MediaGo"
+            currency = "USD"
+
+            def get_accounts(self):
+                return [{"id": "acc1", "name": "Acme"}]
+
+            def block_sites(self, *a, **k):
+                return []
+
+            def fetch_site_report_rows(self, *a, **k):
+                return []
+
+            def fetch_campaign_site_report_rows(self, *a, **k):
+                return []
+
+        client = self._client(FakeAdapter())
+        resp = client.get("/sources")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_data(as_text=True)
+        self.assertIn("Load campaigns", html)
+        self.assertIn("Cut recommendations", html)
+        self.assertIn("src-camp-table", html)
+
+
 if __name__ == "__main__":
     unittest.main()
+

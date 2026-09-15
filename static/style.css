@@ -398,3 +398,14 @@ code { background: #243044; padding: 2px 6px; border-radius: 4px; font-size: 0.8
 }
 .nb-field textarea { resize: vertical; }
 
+.src-over { color: #f87171; }
+.src-under { color: #4ade80; }
+.src-campaigns tbody tr { cursor: pointer; }
+.src-campaigns tbody tr:hover { background: rgba(59,130,246,0.08); }
+.src-split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+@media (max-width: 960px) { .src-split { grid-template-columns: 1fr; } }
+.src-recs { position: sticky; top: 72px; }
+.src-recs ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.src-recs li { padding: 10px 12px; border: 1px solid #2d3a4d; border-radius: 8px; background: rgba(248,113,113,0.06); }
+.src-crumb { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+

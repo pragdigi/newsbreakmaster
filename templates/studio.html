@@ -51,6 +51,30 @@
           <option value="gpt-image-2">gpt-image-2 (OpenAI)</option>
         </select>
       </div>
+      {% if active_platform == 'mediago' %}
+      <div class="nb-form-row">
+        <label for="gen-creative-type">Creative type</label>
+        <select id="gen-creative-type">
+          <option value="native" selected>Native (1200×628)</option>
+          <option value="display">Display</option>
+        </select>
+        <span class="nb-muted nb-small">Native stays the default. Display generates toward an IAB size; launch still resizes to exact pixels.</span>
+      </div>
+      <div class="nb-form-row" id="gen-display-size-row" hidden>
+        <label for="gen-display-size">Display size</label>
+        <select id="gen-display-size">
+          <option value="300x250" selected>300×250 Medium Rectangle</option>
+          <option value="728x90">728×90 Leaderboard</option>
+          <option value="160x600">160×600 Wide Skyscraper</option>
+          <option value="320x50">320×50 Mobile Banner</option>
+          <option value="300x600">300×600 Half Page</option>
+          <option value="970x250">970×250 Billboard</option>
+          <option value="300x50">300×50 Mobile Banner</option>
+          <option value="320x100">320×100 Large Mobile</option>
+          <option value="336x280">336×280 Large Rectangle</option>
+        </select>
+      </div>
+      {% endif %}
       <div class="nb-form-row">
         <label for="gen-research-ratio" title="What % of this batch should come from experimental candidate styles vs. the proven catalog.">Research mix (candidates %)</label>
         <input type="range" id="gen-research-ratio" min="0" max="80" step="5" value="40" />
@@ -368,6 +392,28 @@
   const form = document.getElementById('studio-gen-form');
   const grid = document.getElementById('gen-grid');
   const statusEl = document.getElementById('gen-status');
+  const mgTypeSel = document.getElementById('gen-creative-type');
+  const mgSizeRow = document.getElementById('gen-display-size-row');
+  const mgSizeSel = document.getElementById('gen-display-size');
+  const MG_DISPLAY_ASPECT = {
+    '300x250': '4:3', '336x280': '4:3',
+    '728x90': '16:9', '970x250': '16:9',
+    '320x50': '16:9', '300x50': '16:9', '320x100': '16:9',
+    '160x600': '9:16', '300x600': '9:16',
+  };
+  function syncMgGenerateSize(){
+    if (!mgTypeSel || !mgSizeRow) return;
+    const display = mgTypeSel.value === 'display';
+    mgSizeRow.hidden = !display;
+    const libBox = document.getElementById('gen-use-library');
+    if (libBox && display) libBox.checked = false;
+  }
+  function mgGenerateAspect(){
+    if (!mgTypeSel || mgTypeSel.value !== 'display' || !mgSizeSel) return null;
+    return MG_DISPLAY_ASPECT[mgSizeSel.value] || '16:9';
+  }
+  if (mgTypeSel) mgTypeSel.addEventListener('change', syncMgGenerateSize);
+  syncMgGenerateSize();
 
   // ------------------------------------------------------------------
   // Library status — refreshed when the offer changes and after each
@@ -452,7 +498,8 @@
           count,
           model_image: model,
           research_ratio: researchRatio,
-          use_library: useLibrary,
+          use_library: useLibrary && !mgGenerateAspect(),
+          aspect: mgGenerateAspect() || undefined,
         })
       });
       const body = await res.json();

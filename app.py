@@ -808,7 +808,7 @@ def launch():
         accounts = []
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
 
-    # MediaGo native launches go through a dedicated handler.
+    # MediaGo launches go through a dedicated handler (native default, display opt-in).
     if platform == "mediago":
         from bulk_launcher_mediago import mediago_bulk_launch
 
@@ -2771,12 +2771,15 @@ def api_studio_generate():
     model_analyzer = (data.get("model_analyzer") or "").strip() or None
     style_mix = data.get("style_mix") or None
     research_ratio = data.get("research_ratio")
+    aspect = str(data.get("aspect") or "").strip() or None
     try:
         research_ratio = float(research_ratio) if research_ratio is not None else None
     except (TypeError, ValueError):
         research_ratio = None
 
     use_library = bool(data.get("use_library", True))
+    if aspect and platform == "mediago" and aspect not in ("16:9", "1.91:1"):
+        use_library = False
 
     # ------------------------------------------------------------------
     # Step 1: drain the prebuilt library FIFO. This makes the user-facing
@@ -2805,6 +2808,7 @@ def api_studio_generate():
                 model_analyzer=model_analyzer,
                 style_mix=style_mix,
                 research_ratio=research_ratio,
+                aspect=aspect,
             )
         except Exception as exc:  # noqa: BLE001
             app.logger.exception("studio/generate failed")

@@ -22,6 +22,16 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 SQUARE_SUFFIX = "Square format."
 LANDSCAPE_SUFFIX = "16:9 landscape format, wide horizontal composition."
+PORTRAIT_SUFFIX = "9:16 tall portrait format, vertical composition."
+LANDSCAPE_43_SUFFIX = "4:3 landscape format, horizontal composition."
+PORTRAIT_34_SUFFIX = "3:4 portrait format, vertical composition."
+_ASPECT_SENTINELS = (
+    SQUARE_SUFFIX,
+    LANDSCAPE_SUFFIX,
+    PORTRAIT_SUFFIX,
+    LANDSCAPE_43_SUFFIX,
+    PORTRAIT_34_SUFFIX,
+)
 
 
 # --- Diversity micro-variations ---------------------------------------
@@ -90,14 +100,16 @@ def _pick_variation(rng: random.Random, pool: List[str]) -> str:
 
 
 def _suffix_for_aspect(aspect: str) -> str:
-    """Return the prompt suffix appropriate for the target aspect ratio.
-
-    Only ``1:1`` (square) and ``16:9`` (landscape) are supported today —
-    anything else falls back to square so we never emit an ambiguous prompt.
-    """
+    """Return the prompt suffix appropriate for the target aspect ratio."""
     norm = (aspect or "").strip().lower().replace(" ", "")
     if norm in ("16:9", "landscape", "169"):
         return LANDSCAPE_SUFFIX
+    if norm in ("9:16", "portrait", "916"):
+        return PORTRAIT_SUFFIX
+    if norm in ("4:3", "43"):
+        return LANDSCAPE_43_SUFFIX
+    if norm in ("3:4", "34"):
+        return PORTRAIT_34_SUFFIX
     return SQUARE_SUFFIX
 
 
@@ -107,7 +119,7 @@ def _retune_aspect(prompt: str, aspect: str) -> str:
     """
     suffix = _suffix_for_aspect(aspect)
     text = prompt.rstrip()
-    for sentinel in (SQUARE_SUFFIX, LANDSCAPE_SUFFIX):
+    for sentinel in _ASPECT_SENTINELS:
         if text.endswith(sentinel):
             text = text[: -len(sentinel)].rstrip().rstrip(".")
             break
@@ -608,7 +620,7 @@ def generate_prompts(
         )
         # Strip any existing aspect suffix, add variation, re-tune aspect.
         stripped = base_prompt
-        for sentinel in (SQUARE_SUFFIX, LANDSCAPE_SUFFIX):
+        for sentinel in _ASPECT_SENTINELS:
             if stripped.endswith(sentinel):
                 stripped = stripped[: -len(sentinel)].rstrip()
                 break

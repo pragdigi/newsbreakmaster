@@ -135,6 +135,19 @@ class MediaGoAdapterTest(unittest.TestCase):
         self.assertFalse(a.supports_ad_set_scope)
         self.assertEqual(a.get_ad_groups("1", "2"), [])
 
+    def test_prepare_campaign_payload_defaults_native_allows_display(self):
+        from platforms.mediago import MediaGoAdapter
+
+        a = MediaGoAdapter(object())  # type: ignore
+        native = a._prepare_campaign_payload({"campaign_name": "X"})
+        self.assertEqual(native["creative_type"], "native")
+        omitted = a._prepare_campaign_payload({"campaign_name": "X", "creative_type": ""})
+        self.assertEqual(omitted["creative_type"], "native")
+        garbage = a._prepare_campaign_payload({"campaign_name": "X", "creative_type": "video"})
+        self.assertEqual(garbage["creative_type"], "native")
+        display = a._prepare_campaign_payload({"campaign_name": "X", "creative_type": "display"})
+        self.assertEqual(display["creative_type"], "display")
+
     def test_normalize_campaign(self):
         from platforms.mediago import MediaGoAdapter
 
@@ -209,6 +222,47 @@ class MediaGoLauncherTest(unittest.TestCase):
         self.assertEqual(len(payload["day_parting"]), 7)
         self.assertEqual(len(payload["day_parting"][0]), 24)
         self.assertTrue(all(h == 1 for day in payload["day_parting"] for h in day))
+
+    def test_build_payload_defaults_creative_type_native(self):
+        from bulk_launcher_mediago import build_campaign_payload
+        from platforms.mediago import normalize_creative_type
+
+        self.assertEqual(normalize_creative_type(None), "native")
+        self.assertEqual(normalize_creative_type(""), "native")
+        self.assertEqual(normalize_creative_type("NATIVE"), "native")
+        self.assertEqual(normalize_creative_type("banner"), "native")
+        payload = build_campaign_payload(
+            {
+                "campaign_name": "Test",
+                "brand_name": "BrandX",
+                "landing_page": "https://example.com",
+                "daily_cap_usd": "40",
+                "objective": "awareness",
+                "cpc_usd": "0.40",
+            },
+            [{"asset_name": "a1", "img": "https://img/1.jpg", "headline": "Hello world"}],
+        )
+        self.assertEqual(payload["creative_type"], "native")
+        self.assertNotIn("display", (payload["creative_type"] or "").lower() or "native")
+
+    def test_build_payload_display_creative_type(self):
+        from bulk_launcher_mediago import build_campaign_payload
+
+        payload = build_campaign_payload(
+            {
+                "campaign_name": "Display test",
+                "brand_name": "BrandX",
+                "landing_page": "https://example.com",
+                "daily_cap_usd": "40",
+                "objective": "awareness",
+                "cpc_usd": "0.40",
+                "creative_type": "display",
+                "display_size": "728x90",
+            },
+            [{"asset_name": "a1", "img": "https://img/1.jpg", "headline": ""}],
+        )
+        self.assertEqual(payload["creative_type"], "display")
+        self.assertEqual(payload["ad"][0]["headline"], "")
 
     def test_build_payload_rejects_low_daily(self):
         from bulk_launcher_mediago import build_campaign_payload
@@ -333,6 +387,71 @@ class MediaGoLauncherTest(unittest.TestCase):
         im = Image.open(io.BytesIO(out))
         self.assertEqual(im.size, (1200, 628))
         self.assertTrue(name.endswith("1200x628.jpg"))
+
+    def test_prepare_display_sizes(self):
+        from bulk_launcher_mediago import prepare_display_creative, prepare_mediago_creative
+        from PIL import Image
+
+        out, name = prepare_display_creative(_UploadStub(_png_bytes(), "sq.png"), size="300x250")
+        im = Image.open(io.BytesIO(out))
+        self.assertEqual(im.size, (300, 250))
+        self.assertTrue(name.endswith("300x250.jpg"))
+
+        tall, tall_name = prepare_mediago_creative(_UploadStub(_png_bytes(), "sq.png"), fmt="160x600")
+        tim = Image.open(io.BytesIO(tall))
+        self.assertEqual(tim.size, (160, 600))
+        self.assertTrue(tall_name.endswith("160x600.jpg"))
+
+    def test_launch_display_allows_empty_headline(self):
+        from bulk_launcher_mediago import mediago_bulk_launch
+
+        class _Adapter:
+            def create_campaign(self, account_id, payload):
+                self.seen = payload
+                return {"campaign_id": "d1"}
+
+        adapter = _Adapter()
+        res = mediago_bulk_launch(
+            adapter,
+            form={
+                "account_id": "acc1",
+                "campaign_name": "Display test",
+                "brand_name": "Brand",
+                "landing_page": "https://offer.example",
+                "daily_cap_usd": "25",
+                "objective": "awareness",
+                "cpc_usd": "0.40",
+                "creative_type": "display",
+                "display_size": "300x250",
+                "headline_0": "",
+            },
+            files={"creative_0": _UploadStub(_png_bytes(), "ad.png")},
+            host_image=lambda img, name: f"https://host.test/{name}",
+            creative_builder=lambda f, *, fmt="1.91:1": (b"jpeg", "ad_300x250.jpg"),
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["creative_type"], "display")
+        self.assertEqual(res["creative_format"], "300x250")
+        self.assertEqual(adapter.seen["creative_type"], "display")
+        self.assertEqual(adapter.seen["ad"][0]["headline"], "")
+
+    def test_display_size_catalog_matches_docs(self):
+        from platforms.mediago import (
+            DISPLAY_SIZES,
+            generation_aspect_for_display_size,
+            normalize_display_size,
+        )
+
+        self.assertEqual(DISPLAY_SIZES["300x250"], (300, 250))
+        self.assertEqual(DISPLAY_SIZES["728x90"], (728, 90))
+        self.assertEqual(DISPLAY_SIZES["160x600"], (160, 600))
+        self.assertEqual(DISPLAY_SIZES["320x50"], (320, 50))
+        self.assertEqual(DISPLAY_SIZES["300x600"], (300, 600))
+        self.assertEqual(normalize_display_size("300×250"), "300x250")
+        self.assertEqual(normalize_display_size("nope"), "300x250")
+        self.assertEqual(generation_aspect_for_display_size("300x250"), "4:3")
+        self.assertEqual(generation_aspect_for_display_size("728x90"), "16:9")
+        self.assertEqual(generation_aspect_for_display_size("160x600"), "9:16")
 
 
 class MediaGoRegistryTest(unittest.TestCase):
@@ -473,6 +592,7 @@ class MediaGoPixelAndCpaTest(unittest.TestCase):
         self.assertEqual(payload["browser_targeting"]["type"], "ALL")
         self.assertEqual(payload["optimization_type"], "-1")
         self.assertEqual(payload["day_parting"], [[1] * 24 for _ in range(7)])
+        self.assertEqual(payload["creative_type"], "native")
 
     def test_payload_dayparting_24_7_default_and_period(self):
         from bulk_launcher_mediago import build_campaign_payload

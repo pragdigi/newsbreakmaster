@@ -174,6 +174,7 @@ def generate_ads(
     research_ratio: Optional[float] = None,
     fallback: bool = True,
     render: bool = True,
+    aspect: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Produce a batch of on-brand static ad images for ``offer_id``.
 
@@ -193,7 +194,7 @@ def generate_ads(
     if offer is None:
         raise ValueError(f"Offer not found: offer_id={offer_id} platform={platform}")
 
-    aspect = _aspect_for_platform(platform)
+    aspect = (aspect or "").strip() or _aspect_for_platform(platform)
 
     insights = analyzer.analyze_offer(
         str(offer_id),

@@ -515,6 +515,9 @@ Hard rules:
    each prompt with the appropriate aspect sentinel:
      - "Square format." when aspect=1:1
      - "16:9 landscape format, wide horizontal composition." when aspect=16:9
+     - "9:16 tall portrait format, vertical composition." when aspect=9:16
+     - "4:3 landscape format, horizontal composition." when aspect=4:3
+     - "3:4 portrait format, vertical composition." when aspect=3:4
 7. Each prompt: 90–180 words.
 8. Headlines: 4–14 words, direct-response voice, no emoji.
 9. TEXT SAFETY: every headline, sub-headline, caption, label, and CTA

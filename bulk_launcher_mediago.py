@@ -1,13 +1,14 @@
 """
-MediaGo native bulk launcher.
+MediaGo bulk launcher (native default, display opt-in).
 
-MediaGo has no ad-set layer: one Campaign owns up to 10 native ads
-(``creative_type=native``). Each ad is ``{asset_name, img, headline}``.
-Images are hosted at a public URL (same ``/public/creative/`` path as
-Outbrain) because MediaGo fetches ``img`` rather than accepting uploads.
+MediaGo has no ad-set layer: one Campaign owns up to 10 ads
+(``creative_type=native`` by default, or ``display``). Each ad is
+``{asset_name, img, headline}``. Images are hosted at a public URL
+(same ``/public/creative/`` path as Outbrain) because MediaGo fetches
+``img`` rather than accepting uploads.
 
 Native format (default): 1200×628 (1.91:1). Optional 1:1 (1200×1200).
-Display / banner / video sizes are not generated.
+Display: exact IAB sizes from the MediaGo create-campaign docs.
 
 Expected form fields (see ``templates/launch.html`` mediago block):
 
@@ -30,9 +31,11 @@ Expected form fields (see ``templates/launch.html`` mediago block):
     campaign_status     0 paused (default) | 1 on
     dayparting_mode     all (24/7, default) | period
     daypart_start_hour / daypart_end_hour  used when mode=period
-    creative_format     "1.91:1" | "1:1"
+    creative_type       native (default) | display
+    creative_format     native: "1.91:1" | "1:1"
+    display_size        display: 300x250 (default) | 728x90 | 160x600 | …
     apply_site_exclusions  "1" (default) to push persisted site blocks
-    headline_<n>        required per ad, <=80 chars
+    headline_<n>        required for native (max 80); optional/empty for display
     creative_<n>        file field
 """
 from __future__ import annotations
@@ -43,6 +46,13 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
+from platforms.mediago import (
+    DEFAULT_DISPLAY_SIZE,
+    DISPLAY_SIZES,
+    normalize_creative_type,
+    normalize_display_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -167,9 +177,9 @@ def _local_blur_fill(square_bytes: bytes, *, target: Tuple[int, int]) -> bytes:
             top = (sh - new_h) // 2
             bg = bg_src.crop((0, top, sw, top + new_h))
         bg = bg.resize((tw, th), Image.LANCZOS).filter(ImageFilter.GaussianBlur(radius=18))
-        fg_h = min(th, im.size[1])
-        scale = fg_h / im.size[1]
-        fg_w = int(im.size[0] * scale)
+        scale = min(tw / float(im.size[0]), th / float(im.size[1]))
+        fg_w = max(1, int(round(im.size[0] * scale)))
+        fg_h = max(1, int(round(im.size[1] * scale)))
         fg = im.resize((fg_w, fg_h), Image.LANCZOS)
         x = (tw - fg_w) // 2
         y = (th - fg_h) // 2
@@ -283,6 +293,39 @@ def prepare_native_creative(file_obj: Any, *, fmt: str = "1.91:1") -> Tuple[byte
             out = _local_blur_fill(square, target=target)
         return out, f"{base}_1200x628.jpg"
     return square, f"{base}_1200x1200.jpg"
+
+
+def prepare_display_creative(file_obj: Any, *, size: str = DEFAULT_DISPLAY_SIZE) -> Tuple[bytes, str]:
+    """Return ``(jpeg_bytes, filename)`` at an allowed MediaGo display size."""
+    data = file_obj.read() if hasattr(file_obj, "read") else bytes(file_obj)
+    filename = getattr(file_obj, "filename", None) or "creative.jpg"
+    base = os.path.splitext(os.path.basename(filename))[0] or "creative"
+    key = normalize_display_size(size)
+    target = DISPLAY_SIZES[key]
+    square = _resize_cover(data, 1200, 1200)
+    out = _local_blur_fill(square, target=target)
+    tw, th = target
+    return out, f"{base}_{tw}x{th}.jpg"
+
+
+def prepare_mediago_creative(file_obj: Any, *, fmt: str = "1.91:1") -> Tuple[bytes, str]:
+    """Route to native or display prep from the chosen format key."""
+    key = str(fmt or "").strip().lower().replace("×", "x").replace(" ", "")
+    if key in DISPLAY_SIZES:
+        return prepare_display_creative(file_obj, size=key)
+    return prepare_native_creative(file_obj, fmt=fmt or "1.91:1")
+
+
+def _creative_type(form: Mapping[str, Any]) -> str:
+    return normalize_creative_type(form.get("creative_type"))
+
+
+def _creative_format(form: Mapping[str, Any], ctype: str) -> str:
+    if ctype == "display":
+        raw = form.get("display_size") or form.get("creative_format") or DEFAULT_DISPLAY_SIZE
+        return normalize_display_size(raw)
+    fmt = str(form.get("creative_format") or "1.91:1").strip()
+    return fmt if fmt in _FORMAT_DIMS else "1.91:1"
 
 
 # ----------------------------------------------------------------------
@@ -509,7 +552,7 @@ def build_campaign_payload(
 
     payload: Dict[str, Any] = {
         "campaign_name": name,
-        "creative_type": "native",
+        "creative_type": _creative_type(form),
         "status": _campaign_status(form),
         "day_parting": _day_parting(form),
         "dp_timezone": (form.get("dp_timezone") or "EST").strip() or "EST",
@@ -567,7 +610,7 @@ def mediago_bulk_launch(
     form: Mapping[str, Any],
     files: Mapping[str, Any],
     host_image: Callable[[bytes, str], str],
-    creative_builder: Callable[..., Tuple[bytes, str]] = prepare_native_creative,
+    creative_builder: Callable[..., Tuple[bytes, str]] = prepare_mediago_creative,
     exclusions: Optional[Sequence[Dict[str, Any]]] = None,
     log_progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
@@ -587,15 +630,14 @@ def mediago_bulk_launch(
     if not ads_files:
         return {"ok": False, "error": "at least one creative image is required (creative_0)"}
 
-    fmt = (form.get("creative_format") or "1.91:1").strip()
-    if fmt not in _FORMAT_DIMS:
-        fmt = "1.91:1"
+    ctype = _creative_type(form)
+    fmt = _creative_format(form, ctype)
 
     preflight: List[Dict[str, Any]] = []
     for idx, _ in ads_files:
         text = (form.get(f"headline_{idx}") or form.get("headline") or "").strip()
         errs: List[str] = []
-        if not text:
+        if not text and ctype != "display":
             errs.append("headline required")
         elif len(text) > _HEADLINE_MAX:
             errs.append(f"headline too long ({len(text)}>{_HEADLINE_MAX} chars)")
@@ -618,7 +660,7 @@ def mediago_bulk_launch(
     prepared: List[Dict[str, str]] = []
     total = len(ads_files)
     for n, (idx, creative_file) in enumerate(ads_files, start=1):
-        _progress(f"Preparing native creative {n}/{total} ({fmt})…")
+        _progress(f"Preparing {ctype} creative {n}/{total} ({fmt})…")
         try:
             img_bytes, fname = creative_builder(creative_file, fmt=fmt)
         except Exception as e:
@@ -651,7 +693,7 @@ def mediago_bulk_launch(
             "errors": errors,
         }
 
-    base_name = (form.get("campaign_name") or "").strip() or "MediaGo native"
+    base_name = (form.get("campaign_name") or "").strip() or f"MediaGo {ctype}"
     created_campaigns: List[Dict[str, Any]] = []
     all_ads: List[Dict[str, Any]] = []
     apply_exclusions = (form.get("apply_site_exclusions") or "1").strip() not in ("0", "false", "off")
@@ -668,7 +710,7 @@ def mediago_bulk_launch(
         except ValueError as e:
             return {"ok": False, "platform": "mediago", "error": str(e), "errors": errors}
         try:
-            _progress(f"Creating native campaign {batch_i + 1}…")
+            _progress(f"Creating {ctype} campaign {batch_i + 1}…")
             created = adapter.create_campaign(account_id, payload)
         except Exception as e:
             logger.warning("mg_create_campaign_failed: %s", e)
@@ -705,14 +747,15 @@ def mediago_bulk_launch(
     first_id = created_campaigns[0]["campaign_id"] if created_campaigns else None
     created_status = _campaign_status(form)
     if created_status == 1:
-        note = "Campaign created ACTIVE (native). It can start spending immediately."
+        note = f"Campaign created ACTIVE ({ctype}). It can start spending immediately."
     else:
-        note = "Campaign created PAUSED (native). Review in MediaGo, then enable."
+        note = f"Campaign created PAUSED ({ctype}). Review in MediaGo, then enable."
     return {
         "ok": bool(created_campaigns),
         "platform": "mediago",
         "campaign_id": first_id,
         "campaigns": created_campaigns,
+        "creative_type": ctype,
         "creative_format": fmt,
         "ads": all_ads,
         "errors": errors,
@@ -721,4 +764,10 @@ def mediago_bulk_launch(
     }
 
 
-__all__ = ["mediago_bulk_launch", "prepare_native_creative", "build_campaign_payload"]
+__all__ = [
+    "mediago_bulk_launch",
+    "prepare_native_creative",
+    "prepare_display_creative",
+    "prepare_mediago_creative",
+    "build_campaign_payload",
+]

@@ -10,7 +10,7 @@
       {% elif active_platform == 'outbrain' %}
         Outbrain / Teads campaigns (Amplify API). Drop creatives — each is regenerated to your chosen format (1:1 or 16:9) and shipped as a paused campaign.
       {% elif active_platform == 'mediago' %}
-        MediaGo native campaigns only. Drop creatives — each is regenerated to 1200×628 (1.91:1) and shipped paused. Persisted source exclusions are applied after create.
+        MediaGo native (default) or display campaigns. Drop creatives — native is regenerated to 1200×628 (1.91:1); display is resized to a chosen IAB size. Persisted source exclusions are applied after create.
       {% else %}
         Conversion campaigns. Drag &amp; drop creatives, pick a bid strategy, ship in one click.
       {% endif %}
@@ -1321,7 +1321,7 @@
 <div class="nb-card" style="margin-bottom:16px;">
   {% set ok = result.get('ok') %}
   {% set created_on = result.get('status') == 1 %}
-  <h3 style="margin:0 0 8px 0;">{% if ok %}Campaign created ({% if created_on %}active{% else %}paused{% endif %}, native){% else %}Launch failed{% endif %}</h3>
+  <h3 style="margin:0 0 8px 0;">{% if ok %}Campaign created ({% if created_on %}active{% else %}paused{% endif %}, {{ result.get('creative_type') or 'native' }}){% else %}Launch failed{% endif %}</h3>
   <div class="nb-kpi-grid" style="margin-bottom:12px;">
     <div class="nb-kpi"><div class="nb-kpi-label">Status</div><div class="nb-kpi-value" style="color:{{ '#34d399' if ok else '#f87171' }};">{{ 'Success' if ok else 'Failed' }}</div></div>
     <div class="nb-kpi"><div class="nb-kpi-label">Campaign ID</div><div class="nb-kpi-value" style="font-size:14px;font-family:monospace;">{{ result.get('campaign_id') or '—' }}</div></div>
@@ -1378,7 +1378,7 @@
   </div>
 
   <div class="nb-field-group">
-    <h3>2 · Native campaign</h3>
+    <h3>2 · Campaign</h3>
     <div class="nb-row-2">
       <div>
         <label class="nb-label">Campaign name</label>
@@ -1562,12 +1562,31 @@
   </div>
 
   <div class="nb-field-group">
-    <h3>3 · Native format</h3>
+    <h3>3 · Creative type</h3>
     <div>
+      <label style="margin-right:16px;"><input type="radio" name="creative_type" value="native" checked> Native <span class="nb-muted">(default)</span></label>
+      <label><input type="radio" name="creative_type" value="display"> Display</label>
+    </div>
+    <div id="mg-native-format" style="margin-top:10px;">
       <label style="margin-right:12px;"><input type="radio" name="creative_format" value="1.91:1" checked> 1.91:1 native (1200×628)</label>
       <label><input type="radio" name="creative_format" value="1:1"> 1:1 native (1200×1200)</label>
+      <div class="nb-hint">Landscape is outpainted from a square so copy is not cropped.</div>
     </div>
-    <div class="nb-hint">Display / banner / video sizes are not offered. Landscape is outpainted from a square so copy is not cropped.</div>
+    <div id="mg-display-format" style="display:none;margin-top:10px;">
+      <label class="nb-label" for="mg-display-size">Display size</label>
+      <select name="display_size" id="mg-display-size" class="nb-select">
+        <option value="300x250" selected>300×250 Medium Rectangle</option>
+        <option value="728x90">728×90 Leaderboard</option>
+        <option value="160x600">160×600 Wide Skyscraper</option>
+        <option value="320x50">320×50 Mobile Banner</option>
+        <option value="300x600">300×600 Half Page</option>
+        <option value="970x250">970×250 Billboard</option>
+        <option value="300x50">300×50 Mobile Banner</option>
+        <option value="320x100">320×100 Large Mobile</option>
+        <option value="336x280">336×280 Large Rectangle</option>
+      </select>
+      <div class="nb-hint">MediaGo display requires an exact size. Uploads are resized / outpainted to the size you pick. Headline may be left empty.</div>
+    </div>
     <label style="display:block;margin-top:10px;">
       <input type="checkbox" name="apply_site_exclusions" value="1" checked>
       Apply saved source exclusions to this campaign after create
@@ -1575,7 +1594,7 @@
   </div>
 
   <div class="nb-field-group">
-    <h3>4 · Native ads <span class="nb-muted" style="font-weight:400;">(max 10 per campaign — extras become another campaign)</span></h3>
+    <h3>4 · Ads <span class="nb-muted" style="font-weight:400;">(max 10 per campaign — extras become another campaign)</span></h3>
     <label for="mg-file-input" class="nb-dropzone" id="mg-dropzone" style="margin-top:8px;">
       <input type="file" id="mg-file-input" multiple accept="image/*" hidden>
       <div class="nb-dropzone-icon" aria-hidden="true">
@@ -1585,8 +1604,8 @@
           <line x1="12" y1="3" x2="12" y2="15"/>
         </svg>
       </div>
-      <div class="nb-dropzone-title">Drop native creatives here</div>
-      <div class="nb-dropzone-sub">or <span class="nb-dropzone-link">click to browse</span> — each becomes one native ad (headline max 80 chars).</div>
+      <div class="nb-dropzone-title" id="mg-drop-title">Drop native creatives here</div>
+      <div class="nb-dropzone-sub" id="mg-drop-sub">or <span class="nb-dropzone-link">click to browse</span> — each becomes one native ad (headline max 80 chars).</div>
     </label>
     <div class="nb-defaults-panel">
       <div class="nb-defaults-title">Defaults</div>
@@ -1659,6 +1678,26 @@
       }
       return '';
     }
+    function isDisplay(){
+      var picked = document.querySelector('input[name="creative_type"]:checked');
+      return picked && String(picked.value) === 'display';
+    }
+    function syncCreativeType(){
+      var display = isDisplay();
+      var nativeBox = document.getElementById('mg-native-format');
+      var displayBox = document.getElementById('mg-display-format');
+      if (nativeBox) nativeBox.style.display = display ? 'none' : '';
+      if (displayBox) displayBox.style.display = display ? '' : 'none';
+      var dropTitle = document.getElementById('mg-drop-title');
+      var dropSub = document.getElementById('mg-drop-sub');
+      if (dropTitle) dropTitle.textContent = display ? 'Drop display creatives here' : 'Drop native creatives here';
+      if (dropSub) dropSub.innerHTML = display
+        ? 'or <span class="nb-dropzone-link">click to browse</span> — each becomes one display ad (headline optional, max 80 chars).'
+        : 'or <span class="nb-dropzone-link">click to browse</span> — each becomes one native ad (headline max 80 chars).';
+      var defH = document.getElementById('mg-default-headline');
+      if (defH) defH.placeholder = display ? 'Default headline (optional, max 80 chars)' : 'Default headline (max 80 chars)';
+      syncLaunchButton();
+    }
     function toggleCpc(){
       if (!cpcWrap) return;
       var charge = chargeSel ? chargeSel.value : 'max_cv';
@@ -1668,9 +1707,10 @@
       if (!launchBtn) return;
       var picked = document.querySelector('input[name="campaign_status"]:checked');
       var active = picked && String(picked.value) === '1';
+      var kind = isDisplay() ? 'display' : 'native';
       launchBtn.textContent = active
-        ? 'Launch MediaGo native campaign (active)'
-        : 'Launch MediaGo native campaign (paused)';
+        ? 'Launch MediaGo ' + kind + ' campaign (active)'
+        : 'Launch MediaGo ' + kind + ' campaign (paused)';
     }
     function syncDayparting(){
       var period = document.getElementById('mg-daypart-period');
@@ -1790,7 +1830,10 @@
     Array.prototype.slice.call(document.querySelectorAll('input[name="campaign_status"]')).forEach(function(el){
       el.addEventListener('change', syncLaunchButton);
     });
-    syncLaunchButton();
+    Array.prototype.slice.call(document.querySelectorAll('input[name="creative_type"]')).forEach(function(el){
+      el.addEventListener('change', syncCreativeType);
+    });
+    syncCreativeType();
     Array.prototype.slice.call(document.querySelectorAll('input[name="dayparting_mode"]')).forEach(function(el){
       el.addEventListener('change', syncDayparting);
     });
@@ -1848,7 +1891,7 @@
     function fmtSize(b){ if (b<1024) return b+' B'; if (b<1024*1024) return (b/1024).toFixed(1)+' KB'; return (b/1024/1024).toFixed(1)+' MB'; }
     function renderCount(){
       var n = items.length;
-      countText.textContent = n===0 ? 'No creatives yet' : (n+' native ad'+(n===1?'':'s')+' ready'+(n>10?' · will split into '+Math.ceil(n/10)+' campaigns':''));
+      countText.textContent = n===0 ? 'No creatives yet' : (n+' ad'+(n===1?'':'s')+' ready'+(n>10?' · will split into '+Math.ceil(n/10)+' campaigns':''));
       btnClear.style.display = n>0 ? 'inline-block' : 'none';
     }
     function renderAll(){
@@ -1858,7 +1901,7 @@
         card.className = 'nb-creative-card';
         card.innerHTML =
           '<div class="nb-creative-media"><img src="'+esc(it.url)+'" alt=""><button type="button" class="nb-creative-remove" title="Remove">×</button></div>' +
-          '<div class="nb-creative-fields"><input type="text" data-role="headline" class="nb-input" maxlength="80" required placeholder="Headline (max 80)" value="'+esc(it.headline)+'"></div>';
+          '<div class="nb-creative-fields"><input type="text" data-role="headline" class="nb-input" maxlength="80" placeholder="Headline (max 80)" value="'+esc(it.headline)+'"></div>';
         card.querySelector('.nb-creative-remove').addEventListener('click', function(){ items.splice(idx,1); renderAll(); });
         card.querySelector('[data-role="headline"]').addEventListener('input', function(){ items[idx].headline = this.value; });
         grid.appendChild(card);
@@ -1881,11 +1924,15 @@
     });
     form.addEventListener('submit', function(e){
       Array.prototype.slice.call(form.querySelectorAll('[data-mg-generated="1"]')).forEach(function(el){ el.parentNode.removeChild(el); });
-      if (items.length === 0) { e.preventDefault(); alert('Add at least one native creative.'); return; }
+      if (items.length === 0) { e.preventDefault(); alert('Add at least one creative.'); return; }
+      var display = (function(){
+        var picked = document.querySelector('input[name="creative_type"]:checked');
+        return picked && String(picked.value) === 'display';
+      })();
       var invalid = [];
       items.forEach(function(it,i){
         var h = (it.headline||'').trim();
-        if (!h) invalid.push('Ad '+(i+1)+': headline required');
+        if (!h && !display) invalid.push('Ad '+(i+1)+': headline required');
         else if (h.length > 80) invalid.push('Ad '+(i+1)+': headline too long');
       });
       if (invalid.length) { e.preventDefault(); alert(invalid.join('\n')); return; }

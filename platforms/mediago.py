@@ -384,6 +384,31 @@ def recommend_sites_to_cut(
     return recs
 
 
+def mark_cut_rec_flags(
+    rows: Iterable[Dict[str, Any]],
+    recs: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Align row ``flag`` / ``cut_rec`` with cut recommendations.
+
+    Scoring still computes no-conversion and bottom-quartile diagnostics.
+    User-facing flags must match the 1× TCPA cut list, not those diagnostics.
+    """
+    rec_by_id = {
+        str(r.get("site_id") or ""): r
+        for r in recs
+        if isinstance(r, dict) and r.get("site_id")
+    }
+    out: List[Dict[str, Any]] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        rec = rec_by_id.get(str(raw.get("site_id") or ""))
+        raw["cut_rec"] = bool(rec)
+        raw["flag"] = (rec.get("rule") or "cut_rec") if rec else ""
+        out.append(raw)
+    return out
+
+
 def gemini_cut_note(
     recs: Sequence[Dict[str, Any]],
     target_cpa: Optional[float],
@@ -1161,6 +1186,7 @@ __all__ = [
     "generation_aspect_for_display_size",
     "score_source_rows",
     "recommend_sites_to_cut",
+    "mark_cut_rec_flags",
     "gemini_cut_note",
     "rollup_campaign_source_stats",
     "normalize_mediago_status",

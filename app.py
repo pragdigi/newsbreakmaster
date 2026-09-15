@@ -1278,7 +1278,12 @@ def api_sources_report():
         return jsonify({"error": "account_id is required"}), 400
     campaign_id = (request.args.get("campaign_id") or "").strip()
     start, end, days = _sources_date_window()
-    from platforms.mediago import gemini_cut_note, recommend_sites_to_cut, score_source_rows
+    from platforms.mediago import (
+        gemini_cut_note,
+        mark_cut_rec_flags,
+        recommend_sites_to_cut,
+        score_source_rows,
+    )
 
     target_cpa = _campaign_target_cpa(adapter, account_id, campaign_id) if campaign_id else None
     if campaign_id:
@@ -1311,6 +1316,7 @@ def api_sources_report():
         for row in scored:
             row["excluded"] = str(row.get("site_id")) in excluded_ids
         recs = recommend_sites_to_cut(scored, target_cpa)
+        mark_cut_rec_flags(scored, recs)
         note = gemini_cut_note(recs, target_cpa)
         return jsonify(
             {
@@ -1349,6 +1355,7 @@ def api_sources_report():
     for row in scored:
         row["excluded"] = str(row.get("site_id")) in excluded_ids
     recs = recommend_sites_to_cut(scored, None)
+    mark_cut_rec_flags(scored, recs)
     return jsonify(
         {
             "ok": True,

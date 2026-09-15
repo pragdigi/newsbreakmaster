@@ -100,7 +100,6 @@
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button type="button" class="nb-btn nb-btn-small" id="src-select-recs">Select recommended</button>
-        <button type="button" class="nb-btn nb-btn-small" id="src-flag-losers">Select flagged</button>
         <button type="button" class="nb-btn nb-btn-small" id="src-save">Save exclusions</button>
         {% if supports_site_block %}
         <button type="button" class="nb-btn nb-btn-small nb-btn-primary" id="src-apply">Exclude on campaign</button>
@@ -283,6 +282,9 @@
   }
 
   function render(){
+    recs = recsMeetingFloor(recs);
+    const recById = {};
+    recs.forEach(function(r){ recById[String(r.site_id)] = r; });
     const host = document.getElementById('src-site-list');
     host.innerHTML = '';
     const filtered = filteredRows();
@@ -293,6 +295,7 @@
       const checked = excluded.has(String(r.site_id));
       const vs = (r.cpa==null || targetCpa==null) ? '' :
         '<span class="src-chip '+(r.over_target?'src-over':'src-under')+'">'+vsLabel(r.vs_target)+' vs target</span>';
+      const rec = recById[String(r.site_id)];
       card.innerHTML =
         '<div class="src-site-top"><label class="src-check"><input type="checkbox" '+(checked?'checked':'')+'>' +
         '<span><div class="src-site-name">'+escapeHtml(r.site_name||r.site_id)+'</div>' +
@@ -303,7 +306,7 @@
           '<span class="src-chip">'+fmt(r.conversions)+' conv</span>' +
           '<span class="src-chip">CPA '+(r.cpa==null?'—':money(r.cpa))+'</span>' + vs +
           '<span class="src-chip">Weight '+fmt(r.weight,2)+'</span>' +
-          (r.flag ? '<span class="src-chip src-over">'+escapeHtml(String(r.flag).indexOf('no_conv')>=0?'No conversions':r.flag)+'</span>' : '') +
+          (rec ? '<span class="src-chip src-over">Cut rec</span>' : '') +
         '</div>';
       const box = card.querySelector('input[type=checkbox]');
       box.addEventListener('change', function(){
@@ -313,8 +316,8 @@
       host.appendChild(card);
     });
     document.getElementById('src-count').textContent = slice.length + ' of ' + filtered.length + ' site' + (filtered.length===1?'':'s');
-    const flagged = rows.filter(function(r){ return r.flag; }).length;
-    document.getElementById('src-summary').textContent = flagged ? (' · '+flagged+' flagged') : '';
+    const n = recs.length;
+    document.getElementById('src-summary').textContent = n ? (' · '+n+' cut rec'+(n===1?'':'s')) : '';
     document.getElementById('src-load-more').hidden = slice.length >= filtered.length;
     document.getElementById('src-show-all').hidden = slice.length >= filtered.length;
     renderRecs();
@@ -403,10 +406,6 @@
   document.getElementById('src-hide-excl').addEventListener('change', function(){ shown = PAGE; render(); });
   document.getElementById('src-load-more').addEventListener('click', function(){ shown += PAGE; render(); });
   document.getElementById('src-show-all').addEventListener('click', function(){ shown = 100000; render(); });
-  document.getElementById('src-flag-losers').addEventListener('click', function(){
-    rows.forEach(function(r){ if (r.flag) excluded.add(String(r.site_id)); });
-    render();
-  });
   document.getElementById('src-select-recs').addEventListener('click', function(){
     recs.forEach(function(r){ if (r.site_id) excluded.add(String(r.site_id)); });
     render();

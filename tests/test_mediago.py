@@ -961,6 +961,57 @@ class MediaGoSourceCutRecommendationsTest(unittest.TestCase):
         self.assertEqual(names, ["sliide.com", "cricket.get-moment.com"])
         self.assertNotIn("buzzday.info", names)
 
+    def test_mark_cut_rec_flags_matches_recs_not_weight_quartile(self):
+        from platforms.mediago import mark_cut_rec_flags, recommend_sites_to_cut, score_source_rows
+
+        scored = score_source_rows(
+            [
+                {
+                    "site_id": "sliide",
+                    "site_name": "sliide.com",
+                    "spend": 107.96,
+                    "click": 40,
+                    "conversion": 1,
+                },
+                {
+                    "site_id": "cricket",
+                    "site_name": "cricket.get-moment.com",
+                    "spend": 65.32,
+                    "click": 20,
+                    "conversion": 0,
+                },
+                {
+                    "site_id": "buzzday",
+                    "site_name": "buzzday.info",
+                    "spend": 33.15,
+                    "click": 10,
+                    "conversion": 0,
+                },
+                {
+                    "site_id": "cheap",
+                    "site_name": "cheap.com",
+                    "spend": 5,
+                    "click": 8,
+                    "conversion": 0,
+                },
+            ],
+            target_cpa=44.33,
+        )
+        self.assertTrue(any(r.get("flag") for r in scored))
+        recs = recommend_sites_to_cut(scored, 44.33)
+        mark_cut_rec_flags(scored, recs)
+        by_name = {r["site_name"]: r for r in scored}
+        self.assertTrue(by_name["sliide.com"]["cut_rec"])
+        self.assertTrue(by_name["cricket.get-moment.com"]["cut_rec"])
+        self.assertFalse(by_name["buzzday.info"]["cut_rec"])
+        self.assertFalse(by_name["cheap.com"]["cut_rec"])
+        self.assertEqual(by_name["buzzday.info"]["flag"], "")
+        self.assertEqual(by_name["cheap.com"]["flag"], "")
+        self.assertEqual(
+            sum(1 for r in scored if r.get("flag") or r.get("cut_rec")),
+            len(recs),
+        )
+
     def test_gemini_skips_recs_below_one_x_spend(self):
         from platforms.mediago import gemini_cut_note
 
@@ -1358,6 +1409,13 @@ class MediaGoSourcesApiTest(unittest.TestCase):
             names = [r["site_name"] for r in data["recommendations"]]
             self.assertEqual(names, ["sliide.com", "cricket.get-moment.com"])
             self.assertNotIn("buzzday.info", names)
+            by_name = {r["site_name"]: r for r in data["rows"]}
+            self.assertTrue(by_name["sliide.com"].get("cut_rec"))
+            self.assertTrue(by_name["cricket.get-moment.com"].get("cut_rec"))
+            self.assertFalse(by_name["buzzday.info"].get("cut_rec"))
+            self.assertFalse(by_name["buzzday.info"].get("flag"))
+            flagged = [r for r in data["rows"] if r.get("flag") or r.get("cut_rec")]
+            self.assertEqual(len(flagged), len(data["recommendations"]))
 
     def test_apply_campaign_block_persists_campaign_exclusions(self):
         from tests.test_ai_studio import _TempStorage
@@ -1455,6 +1513,10 @@ class MediaGoSourcesApiTest(unittest.TestCase):
         self.assertIn(".src-recs-help", css)
         self.assertIn("word-spacing: 0.12em", css)
         self.assertIn(".src-rec-card", css)
+        self.assertIn("cut rec", html)
+        self.assertNotIn("Select flagged", html)
+        self.assertNotIn("src-flag-losers", html)
+        self.assertNotIn(" · '+flagged+' flagged", html)
 
 
 if __name__ == "__main__":

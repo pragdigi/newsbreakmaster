@@ -88,28 +88,34 @@
       </div>
       <p id="src-recs-empty" class="nb-muted">No cut candidates for this window.</p>
     </div>
-    <div class="src-filters">
-      <input type="search" id="src-search" placeholder="Search sites" style="flex:1;min-width:160px;">
-      <label class="nb-muted"><input type="checkbox" id="src-hide-zero" checked> Hide $0 spend</label>
-      <label class="nb-muted"><input type="checkbox" id="src-hide-excl"> Hide excluded</label>
-    </div>
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
-      <div>
-        <strong id="src-count">0 sites</strong>
-        <span class="nb-muted" id="src-summary"></span>
+    <div class="src-list-head">
+      <div class="src-filters">
+        <input type="search" id="src-search" placeholder="Search sites" style="flex:1;min-width:160px;">
+        <label class="nb-muted"><input type="checkbox" id="src-hide-zero" checked> Hide $0 spend</label>
+        <label class="nb-muted"><input type="checkbox" id="src-hide-excl"> Hide excluded</label>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button type="button" class="nb-btn nb-btn-small" id="src-select-recs">Select recommended</button>
-        <button type="button" class="nb-btn nb-btn-small" id="src-save">Save exclusions</button>
+      <div class="src-list-bar">
+        <div>
+          <strong id="src-count">0 sites</strong>
+          <span class="nb-muted" id="src-summary"></span>
+          <span class="nb-muted" id="src-selected"> · 0 selected</span>
+        </div>
+        <div class="src-list-actions">
+          <button type="button" class="nb-btn nb-btn-small" id="src-select-recs">Select recommended</button>
+          <button type="button" class="nb-btn nb-btn-small" id="src-save">Save exclusions</button>
+        </div>
+      </div>
+    </div>
+    <div class="src-scroller-wrap">
+      <div id="src-site-scroller" class="src-site-scroller">
+        <div id="src-site-list" class="src-site-list"></div>
+      </div>
+      <div class="src-list-foot">
+        <span class="nb-muted" id="src-selected-foot">0 selected</span>
         {% if supports_site_block %}
-        <button type="button" class="nb-btn nb-btn-small nb-btn-primary" id="src-apply">Exclude on campaign</button>
+        <button type="button" class="nb-btn nb-btn-small nb-btn-primary" id="src-apply">Exclude selected</button>
         {% endif %}
       </div>
-    </div>
-    <div id="src-site-list" class="src-card-list"></div>
-    <div class="src-more">
-      <button type="button" class="nb-btn" id="src-load-more">Load more</button>
-      <button type="button" class="nb-btn" id="src-show-all">Show all</button>
     </div>
   </div>
 </div>
@@ -119,7 +125,7 @@
 (function(){
   const CURRENCY = {{ active_platform_currency | tojson }};
   const SUPPORTS_CAMP_SITES = {{ supports_campaign_site_report | tojson }};
-  const PAGE = 25;
+  const PAGE = 80;
   let campaigns = [];
   let rows = [];
   let recs = [];
@@ -127,6 +133,7 @@
   let activeCampaign = null;
   let targetCpa = null;
   let shown = PAGE;
+  let renderedUntil = 0;
 
   const params = new URLSearchParams(window.location.search);
   const presetAccount = params.get('account') || params.get('account_id') || '';
@@ -274,52 +281,68 @@
     empty.hidden = true;
     visible.forEach(function(r){
       const card = document.createElement('div');
-      card.className = 'src-rec-card';
-      card.innerHTML = '<div class="src-site-name">'+escapeHtml(r.site_name||r.site_id)+'</div>' +
-        '<div class="nb-muted" style="font-size:12px;margin-top:4px;letter-spacing:normal;word-spacing:normal;">'+escapeHtml(r.reason||'')+'</div>';
+      card.className = 'src-site-row src-rec-card';
+      card.innerHTML = '<span class="src-site-name">'+escapeHtml(r.site_name||r.site_id)+'</span>' +
+        '<span class="src-row-meta">'+escapeHtml(r.reason||'')+'</span>';
       list.appendChild(card);
     });
   }
 
-  function render(){
+  function updateSelectedLabel(){
+    const n = excluded.size;
+    const label = ' · ' + n + ' selected';
+    const top = document.getElementById('src-selected');
+    const foot = document.getElementById('src-selected-foot');
+    if (top) top.textContent = label;
+    if (foot) foot.textContent = n + ' selected';
+  }
+
+  function makeSiteRow(r, recById){
+    const row = document.createElement('label');
+    row.className = 'src-site-row';
+    const checked = excluded.has(String(r.site_id));
+    const rec = recById[String(r.site_id)];
+    row.innerHTML =
+      '<input type="checkbox" '+(checked?'checked':'')+'>' +
+      '<span class="src-site-name" title="'+escapeHtml(r.site_name||r.site_id)+'">'+escapeHtml(r.site_name||r.site_id)+'</span>' +
+      '<span class="src-chip">'+money(r.spend)+'</span>' +
+      '<span class="src-chip">'+fmt(r.conversions)+' conv</span>' +
+      '<span class="src-chip">CPA '+(r.cpa==null?'—':money(r.cpa))+'</span>' +
+      (rec ? '<span class="src-chip src-over">Cut rec</span>' : '');
+    const box = row.querySelector('input[type=checkbox]');
+    box.addEventListener('change', function(){
+      if (this.checked) excluded.add(String(r.site_id));
+      else excluded.delete(String(r.site_id));
+      updateSelectedLabel();
+    });
+    return row;
+  }
+
+  function render(opts){
+    opts = opts || {};
     recs = recsMeetingFloor(recs);
     const recById = {};
     recs.forEach(function(r){ recById[String(r.site_id)] = r; });
     const host = document.getElementById('src-site-list');
-    host.innerHTML = '';
     const filtered = filteredRows();
-    const slice = filtered.slice(0, shown);
-    slice.forEach(function(r){
-      const card = document.createElement('div');
-      card.className = 'src-site-card';
-      const checked = excluded.has(String(r.site_id));
-      const vs = (r.cpa==null || targetCpa==null) ? '' :
-        '<span class="src-chip '+(r.over_target?'src-over':'src-under')+'">'+vsLabel(r.vs_target)+' vs target</span>';
-      const rec = recById[String(r.site_id)];
-      card.innerHTML =
-        '<div class="src-site-top"><label class="src-check"><input type="checkbox" '+(checked?'checked':'')+'>' +
-        '<span><div class="src-site-name">'+escapeHtml(r.site_name||r.site_id)+'</div>' +
-        '<div class="src-id">'+escapeHtml(r.site_id)+'</div></span></label></div>' +
-        '<div class="src-chips">' +
-          '<span class="src-chip">'+money(r.spend)+' spend</span>' +
-          '<span class="src-chip">'+fmt(r.clicks)+' clicks</span>' +
-          '<span class="src-chip">'+fmt(r.conversions)+' conv</span>' +
-          '<span class="src-chip">CPA '+(r.cpa==null?'—':money(r.cpa))+'</span>' + vs +
-          '<span class="src-chip">Weight '+fmt(r.weight,2)+'</span>' +
-          (rec ? '<span class="src-chip src-over">Cut rec</span>' : '') +
-        '</div>';
-      const box = card.querySelector('input[type=checkbox]');
-      box.addEventListener('change', function(){
-        if (this.checked) excluded.add(String(r.site_id));
-        else excluded.delete(String(r.site_id));
-      });
-      host.appendChild(card);
-    });
-    document.getElementById('src-count').textContent = slice.length + ' of ' + filtered.length + ' site' + (filtered.length===1?'':'s');
+    if (!opts.append) {
+      host.innerHTML = '';
+      renderedUntil = 0;
+      const scroller = document.getElementById('src-site-scroller');
+      if (scroller) scroller.scrollTop = 0;
+    }
+    const end = Math.min(shown, filtered.length);
+    const start = opts.append ? renderedUntil : 0;
+    for (let i = start; i < end; i++) {
+      host.appendChild(makeSiteRow(filtered[i], recById));
+    }
+    renderedUntil = end;
+    document.getElementById('src-count').textContent =
+      (end < filtered.length ? (end + ' of ') : '') +
+      filtered.length + ' site' + (filtered.length===1?'':'s');
     const n = recs.length;
     document.getElementById('src-summary').textContent = n ? (' · '+n+' cut rec'+(n===1?'':'s')) : '';
-    document.getElementById('src-load-more').hidden = slice.length >= filtered.length;
-    document.getElementById('src-show-all').hidden = slice.length >= filtered.length;
+    updateSelectedLabel();
     renderRecs();
   }
 
@@ -359,6 +382,7 @@
     const cid = campaign && campaign.id ? String(campaign.id) : '';
     setStatus(cid ? 'Loading campaign sites…' : 'Loading account sites…');
     shown = PAGE;
+    renderedUntil = 0;
     try {
       let url = '/api/sources/report?account_id='+encodeURIComponent(account)+'&'+rangeQs();
       if (cid) url += '&campaign_id='+encodeURIComponent(cid);
@@ -378,8 +402,6 @@
       (body.exclusions || []).forEach(function(s){ if (s.site_id) excluded.add(String(s.site_id)); });
       rows.forEach(function(r){ if (r.excluded) excluded.add(String(r.site_id)); });
       showGeminiNote(body.gemini_note);
-      const applyBtn = document.getElementById('src-apply');
-      if (applyBtn) applyBtn.textContent = cid ? 'Exclude on campaign' : 'Push account blocklist';
       render();
       showSites();
     } catch (e) {
@@ -404,8 +426,16 @@
   document.getElementById('src-search').addEventListener('input', function(){ shown = PAGE; render(); });
   document.getElementById('src-hide-zero').addEventListener('change', function(){ shown = PAGE; render(); });
   document.getElementById('src-hide-excl').addEventListener('change', function(){ shown = PAGE; render(); });
-  document.getElementById('src-load-more').addEventListener('click', function(){ shown += PAGE; render(); });
-  document.getElementById('src-show-all').addEventListener('click', function(){ shown = 100000; render(); });
+  document.getElementById('src-site-scroller').addEventListener('scroll', function(){
+    const scroller = this;
+    if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 120) return;
+    const total = filteredRows().length;
+    if (shown >= total) return;
+    const y = scroller.scrollTop;
+    shown += PAGE;
+    render({append: true});
+    scroller.scrollTop = y;
+  });
   document.getElementById('src-select-recs').addEventListener('click', function(){
     recs.forEach(function(r){ if (r.site_id) excluded.add(String(r.site_id)); });
     render();

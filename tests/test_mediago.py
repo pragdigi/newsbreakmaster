@@ -1517,6 +1517,16 @@ class MediaGoSourcesApiTest(unittest.TestCase):
         self.assertNotIn("Select flagged", html)
         self.assertNotIn("src-flag-losers", html)
         self.assertNotIn(" · '+flagged+' flagged", html)
+        self.assertIn("src-site-scroller", html)
+        self.assertIn("src-site-row", html)
+        self.assertIn("src-selected", html)
+        self.assertIn("Exclude selected", html)
+        self.assertIn("const PAGE = 80", html)
+        self.assertNotIn("src-show-all", html)
+        self.assertNotIn("src-load-more", html)
+        self.assertIn(".src-site-scroller", css)
+        self.assertIn("overflow-y: auto", css)
+        self.assertIn("max-height", css)
 
 
 if __name__ == "__main__":

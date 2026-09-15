@@ -891,29 +891,141 @@ class MediaGoSourceCutRecommendationsTest(unittest.TestCase):
         ]
         recs = recommend_sites_to_cut(rows, target_cpa=40.0)
         ids = [r["site_id"] for r in recs]
-        self.assertEqual(ids, ["a", "b"])
+        self.assertEqual(ids, ["a"])
         self.assertEqual(recs[0]["rule"], "high_cpa")
         self.assertIn("CPA $82 vs target $40", recs[0]["reason"])
         self.assertIn("$120 spend", recs[0]["reason"])
-        self.assertEqual(recs[1]["rule"], "no_conv")
-        self.assertIn("0 conversions", recs[1]["reason"])
-        self.assertIn("$25 spend", recs[1]["reason"])
 
-    def test_recommend_works_without_target_cpa_for_no_conv_only(self):
+    def test_recommend_skips_sites_below_one_x_target_cpa_spend(self):
         from platforms.mediago import recommend_sites_to_cut
 
-        rows = [
-            {"site_id": "1", "site_name": "dead.com", "spend": 30, "conversions": 0, "cpa": None},
-            {"site_id": "2", "site_name": "pricey.com", "spend": 200, "conversions": 2, "cpa": 100},
-        ]
-        recs = recommend_sites_to_cut(rows, target_cpa=None)
-        self.assertEqual([r["site_id"] for r in recs], ["1"])
+        recs = recommend_sites_to_cut(
+            [
+                {
+                    "site_id": "early",
+                    "site_name": "early.com",
+                    "spend": 15,
+                    "conversions": 0,
+                    "cpa": None,
+                },
+                {
+                    "site_id": "hot",
+                    "site_name": "hot.com",
+                    "spend": 25,
+                    "conversions": 0.1,
+                    "cpa": 250,
+                },
+                {
+                    "site_id": "ready",
+                    "site_name": "dead.com",
+                    "spend": 40,
+                    "conversions": 0,
+                    "cpa": None,
+                },
+            ],
+            target_cpa=40.0,
+        )
+        self.assertEqual([r["site_id"] for r in recs], ["ready"])
         self.assertEqual(recs[0]["rule"], "no_conv")
+
+    def test_recommend_skips_buzzday_under_one_x_tcpa(self):
+        from platforms.mediago import recommend_sites_to_cut
+
+        recs = recommend_sites_to_cut(
+            [
+                {
+                    "site_id": "sliide",
+                    "site_name": "sliide.com",
+                    "spend": 107.96,
+                    "conversions": 1,
+                    "cpa": 107.96,
+                },
+                {
+                    "site_id": "cricket",
+                    "site_name": "cricket.get-moment.com",
+                    "spend": 65.32,
+                    "conversions": 0,
+                    "cpa": None,
+                },
+                {
+                    "site_id": "buzzday",
+                    "site_name": "buzzday.info",
+                    "spend": 33.15,
+                    "conversions": 0,
+                    "cpa": None,
+                },
+            ],
+            target_cpa=44.33,
+        )
+        names = [r["site_name"] for r in recs]
+        self.assertEqual(names, ["sliide.com", "cricket.get-moment.com"])
+        self.assertNotIn("buzzday.info", names)
+
+    def test_gemini_skips_recs_below_one_x_spend(self):
+        from platforms.mediago import gemini_cut_note
+
+        seen = {}
+
+        def capture(prompt):
+            seen["prompt"] = prompt
+            return "ranked"
+
+        note = gemini_cut_note(
+            [
+                {
+                    "site_id": "buzz",
+                    "site_name": "buzzday.info",
+                    "reason": "0 conversions, $33.15 spend",
+                    "spend": 33.15,
+                }
+            ],
+            target_cpa=44.33,
+            call_gemini=capture,
+        )
+        self.assertIsNone(note)
+        self.assertEqual(seen, {})
+
+    def test_recommend_skips_when_target_cpa_missing(self):
+        from platforms.mediago import recommend_sites_to_cut
+
+        recs = recommend_sites_to_cut(
+            [
+                {"site_id": "1", "site_name": "dead.com", "spend": 30, "conversions": 0, "cpa": None},
+                {"site_id": "2", "site_name": "pricey.com", "spend": 200, "conversions": 2, "cpa": 100},
+            ],
+            target_cpa=None,
+        )
+        self.assertEqual(recs, [])
+
+    def test_gemini_prompt_mentions_one_x_spend_floor(self):
+        from platforms.mediago import gemini_cut_note
+
+        seen = {}
+
+        def capture(prompt):
+            seen["prompt"] = prompt
+            return "ranked"
+
+        gemini_cut_note(
+            [{
+                "site_id": "a",
+                "site_name": "msn.com",
+                "reason": "CPA $82 vs target $40",
+                "spend": 120,
+            }],
+            target_cpa=40.0,
+            call_gemini=capture,
+        )
+        blob = (seen.get("prompt") or "").lower()
+        self.assertIn("1", blob)
+        self.assertTrue("target cpa" in blob or "tcpa" in blob)
+        self.assertTrue("spend" in blob)
+        self.assertTrue("1×" in (seen.get("prompt") or "") or "1x" in blob)
 
     def test_gemini_note_skipped_without_key(self):
         from platforms.mediago import gemini_cut_note
 
-        recs = [{"site_id": "a", "reason": "CPA $82 vs target $40, $120 spend"}]
+        recs = [{"site_id": "a", "reason": "CPA $82 vs target $40, $120 spend", "spend": 120}]
         with patch.dict(os.environ, {"GEMINI_API_KEY": "", "GOOGLE_GENAI_API_KEY": ""}, clear=False):
             os.environ.pop("GEMINI_API_KEY", None)
             os.environ.pop("GOOGLE_GENAI_API_KEY", None)
@@ -923,7 +1035,7 @@ class MediaGoSourceCutRecommendationsTest(unittest.TestCase):
     def test_gemini_note_uses_injected_caller(self):
         from platforms.mediago import gemini_cut_note
 
-        recs = [{"site_id": "a", "site_name": "msn.com", "reason": "CPA $82 vs target $40"}]
+        recs = [{"site_id": "a", "site_name": "msn.com", "reason": "CPA $82 vs target $40", "spend": 120}]
         note = gemini_cut_note(
             recs,
             target_cpa=40.0,
@@ -1201,6 +1313,52 @@ class MediaGoSourcesApiTest(unittest.TestCase):
             self.assertIsNone(data.get("gemini_note") or None)
             self.assertFalse(data.get("auto_blocked"))
 
+    def test_report_omits_sites_under_one_x_target_cpa_spend(self):
+        from tests.test_ai_studio import _TempStorage
+
+        class FakeAdapter:
+            platform = "mediago"
+            label = "MediaGo"
+
+            def get_campaigns(self, account_id):
+                return [{"id": "c1", "name": "Native", "status": "on", "target_cpa": 44.33}]
+
+            def fetch_campaign_site_report_rows(self, account_id, campaign_id, start, end):
+                return [
+                    {
+                        "site_id": "sliide",
+                        "site_name": "sliide.com",
+                        "spend": 107.96,
+                        "click": 40,
+                        "conversion": 1,
+                    },
+                    {
+                        "site_id": "cricket",
+                        "site_name": "cricket.get-moment.com",
+                        "spend": 65.32,
+                        "click": 20,
+                        "conversion": 0,
+                    },
+                    {
+                        "site_id": "buzzday",
+                        "site_name": "buzzday.info",
+                        "spend": 33.15,
+                        "click": 10,
+                        "conversion": 0,
+                    },
+                ]
+
+        with _TempStorage():
+            client = self._client(FakeAdapter())
+            resp = client.get(
+                "/api/sources/report?account_id=acc1&days=7&campaign_id=c1"
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            names = [r["site_name"] for r in data["recommendations"]]
+            self.assertEqual(names, ["sliide.com", "cricket.get-moment.com"])
+            self.assertNotIn("buzzday.info", names)
+
     def test_apply_campaign_block_persists_campaign_exclusions(self):
         from tests.test_ai_studio import _TempStorage
 
@@ -1287,6 +1445,16 @@ class MediaGoSourcesApiTest(unittest.TestCase):
         self.assertIn("Load campaigns", html)
         self.assertIn("Cut recommendations", html)
         self.assertIn("src-camp-list", html)
+        self.assertIn("src-rec-card", html)
+        self.assertIn("src-recs-help", html)
+        self.assertIn("1× target CPA", html)
+        self.assertIn("Rule-based vs target CPA", html)
+        self.assertIn("src-gemini-card", html)
+        self.assertLess(html.find('id="src-recs-list"'), html.find('id="src-gemini-card"'))
+        css = client.get("/static/style.css").get_data(as_text=True)
+        self.assertIn(".src-recs-help", css)
+        self.assertIn("word-spacing: 0.12em", css)
+        self.assertIn(".src-rec-card", css)
 
 
 if __name__ == "__main__":

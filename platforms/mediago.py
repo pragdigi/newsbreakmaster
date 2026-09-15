@@ -50,9 +50,8 @@ def _cache_set(key: tuple, rows: List[Dict[str, Any]]) -> None:
     with _REPORT_CACHE_LOCK:
         _REPORT_CACHE[key] = (time.time(), list(rows))
 
-DEFAULT_CUT_OVER_MULTIPLE = 1.5
-DEFAULT_CUT_OVER_SPEND_FLOOR = 20.0
-DEFAULT_CUT_NO_CONV_SPEND_FLOOR = 10.0
+DEFAULT_CUT_OVER_MULTIPLE = 1.0
+DEFAULT_CUT_SPEND_MULTIPLE = 1.0
 
 # Create-campaign ``creative_type``: native (API default) or display.
 # Display ``img`` must be one of these exact pixel sizes (GIF allowed).
@@ -313,15 +312,28 @@ def recommend_sites_to_cut(
     target_cpa: Optional[float],
     *,
     over_multiple: float = DEFAULT_CUT_OVER_MULTIPLE,
-    over_spend_floor: float = DEFAULT_CUT_OVER_SPEND_FLOOR,
-    no_conv_spend_floor: float = DEFAULT_CUT_NO_CONV_SPEND_FLOOR,
+    spend_multiple: float = DEFAULT_CUT_SPEND_MULTIPLE,
+    over_spend_floor: Optional[float] = None,
+    no_conv_spend_floor: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
-    """Deterministic cut list: high CPA vs target, or spend with no conversions.
+    """Deterministic cut list vs campaign target CPA.
 
-    Always computed in-process so recommendations work without Gemini.
+    Hard floor: spend must be at least ``spend_multiple`` × target CPA
+    (default 1×). Early spend with no conversion is not a cut. Also requires
+    CPA above target (× ``over_multiple``, default 1×) or zero conversions.
+
+    Without a target CPA, returns no recommendations.
     Does not apply blocks — callers must confirm.
     """
     target = _num(target_cpa)
+    if not target or target <= 0:
+        return []
+    min_spend = target * (spend_multiple if spend_multiple and spend_multiple > 0 else 1.0)
+    if over_spend_floor is not None:
+        min_spend = max(min_spend, float(over_spend_floor))
+    if no_conv_spend_floor is not None:
+        min_spend = max(min_spend, float(no_conv_spend_floor))
+    cpa_bar = target * (over_multiple if over_multiple and over_multiple > 0 else 1.0)
     recs: List[Dict[str, Any]] = []
     seen = set()
     for raw in rows:
@@ -331,6 +343,8 @@ def recommend_sites_to_cut(
         if not sid or sid in seen:
             continue
         spend = _num(raw.get("spend")) or 0.0
+        if spend < min_spend:
+            continue
         conv = _num(raw.get("conversions") or raw.get("conversion")) or 0.0
         cpa = _num(raw.get("cpa"))
         if cpa is None and conv > 0 and spend:
@@ -338,16 +352,13 @@ def recommend_sites_to_cut(
         name = raw.get("site_name") or raw.get("domain_name") or sid
         rule = ""
         reason = ""
-        if conv <= 0 and spend >= no_conv_spend_floor:
+        if conv <= 0:
             rule = "no_conv"
-            reason = f"0 conversions, {_usd_label(spend)} spend"
-        elif (
-            target
-            and target > 0
-            and cpa is not None
-            and cpa > target * over_multiple
-            and spend >= over_spend_floor
-        ):
+            reason = (
+                f"0 conversions, {_usd_label(spend)} spend "
+                f"(≥ 1× target {_usd_label(target)})"
+            )
+        elif cpa is not None and cpa > cpa_bar:
             rule = "high_cpa"
             reason = (
                 f"CPA {_usd_label(cpa)} vs target {_usd_label(target)}, "
@@ -380,7 +391,16 @@ def gemini_cut_note(
     call_gemini: Optional[Callable[[str], Optional[str]]] = None,
 ) -> Optional[str]:
     """Optional short ranked note. Returns None without a key or on failure."""
-    if not recs:
+    target = _num(target_cpa)
+    eligible: List[Dict[str, Any]] = []
+    for raw in recs:
+        if not isinstance(raw, dict):
+            continue
+        spend = _num(raw.get("spend")) or 0.0
+        if target and target > 0 and spend < target:
+            continue
+        eligible.append(raw)
+    if not eligible:
         return None
     caller = call_gemini
     if caller is None:
@@ -394,17 +414,20 @@ def gemini_cut_note(
             return None
         caller = lambda prompt, _key=key: _gemini_cut_text(prompt, _key)
     lines = []
-    for r in recs[:12]:
+    for r in eligible[:12]:
         lines.append(
             f"- {r.get('site_name') or r.get('site_id')}: {r.get('reason') or r.get('rule')}"
         )
     prompt = (
-        "You are helping a media buyer cut losing publishers. "
+        "You are helping a media buyer rank losing publishers. "
+        "Hard floor: every listed site already spent at least 1× the campaign "
+        "target CPA. Never recommend cutting a site below that spend floor. "
         f"Campaign target CPA is {_usd_label(target_cpa)}. "
         "Here are rule-based cut candidates:\n"
         + "\n".join(lines)
-        + "\nWrite 1-3 short sentences ranking which to cut first and why. "
-        "Do not invent sites. Do not tell the user to auto-block."
+        + "\nWrite 1-3 complete sentences ranking which listed site to cut "
+        "first and why. Do not invent sites. Do not output a domain heading "
+        "or a colon-only label. Do not tell the user to auto-block."
     )
     try:
         text = caller(prompt)

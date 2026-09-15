@@ -439,8 +439,36 @@ code { background: #243044; padding: 2px 6px; border-radius: 4px; font-size: 0.8
   padding: 8px 10px;
 }
 .src-recs { margin-bottom: 14px; }
-.src-recs ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.src-recs li { padding: 10px 12px; border: 1px solid #3a2a2a; border-radius: 8px; background: rgba(248,113,113,0.08); color: #e7ecf3; }
+.src-recs-help {
+  margin: 0 0 12px;
+  word-spacing: 0.12em;
+  letter-spacing: normal;
+  white-space: normal;
+}
+.src-recs-help span { margin-right: 0.4em; }
+.src-rec-card {
+  background: #152033;
+  border: 1px solid #3a2a2a;
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: var(--text);
+}
+.src-gemini-card {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid #2d3a4d;
+  border-radius: 10px;
+  background: #152033;
+}
+.src-gemini-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-transform: none;
+}
+.src-gemini-card p { margin: 0; word-spacing: normal; letter-spacing: normal; }
 .src-crumb { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .src-check { display: flex; align-items: flex-start; gap: 8px; }
 .src-more { margin-top: 12px; }

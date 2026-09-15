@@ -75,12 +75,17 @@
     </div>
     <div class="src-recs" id="src-recs-card">
       <h3 style="margin:0 0 8px;">Cut recommendations</h3>
-      <p class="nb-muted" style="margin:0 0 12px;">
-        Rule-based vs target CPA. Confirm before excluding.
-        {% if has_gemini %}Gemini adds a short ranking note when candidates exist.{% endif %}
+      <p class="nb-muted src-recs-help">
+        <span>Rule-based vs target CPA.</span>
+        <span>Need at least 1× target CPA in spend before a cut rec.</span>
+        <span>Confirm before excluding.</span>
+        {% if has_gemini %}<span>Gemini adds a short ranking note when candidates exist.</span>{% endif %}
       </p>
-      <p id="src-gemini-note" class="nb-hint" hidden></p>
-      <ul id="src-recs-list"></ul>
+      <div id="src-recs-list" class="src-card-list"></div>
+      <div id="src-gemini-card" class="src-gemini-card" hidden>
+        <div class="src-gemini-label">AI ranking note</div>
+        <p id="src-gemini-note"></p>
+      </div>
       <p id="src-recs-empty" class="nb-muted">No cut candidates for this window.</p>
     </div>
     <div class="src-filters">
@@ -230,17 +235,50 @@
     }).sort(function(a,b){ return (Number(b.spend)||0) - (Number(a.spend)||0); });
   }
 
+  function recSpend(r){
+    if (!r) return 0;
+    if (r.spend != null && r.spend !== '') {
+      const n = Number(r.spend);
+      if (!isNaN(n)) return n;
+    }
+    const id = String(r.site_id || '');
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].site_id) === id) return Number(rows[i].spend) || 0;
+    }
+    return 0;
+  }
+  function recsMeetingFloor(list){
+    const floor = Number(targetCpa);
+    if (!(floor > 0)) return [];
+    return (list || []).filter(function(r){ return recSpend(r) >= floor; });
+  }
+  function showGeminiNote(text){
+    const card = document.getElementById('src-gemini-card');
+    const noteEl = document.getElementById('src-gemini-note');
+    const raw = String(text || '').trim();
+    const domainOnly = /^[a-z0-9.-]+\.[a-z]{2,}:?\s*$/i.test(raw);
+    if (!raw || domainOnly) {
+      card.hidden = true;
+      noteEl.textContent = '';
+      return;
+    }
+    card.hidden = false;
+    noteEl.textContent = raw;
+  }
   function renderRecs(){
     const list = document.getElementById('src-recs-list');
     const empty = document.getElementById('src-recs-empty');
+    const visible = recsMeetingFloor(recs);
+    recs = visible;
     list.innerHTML = '';
-    if (!recs.length) { empty.hidden = false; return; }
+    if (!visible.length) { empty.hidden = false; return; }
     empty.hidden = true;
-    recs.forEach(function(r){
-      const li = document.createElement('li');
-      li.innerHTML = '<strong>'+escapeHtml(r.site_name||r.site_id)+'</strong>' +
-        '<div class="nb-muted" style="font-size:12px;margin-top:4px;">'+escapeHtml(r.reason||'')+'</div>';
-      list.appendChild(li);
+    visible.forEach(function(r){
+      const card = document.createElement('div');
+      card.className = 'src-rec-card';
+      card.innerHTML = '<div class="src-site-name">'+escapeHtml(r.site_name||r.site_id)+'</div>' +
+        '<div class="nb-muted" style="font-size:12px;margin-top:4px;letter-spacing:normal;word-spacing:normal;">'+escapeHtml(r.reason||'')+'</div>';
+      list.appendChild(card);
     });
   }
 
@@ -331,14 +369,12 @@
         setStatus('Window '+body.start+' → '+body.end);
         rows = body.rows || [];
       }
-      recs = body.recommendations || [];
       targetCpa = body.target_cpa != null ? Number(body.target_cpa) : (campaign && campaign.target_cpa != null ? Number(campaign.target_cpa) : null);
+      recs = recsMeetingFloor(body.recommendations || []);
       excluded = new Set();
       (body.exclusions || []).forEach(function(s){ if (s.site_id) excluded.add(String(s.site_id)); });
       rows.forEach(function(r){ if (r.excluded) excluded.add(String(r.site_id)); });
-      const noteEl = document.getElementById('src-gemini-note');
-      if (body.gemini_note) { noteEl.hidden = false; noteEl.textContent = body.gemini_note; }
-      else { noteEl.hidden = true; noteEl.textContent = ''; }
+      showGeminiNote(body.gemini_note);
       const applyBtn = document.getElementById('src-apply');
       if (applyBtn) applyBtn.textContent = cid ? 'Exclude on campaign' : 'Push account blocklist';
       render();

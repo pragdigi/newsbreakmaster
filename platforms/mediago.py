@@ -13,12 +13,42 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Any, BinaryIO, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from mediago_api import MediaGoClient
 
 logger = logging.getLogger(__name__)
+
+_REPORT_CACHE: Dict[tuple, tuple[float, List[Dict[str, Any]]]] = {}
+_REPORT_CACHE_LOCK = threading.Lock()
+_REPORT_CACHE_TTL_S = 180.0
+_FETCH_WORKERS = 4
+
+
+def clear_mediago_report_cache() -> None:
+    with _REPORT_CACHE_LOCK:
+        _REPORT_CACHE.clear()
+
+
+def _cache_get(key: tuple) -> Optional[List[Dict[str, Any]]]:
+    with _REPORT_CACHE_LOCK:
+        hit = _REPORT_CACHE.get(key)
+        if not hit:
+            return None
+        ts, rows = hit
+        if time.time() - ts > _REPORT_CACHE_TTL_S:
+            _REPORT_CACHE.pop(key, None)
+            return None
+        return list(rows)
+
+
+def _cache_set(key: tuple, rows: List[Dict[str, Any]]) -> None:
+    with _REPORT_CACHE_LOCK:
+        _REPORT_CACHE[key] = (time.time(), list(rows))
 
 DEFAULT_CUT_OVER_MULTIPLE = 1.5
 DEFAULT_CUT_OVER_SPEND_FLOOR = 20.0
@@ -103,6 +133,47 @@ def _usd_to_cents(amount: Any) -> Optional[int]:
     if n is None:
         return None
     return int(round(n * 100))
+
+
+def normalize_mediago_status(*values: Any) -> str:
+    """Map MediaGo campaign status to ``on`` / ``paused`` / ```` (unknown).
+
+    Create/status APIs: ``1`` = active, ``0`` = paused. The campaign *list*
+    endpoint only returns id/name/ads, so missing status must stay unknown
+    instead of defaulting to off.
+    """
+    on_names = {"1", "on", "active", "opened", "open", "enabled", "true"}
+    paused_names = {"0", "off", "paused", "closed", "disabled", "pause", "false"}
+    for raw in values:
+        if raw is None or raw == "":
+            continue
+        if isinstance(raw, bool):
+            return "on" if raw else "paused"
+        if isinstance(raw, str):
+            key = raw.strip().lower()
+            if key in on_names:
+                return "on"
+            if key in paused_names:
+                return "paused"
+            continue
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n == 1:
+            return "on"
+        if n == 0:
+            return "paused"
+    return ""
+
+
+def mediago_status_label(status: Any) -> str:
+    s = normalize_mediago_status(status)
+    if s == "on":
+        return "On"
+    if s == "paused":
+        return "Paused"
+    return "Unknown"
 
 
 def _usd_label(n: Optional[float]) -> str:
@@ -388,10 +459,14 @@ def rollup_campaign_source_stats(
         cid = str(c.get("id") or c.get("campaign_id") or "").strip()
         if not cid:
             continue
+        status = normalize_mediago_status(
+            c.get("status"), c.get("enable"), c.get("campaign_status")
+        )
         buckets[cid] = {
             "id": cid,
             "name": c.get("name") or c.get("campaign_name") or "",
-            "status": c.get("status") or "",
+            "status": status,
+            "status_locked": bool(status),
             "target_cpa": _num(c.get("target_cpa")),
             "spend": 0.0,
             "clicks": 0,
@@ -408,7 +483,8 @@ def rollup_campaign_source_stats(
             {
                 "id": cid,
                 "name": r.get("name") or r.get("campaign_name") or "",
-                "status": r.get("status") or "",
+                "status": "",
+                "status_locked": False,
                 "target_cpa": _num(r.get("target_cpa")),
                 "spend": 0.0,
                 "clicks": 0,
@@ -420,12 +496,27 @@ def rollup_campaign_source_stats(
         b["spend"] += _num(r.get("spend")) or 0.0
         b["clicks"] += int(_num(r.get("clicks") or r.get("click")) or 0)
         b["conversions"] += _num(r.get("conversions") or r.get("conversion")) or 0.0
+        if not b.get("status_locked"):
+            row_status = normalize_mediago_status(r.get("status"))
+            if row_status == "on":
+                b["status"] = "on"
+            elif row_status == "paused" and not b.get("status"):
+                b["status"] = "paused"
     out: List[Dict[str, Any]] = []
     for b in buckets.values():
         spend = b["spend"]
         conv = b["conversions"]
         cpa = (spend / conv) if conv > 0 else None
-        out.append({**b, "cpa": cpa, **_vs_target_fields(cpa, b.get("target_cpa"))})
+        status = b.get("status") or ""
+        out.append(
+            {
+                **{k: v for k, v in b.items() if k != "status_locked"},
+                "cpa": cpa,
+                "status": status,
+                "status_label": mediago_status_label(status),
+                **_vs_target_fields(cpa, b.get("target_cpa")),
+            }
+        )
     out.sort(key=lambda r: r["spend"], reverse=True)
     return out
 
@@ -568,8 +659,37 @@ class MediaGoAdapter:
     # Hierarchy reads
     # ------------------------------------------------------------------
     def get_campaigns(self, account_id: str) -> List[Dict[str, Any]]:
-        rows = self.client.list_campaigns(account_id)
-        return [self._normalize_campaign(c, account_id) for c in rows]
+        rows = [self._normalize_campaign(c, account_id) for c in self.client.list_campaigns(account_id)]
+        missing = [c for c in rows if not c.get("status") and c.get("id")]
+        if not missing or not hasattr(self.client, "get_campaign_detail"):
+            return rows
+        by_id = {c["id"]: c for c in rows}
+        ids = [c["id"] for c in missing]
+        details: List[Dict[str, Any]] = []
+        for i in range(0, len(ids), 50):
+            chunk = ids[i : i + 50]
+            try:
+                details.extend(self.client.get_campaign_detail(account_id, chunk) or [])
+            except Exception as exc:
+                logger.warning("mediago campaign detail hydrate failed: %s", exc)
+        for d in details:
+            if not isinstance(d, dict):
+                continue
+            extra = self._normalize_campaign(d, account_id)
+            cid = extra.get("id")
+            if not cid or cid not in by_id:
+                continue
+            cur = by_id[cid]
+            if extra.get("status"):
+                cur["status"] = extra["status"]
+                cur["enable"] = extra.get("enable")
+                cur["status_label"] = extra.get("status_label")
+            if extra.get("target_cpa") is not None and cur.get("target_cpa") is None:
+                cur["target_cpa"] = extra["target_cpa"]
+            if extra.get("daily_budget") is not None:
+                cur["daily_budget"] = extra["daily_budget"]
+                cur["daily_budget_cents"] = extra.get("daily_budget_cents")
+        return rows
 
     def get_ad_groups(self, account_id: str, campaign_id: str) -> List[Dict[str, Any]]:
         return []
@@ -686,21 +806,38 @@ class MediaGoAdapter:
         timezone: str = "est",
     ) -> List[Dict[str, Any]]:
         """Pull site-dimension rows, day-by-day (account API max window is 1 day)."""
-        rows: List[Dict[str, Any]] = []
+        key = ("account", str(account_id), start.isoformat(), end.isoformat(), timezone)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        windows: List[Tuple[str, str]] = []
         day = start
-        # Inclusive end; cap the loop at 31 days to stay polite to QPS=10.
         guard = 0
         while day <= end and guard < 31:
             ds = day.strftime("%Y-%m-%d")
-            rows.extend(
-                list(
-                    self.client.account_site_report(
-                        account_id, ds, ds, timezone=timezone
-                    )
-                )
-            )
+            windows.append((ds, ds))
             day += timedelta(days=1)
             guard += 1
+
+        def _one(window: Tuple[str, str]) -> List[Dict[str, Any]]:
+            ds, de = window
+            last_err: Optional[Exception] = None
+            for attempt in range(3):
+                try:
+                    return list(
+                        self.client.account_site_report(
+                            account_id, ds, de, timezone=timezone
+                        )
+                    )
+                except Exception as exc:
+                    last_err = exc
+                    time.sleep(0.35 * (attempt + 1))
+            if last_err:
+                raise last_err
+            return []
+
+        rows = self._run_window_fetches(windows, _one)
+        _cache_set(key, rows)
         return rows
 
     def fetch_campaign_site_report_rows(
@@ -713,25 +850,63 @@ class MediaGoAdapter:
         timezone: str = "est",
     ) -> List[Dict[str, Any]]:
         """Pull campaign site rows in ≤7-day windows (API max), cap 31 days."""
-        rows: List[Dict[str, Any]] = []
+        key = (
+            "campaign",
+            str(account_id),
+            str(campaign_id),
+            start.isoformat(),
+            end.isoformat(),
+            timezone,
+        )
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        windows: List[Tuple[str, str]] = []
         cursor = start
         consumed = 0
         while cursor <= end and consumed < 31:
             remaining = min(7, 31 - consumed)
             chunk_end = min(cursor + timedelta(days=remaining - 1), end)
-            rows.extend(
-                list(
-                    self.client.campaign_site_report(
-                        account_id,
-                        campaign_id,
-                        cursor.strftime("%Y-%m-%d"),
-                        chunk_end.strftime("%Y-%m-%d"),
-                        timezone=timezone,
-                    )
-                )
-            )
+            windows.append((cursor.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
             consumed += (chunk_end - cursor).days + 1
             cursor = chunk_end + timedelta(days=1)
+
+        def _one(window: Tuple[str, str]) -> List[Dict[str, Any]]:
+            ds, de = window
+            last_err: Optional[Exception] = None
+            for attempt in range(3):
+                try:
+                    return list(
+                        self.client.campaign_site_report(
+                            account_id, campaign_id, ds, de, timezone=timezone
+                        )
+                    )
+                except Exception as exc:
+                    last_err = exc
+                    time.sleep(0.35 * (attempt + 1))
+            if last_err:
+                raise last_err
+            return []
+
+        rows = self._run_window_fetches(windows, _one)
+        _cache_set(key, rows)
+        return rows
+
+    @staticmethod
+    def _run_window_fetches(
+        windows: Sequence[Tuple[str, str]],
+        fetch_one: Callable[[Tuple[str, str]], List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        if not windows:
+            return []
+        if len(windows) == 1:
+            return list(fetch_one(windows[0]) or [])
+        rows: List[Dict[str, Any]] = []
+        workers = min(_FETCH_WORKERS, len(windows))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {pool.submit(fetch_one, w): w for w in windows}
+            for fut in as_completed(futs):
+                rows.extend(fut.result() or [])
         return rows
 
     # ------------------------------------------------------------------
@@ -861,14 +1036,17 @@ class MediaGoAdapter:
     @staticmethod
     def _normalize_campaign(c: Dict[str, Any], account_id: str) -> Dict[str, Any]:
         cid = str(c.get("campaign_id") or c.get("id") or "")
-        status_raw = c.get("status")
-        enabled = status_raw in (1, "1", True, "active", "ACTIVE")
+        status = normalize_mediago_status(
+            c.get("status"), c.get("enable"), c.get("campaign_status")
+        )
+        enabled = status == "on"
         return {
             "id": cid,
             "name": c.get("campaign_name") or c.get("name") or "",
             "ad_account_id": str(c.get("account_id") or account_id),
-            "status": "on" if enabled else "off",
-            "enable": enabled,
+            "status": status,
+            "status_label": mediago_status_label(status),
+            "enable": enabled if status else None,
             "daily_budget": c.get("daily_cap"),
             "daily_budget_cents": _usd_to_cents(c.get("daily_cap")),
             "objective": c.get("objective"),
@@ -908,7 +1086,7 @@ class MediaGoAdapter:
         if status_raw in (1, "1"):
             status = "on"
         elif status_raw in (0, "0"):
-            status = "off"
+            status = "paused"
         events: Dict[str, float] = {}
         for key, dest in (
             ("cv_purchase", "purchase"),
@@ -962,6 +1140,9 @@ __all__ = [
     "recommend_sites_to_cut",
     "gemini_cut_note",
     "rollup_campaign_source_stats",
+    "normalize_mediago_status",
+    "mediago_status_label",
+    "clear_mediago_report_cache",
     "normalize_account_pixel",
     "optimization_type_for_conversion",
 ]

@@ -1178,6 +1178,21 @@ def sources_page():
 
 
 def _sources_date_window():
+    start_s = (request.args.get("start") or "").strip()
+    end_s = (request.args.get("end") or "").strip()
+    if start_s and end_s:
+        try:
+            start = date.fromisoformat(start_s)
+            end = date.fromisoformat(end_s)
+        except ValueError:
+            start = end = None  # type: ignore
+        else:
+            if start > end:
+                start, end = end, start
+            if (end - start).days > 30:
+                start = end - timedelta(days=30)
+            days = (end - start).days + 1
+            return start, end, days
     try:
         days = int(request.args.get("days") or 7)
     except (TypeError, ValueError):
@@ -1189,6 +1204,12 @@ def _sources_date_window():
 
 
 def _campaign_target_cpa(adapter, account_id: str, campaign_id: str) -> Optional[float]:
+    q = request.args.get("target_cpa")
+    if q not in (None, ""):
+        try:
+            return float(q)
+        except (TypeError, ValueError):
+            pass
     if not campaign_id or not hasattr(adapter, "get_campaigns"):
         return None
     try:

@@ -159,6 +159,29 @@ class MediaGoAdapterTest(unittest.TestCase):
         self.assertEqual(n["status"], "on")
         self.assertEqual(n["daily_budget_cents"], 5000)
 
+    def test_normalize_campaign_zero_is_paused_not_on(self):
+        from platforms.mediago import MediaGoAdapter
+
+        n = MediaGoAdapter._normalize_campaign(
+            {"campaign_id": "c1", "campaign_name": "Paused", "status": 0},
+            "acc",
+        )
+        self.assertEqual(n["status"], "paused")
+        self.assertEqual(n["status_label"], "Paused")
+        self.assertFalse(n["enable"])
+
+    def test_normalize_campaign_list_without_status_is_unknown(self):
+        from platforms.mediago import MediaGoAdapter
+
+        n = MediaGoAdapter._normalize_campaign(
+            {"campaign_id": "c1", "campaign_name": "No status field"},
+            "acc",
+        )
+        self.assertEqual(n["status"], "")
+        self.assertNotEqual(n["status"], "off")
+        self.assertNotEqual(n["status"], "on")
+        self.assertEqual(n["status_label"], "Unknown")
+
     def test_canonicalize_report(self):
         from platforms.mediago import MediaGoAdapter
 
@@ -948,10 +971,71 @@ class MediaGoCampaignSourceRollupTest(unittest.TestCase):
         self.assertAlmostEqual(by_id["c2"]["cpa"], 50.0)
         self.assertTrue(by_id["c2"]["over_target"])
 
+    def test_rollup_paused_zero_not_wiped_by_report_on(self):
+        from platforms.mediago import rollup_campaign_source_stats
+
+        rows = rollup_campaign_source_stats(
+            [{"id": "c1", "name": "A", "status": 0, "target_cpa": 40}],
+            [{"campaign_id": "c1", "spend": 10, "clicks": 2, "conversions": 0, "status": 1}],
+        )
+        self.assertEqual(rows[0]["status"], "paused")
+        self.assertEqual(rows[0]["status_label"], "Paused")
+
+    def test_rollup_fills_on_from_report_when_list_omits_status(self):
+        from platforms.mediago import rollup_campaign_source_stats
+
+        rows = rollup_campaign_source_stats(
+            [{"id": "c1", "name": "A", "target_cpa": 40}],
+            [{"campaign_id": "c1", "spend": 10, "clicks": 2, "conversions": 1, "status": 1}],
+        )
+        self.assertEqual(rows[0]["status"], "on")
+        self.assertEqual(rows[0]["status_label"], "On")
+
+    def test_get_campaigns_hydrates_status_from_detail(self):
+        from platforms.mediago import MediaGoAdapter
+
+        class _C:
+            def list_campaigns(self, account_id, **_k):
+                return [{"campaign_id": "c1", "campaign_name": "Live"}]
+
+            def get_campaign_detail(self, account_id, ids):
+                self.seen = (account_id, ids)
+                return [{"campaign_id": "c1", "status": 1, "target_cpa": 35}]
+
+        c = _C()
+        rows = MediaGoAdapter(c).get_campaigns("acc")
+        self.assertEqual(rows[0]["status"], "on")
+        self.assertEqual(rows[0]["target_cpa"], 35.0)
+        self.assertEqual(c.seen[0], "acc")
+
+    def test_site_report_cache_reuses_windows_within_ttl(self):
+        from datetime import date
+
+        from platforms.mediago import MediaGoAdapter, clear_mediago_report_cache
+
+        clear_mediago_report_cache()
+
+        class _C:
+            def __init__(self):
+                self.calls = []
+
+            def campaign_site_report(self, account_id, campaign_id, start, end, timezone="est"):
+                self.calls.append((start, end))
+                return [{"site_id": "1", "spend": 1, "click": 1, "conversion": 0}]
+
+        c = _C()
+        a = MediaGoAdapter(c)
+        a.fetch_campaign_site_report_rows("acc", "99", date(2026, 1, 1), date(2026, 1, 7))
+        a.fetch_campaign_site_report_rows("acc", "99", date(2026, 1, 1), date(2026, 1, 7))
+        self.assertEqual(len(c.calls), 1)
+        clear_mediago_report_cache()
+
     def test_fetch_campaign_site_report_chunks_seven_day_windows(self):
         from datetime import date
 
-        from platforms.mediago import MediaGoAdapter
+        from platforms.mediago import MediaGoAdapter, clear_mediago_report_cache
+
+        clear_mediago_report_cache()
 
         class _C:
             def __init__(self):
@@ -966,15 +1050,19 @@ class MediaGoCampaignSourceRollupTest(unittest.TestCase):
         rows = a.fetch_campaign_site_report_rows(
             "acc", "99", date(2026, 1, 1), date(2026, 1, 20)
         )
+        windows = {(call[2], call[3]) for call in c.calls}
         self.assertEqual(len(c.calls), 3)
-        self.assertEqual(c.calls[0][1], "99")
-        self.assertEqual(c.calls[0][2], "2026-01-01")
-        self.assertEqual(c.calls[0][3], "2026-01-07")
-        self.assertEqual(c.calls[1][2], "2026-01-08")
-        self.assertEqual(c.calls[1][3], "2026-01-14")
-        self.assertEqual(c.calls[2][2], "2026-01-15")
-        self.assertEqual(c.calls[2][3], "2026-01-20")
+        self.assertTrue(all(call[1] == "99" for call in c.calls))
+        self.assertEqual(
+            windows,
+            {
+                ("2026-01-01", "2026-01-07"),
+                ("2026-01-08", "2026-01-14"),
+                ("2026-01-15", "2026-01-20"),
+            },
+        )
         self.assertEqual(len(rows), 3)
+        clear_mediago_report_cache()
 
 
 class MediaGoCampaignExclusionsStorageTest(unittest.TestCase):
@@ -1198,7 +1286,7 @@ class MediaGoSourcesApiTest(unittest.TestCase):
         html = resp.get_data(as_text=True)
         self.assertIn("Load campaigns", html)
         self.assertIn("Cut recommendations", html)
-        self.assertIn("src-camp-table", html)
+        self.assertIn("src-camp-list", html)
 
 
 if __name__ == "__main__":

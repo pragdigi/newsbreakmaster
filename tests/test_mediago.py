@@ -1527,6 +1527,18 @@ class MediaGoSourcesApiTest(unittest.TestCase):
         self.assertIn(".src-site-scroller", css)
         self.assertIn("overflow-y: auto", css)
         self.assertIn("max-height", css)
+        self.assertIn("id=\"src-sort\"", html)
+        self.assertIn("id=\"src-sort-dir\"", html)
+        self.assertIn("id=\"src-cut-only\"", html)
+        self.assertIn("id=\"src-conv-filter\"", html)
+        self.assertIn("Cut recs only", html)
+        self.assertIn("value=\"spend\"", html)
+        self.assertIn("value=\"cpa\"", html)
+        self.assertIn("value=\"conversions\"", html)
+        self.assertIn("value=\"clicks\"", html)
+        self.assertIn("value=\"name\"", html)
+        self.assertIn("Has conversions", html)
+        self.assertIn("Zero conversions", html)
 
 
 if __name__ == "__main__":

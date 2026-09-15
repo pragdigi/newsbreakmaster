@@ -91,6 +91,27 @@
     <div class="src-list-head">
       <div class="src-filters">
         <input type="search" id="src-search" placeholder="Search sites" style="flex:1;min-width:160px;">
+        <label class="nb-muted">Sort
+          <select id="src-sort" class="nb-select src-mini-select">
+            <option value="spend" selected>Spend</option>
+            <option value="cpa">CPA</option>
+            <option value="conversions">Conversions</option>
+            <option value="clicks">Clicks</option>
+            <option value="name">Site name</option>
+          </select>
+        </label>
+        <select id="src-sort-dir" class="nb-select src-mini-select" title="Sort direction">
+          <option value="desc" selected>High → low</option>
+          <option value="asc">Low → high</option>
+        </select>
+        <label class="nb-muted">Conv
+          <select id="src-conv-filter" class="nb-select src-mini-select">
+            <option value="all" selected>All</option>
+            <option value="has">Has conversions</option>
+            <option value="zero">Zero conversions</option>
+          </select>
+        </label>
+        <label class="nb-muted"><input type="checkbox" id="src-cut-only"> Cut recs only</label>
         <label class="nb-muted"><input type="checkbox" id="src-hide-zero" checked> Hide $0 spend</label>
         <label class="nb-muted"><input type="checkbox" id="src-hide-excl"> Hide excluded</label>
       </div>
@@ -226,19 +247,71 @@
     document.getElementById('src-camp-summary').textContent = on ? (' · '+on+' on') : '';
   }
 
+  function recIdSet(){
+    const ids = {};
+    recsMeetingFloor(recs).forEach(function(r){ ids[String(r.site_id)] = true; });
+    return ids;
+  }
+  function sortValue(r, key){
+    if (key === 'name') return String(r.site_name || r.site_id || '').toLowerCase();
+    if (key === 'cpa') {
+      if (r.cpa == null || r.cpa === '') return null;
+      const n = Number(r.cpa);
+      return isNaN(n) ? null : n;
+    }
+    if (key === 'clicks') return Number(r.clicks) || 0;
+    if (key === 'conversions') return Number(r.conversions) || 0;
+    return Number(r.spend) || 0;
+  }
+  function syncSortDirLabels(){
+    const key = document.getElementById('src-sort').value;
+    const dir = document.getElementById('src-sort-dir');
+    if (!dir || dir.options.length < 2) return;
+    if (key === 'name') {
+      dir.options[0].textContent = 'Z → A';
+      dir.options[1].textContent = 'A → Z';
+    } else {
+      dir.options[0].textContent = 'High → low';
+      dir.options[1].textContent = 'Low → high';
+    }
+  }
   function filteredRows(){
     const q = (document.getElementById('src-search').value || '').trim().toLowerCase();
     const hideZero = document.getElementById('src-hide-zero').checked;
     const hideEx = document.getElementById('src-hide-excl').checked;
-    return rows.filter(function(r){
+    const cutOnly = document.getElementById('src-cut-only') && document.getElementById('src-cut-only').checked;
+    const convMode = (document.getElementById('src-conv-filter') || {}).value || 'all';
+    const sortBy = (document.getElementById('src-sort') || {}).value || 'spend';
+    const dir = ((document.getElementById('src-sort-dir') || {}).value || 'desc');
+    const recIds = cutOnly ? recIdSet() : null;
+    const list = rows.filter(function(r){
       if (hideZero && !(Number(r.spend) > 0)) return false;
       if (hideEx && excluded.has(String(r.site_id))) return false;
+      if (cutOnly && !recIds[String(r.site_id)]) return false;
+      const conv = Number(r.conversions) || 0;
+      if (convMode === 'has' && !(conv > 0)) return false;
+      if (convMode === 'zero' && conv > 0) return false;
       if (q) {
         const hay = ((r.site_name||'')+' '+(r.site_id||'')).toLowerCase();
         if (hay.indexOf(q) < 0) return false;
       }
       return true;
-    }).sort(function(a,b){ return (Number(b.spend)||0) - (Number(a.spend)||0); });
+    });
+    list.sort(function(a,b){
+      const av = sortValue(a, sortBy);
+      const bv = sortValue(b, sortBy);
+      if (sortBy === 'name') {
+        const cmp = String(av).localeCompare(String(bv));
+        return dir === 'asc' ? cmp : -cmp;
+      }
+      if (av == null && bv == null) return (Number(b.spend)||0) - (Number(a.spend)||0);
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const cmp = av - bv;
+      if (cmp !== 0) return dir === 'asc' ? cmp : -cmp;
+      return (Number(b.spend)||0) - (Number(a.spend)||0);
+    });
+    return list;
   }
 
   function recSpend(r){
@@ -423,9 +496,18 @@
     loadSites(c);
   }
 
-  document.getElementById('src-search').addEventListener('input', function(){ shown = PAGE; render(); });
-  document.getElementById('src-hide-zero').addEventListener('change', function(){ shown = PAGE; render(); });
-  document.getElementById('src-hide-excl').addEventListener('change', function(){ shown = PAGE; render(); });
+  function relist(){ shown = PAGE; render(); }
+  document.getElementById('src-search').addEventListener('input', relist);
+  document.getElementById('src-hide-zero').addEventListener('change', relist);
+  document.getElementById('src-hide-excl').addEventListener('change', relist);
+  document.getElementById('src-cut-only').addEventListener('change', relist);
+  document.getElementById('src-conv-filter').addEventListener('change', relist);
+  document.getElementById('src-sort').addEventListener('change', function(){
+    syncSortDirLabels();
+    relist();
+  });
+  document.getElementById('src-sort-dir').addEventListener('change', relist);
+  syncSortDirLabels();
   document.getElementById('src-site-scroller').addEventListener('scroll', function(){
     const scroller = this;
     if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 120) return;

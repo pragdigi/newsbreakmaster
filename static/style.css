@@ -438,6 +438,12 @@ code { background: #243044; padding: 2px 6px; border-radius: 4px; font-size: 0.8
   border-radius: 8px;
   padding: 8px 10px;
 }
+.src-mini-select {
+  width: auto;
+  min-width: 118px;
+  padding: 8px 10px;
+  margin-left: 6px;
+}
 .src-recs { margin-bottom: 14px; }
 .src-recs-help {
   margin: 0 0 12px;

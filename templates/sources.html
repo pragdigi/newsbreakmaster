@@ -38,8 +38,6 @@
         <option value="1">1 day</option>
         <option value="3">3 days</option>
         <option value="7" selected>7 days</option>
-        <option value="14">14 days</option>
-        <option value="31">31 days</option>
       </select>
     </label>
     <button type="button" class="nb-btn nb-btn-primary" id="src-load">Load campaigns</button>
@@ -52,6 +50,7 @@
     {{ active_platform_label }} does not expose a site-dimension report yet.
   </p>
   {% endif %}
+  <p class="nb-muted" style="margin:8px 0 0;">Site reports use at most 7 days (one campaign at a time) to stay under MediaGo rate limits.</p>
   <p id="src-status" class="nb-muted"></p>
 </div>
 
@@ -199,7 +198,11 @@
     if (start && end) return 'start='+encodeURIComponent(start)+'&end='+encodeURIComponent(end);
     return 'days='+encodeURIComponent(document.getElementById('src-days').value || '7');
   }
-  function setStatus(t){ document.getElementById('src-status').textContent = t || ''; }
+  function friendlyStatus(body, fallback){
+    const e = String((body && body.error) || fallback || '');
+    if (/429|operatetoomuch|rate.?limit/i.test(e)) return 'MediaGo rate-limited — wait a minute and retry';
+    return e;
+  }
 
   function statusPill(c){
     const key = String(c.status || '').toLowerCase();
@@ -462,13 +465,9 @@
       if (campaign && campaign.target_cpa != null) url += '&target_cpa='+encodeURIComponent(campaign.target_cpa);
       const res = await fetch(url);
       const body = await res.json();
-      if (!body.ok && body.error) {
-        setStatus(body.error);
-        rows = body.rows || [];
-      } else {
-        setStatus('Window '+body.start+' → '+body.end);
-        rows = body.rows || [];
-      }
+      rows = body.rows || [];
+      if (body.error) setStatus(friendlyStatus(body));
+      else setStatus('Window '+(body.start||'')+' → '+(body.end||''));
       targetCpa = body.target_cpa != null ? Number(body.target_cpa) : (campaign && campaign.target_cpa != null ? Number(campaign.target_cpa) : null);
       recs = recsMeetingFloor(body.recommendations || []);
       excluded = new Set();

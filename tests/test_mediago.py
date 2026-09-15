@@ -91,6 +91,67 @@ class MediaGoApiHelpersTest(unittest.TestCase):
         self.assertEqual(rows[0]["account_id"], "1")
 
 
+class _FakeHttp:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.n = 0
+        self.headers = {}
+
+    def request(self, method, url, **kw):
+        i = min(self.n, len(self.responses) - 1)
+        self.n += 1
+        spec = self.responses[i]
+        r = type("R", (), {})()
+        r.status_code = spec.get("status", 200)
+        body = spec.get("body", {})
+        r.text = spec.get("text") or ("" if body is None else __import__("json").dumps(body))
+        r.json = lambda b=body: b
+        r.headers = spec.get("headers") or {}
+        r.reason = spec.get("reason") or "error"
+        return r
+
+
+class MediaGoRateLimitHttpTest(unittest.TestCase):
+    def _client(self, responses):
+        from mediago_api import MediaGoClient
+
+        c = MediaGoClient("tok")
+        c._session = _FakeHttp(responses)
+        c._get_token = lambda force_refresh=False: "abc"
+        return c
+
+    def test_get_retries_429_then_succeeds(self):
+        sleeps = []
+        c = self._client(
+            [
+                {
+                    "status": 429,
+                    "body": {"errmsg": "msn.backendMsg.operateTooMuch"},
+                    "headers": {"Retry-After": "2"},
+                },
+                {"status": 200, "body": {"errno": 0, "results": []}},
+            ]
+        )
+        with patch("mediago_api.time.sleep", side_effect=lambda s: sleeps.append(s)):
+            body = c.get("/manage/v1/report/site/day/list")
+        self.assertEqual(body.get("errno"), 0)
+        self.assertEqual(sleeps, [2.0])
+        self.assertEqual(c._session.n, 2)
+
+    def test_get_429_uses_2_5_15_backoff_then_raises(self):
+        from mediago_api import MediaGoRateLimitError
+
+        sleeps = []
+        c = self._client(
+            [{"status": 429, "body": {"errmsg": "msn.backendMsg.operateTooMuch"}}]
+        )
+        with patch("mediago_api.time.sleep", side_effect=lambda s: sleeps.append(s)):
+            with self.assertRaises(MediaGoRateLimitError) as cm:
+                c.get("/manage/v1/report/site/day/list")
+        self.assertEqual(cm.exception.status_code, 429)
+        self.assertEqual(sleeps, [2.0, 5.0, 15.0])
+
+
 class MediaGoScoringTest(unittest.TestCase):
     def test_bottom_quartile_and_no_conv(self):
         from platforms.mediago import score_source_rows
@@ -1213,18 +1274,69 @@ class MediaGoCampaignSourceRollupTest(unittest.TestCase):
         rows = a.fetch_campaign_site_report_rows(
             "acc", "99", date(2026, 1, 1), date(2026, 1, 20)
         )
-        windows = {(call[2], call[3]) for call in c.calls}
-        self.assertEqual(len(c.calls), 3)
-        self.assertTrue(all(call[1] == "99" for call in c.calls))
+        self.assertEqual(len(c.calls), 1)
+        self.assertEqual(c.calls[0][2], "2026-01-14")
+        self.assertEqual(c.calls[0][3], "2026-01-20")
+        self.assertEqual(len(rows), 1)
+        clear_mediago_report_cache()
+
+    def test_account_site_days_are_sequential_with_gap(self):
+        from datetime import date
+
+        from platforms.mediago import MediaGoAdapter, clear_mediago_report_cache
+
+        clear_mediago_report_cache()
+        sleeps = []
+
+        class _C:
+            def __init__(self):
+                self.calls = []
+
+            def account_site_report(self, account_id, start, end, timezone="est"):
+                self.calls.append((start, end))
+                return [{"site_id": "1", "spend": 1, "click": 1, "conversion": 0}]
+
+        c = _C()
+        a = MediaGoAdapter(c)
+        with patch("platforms.mediago.time.sleep", side_effect=lambda s: sleeps.append(s)):
+            a.fetch_site_report_rows("acc", date(2026, 1, 1), date(2026, 1, 3))
         self.assertEqual(
-            windows,
-            {
-                ("2026-01-01", "2026-01-07"),
-                ("2026-01-08", "2026-01-14"),
-                ("2026-01-15", "2026-01-20"),
-            },
+            c.calls,
+            [("2026-01-01", "2026-01-01"), ("2026-01-02", "2026-01-02"), ("2026-01-03", "2026-01-03")],
         )
-        self.assertEqual(len(rows), 3)
+        self.assertGreaterEqual(len([s for s in sleeps if s >= 0.2]), 2)
+        clear_mediago_report_cache()
+
+    def test_rate_limit_attaches_stale_cache(self):
+        from datetime import date
+
+        from mediago_api import MediaGoRateLimitError
+        from platforms.mediago import MediaGoAdapter, clear_mediago_report_cache
+        import platforms.mediago as mg
+
+        clear_mediago_report_cache()
+
+        class _C:
+            def __init__(self):
+                self.n = 0
+
+            def campaign_site_report(self, account_id, campaign_id, start, end, timezone="est"):
+                self.n += 1
+                if self.n == 1:
+                    return [{"site_id": "1", "spend": 9, "click": 1, "conversion": 0}]
+                raise MediaGoRateLimitError("MediaGo rate-limited — wait a minute and retry")
+
+        c = _C()
+        a = MediaGoAdapter(c)
+        first = a.fetch_campaign_site_report_rows("acc", "99", date(2026, 1, 1), date(2026, 1, 7))
+        self.assertEqual(first[0]["site_id"], "1")
+        with mg._REPORT_CACHE_LOCK:
+            key = next(iter(mg._REPORT_CACHE))
+            ts, rows = mg._REPORT_CACHE[key]
+            mg._REPORT_CACHE[key] = (ts - 10_000, rows)
+        with self.assertRaises(MediaGoRateLimitError) as cm:
+            a.fetch_campaign_site_report_rows("acc", "99", date(2026, 1, 1), date(2026, 1, 7))
+        self.assertEqual(cm.exception.stale_rows[0]["site_id"], "1")
         clear_mediago_report_cache()
 
 
@@ -1417,6 +1529,43 @@ class MediaGoSourcesApiTest(unittest.TestCase):
             flagged = [r for r in data["rows"] if r.get("flag") or r.get("cut_rec")]
             self.assertEqual(len(flagged), len(data["recommendations"]))
 
+    def test_report_rate_limit_keeps_cached_rows_and_friendly_message(self):
+        from tests.test_ai_studio import _TempStorage
+        from mediago_api import MediaGoRateLimitError
+
+        class FakeAdapter:
+            platform = "mediago"
+            label = "MediaGo"
+
+            def get_campaigns(self, account_id):
+                return [{"id": "c1", "name": "Native", "status": "on", "target_cpa": 40.0}]
+
+            def fetch_campaign_site_report_rows(self, account_id, campaign_id, start, end):
+                raise MediaGoRateLimitError(
+                    "MediaGo rate-limited — wait a minute and retry",
+                    stale_rows=[
+                        {
+                            "site_id": "1",
+                            "site_name": "msn.com",
+                            "spend": 80,
+                            "click": 10,
+                            "conversion": 1,
+                        }
+                    ],
+                )
+
+        with _TempStorage():
+            client = self._client(FakeAdapter())
+            resp = client.get(
+                "/api/sources/report?account_id=acc1&days=7&campaign_id=c1"
+            )
+            data = resp.get_json()
+            self.assertIn("rate-limited", (data.get("error") or "").lower())
+            self.assertNotIn("Traceback", data.get("error") or "")
+            names = [r.get("site_name") for r in (data.get("rows") or [])]
+            self.assertIn("msn.com", names)
+            self.assertTrue(data.get("cached"))
+
     def test_apply_campaign_block_persists_campaign_exclusions(self):
         from tests.test_ai_studio import _TempStorage
 
@@ -1539,6 +1688,8 @@ class MediaGoSourcesApiTest(unittest.TestCase):
         self.assertIn("value=\"name\"", html)
         self.assertIn("Has conversions", html)
         self.assertIn("Zero conversions", html)
+        self.assertIn("rate-limited", html)
+        self.assertIn("src-status", html)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,10 @@ BASE_URL = "https://api.mediago.io"
 TOKEN_REFRESH_SKEW_S = 60
 
 
+RATE_LIMIT_BACKOFF_S = (2.0, 5.0, 15.0)
+RATE_LIMIT_USER_MSG = "MediaGo rate-limited — wait a minute and retry"
+
+
 class MediaGoAPIError(Exception):
     def __init__(self, message: str, status_code: Optional[int] = None, body: Any = None):
         super().__init__(message)
@@ -52,6 +56,47 @@ class MediaGoAPIError(Exception):
 
 class MediaGoAuthError(MediaGoAPIError):
     """Raised when the API token cannot be exchanged for an access token."""
+
+
+class MediaGoRateLimitError(MediaGoAPIError):
+    """Raised after 429 / operateTooMuch retries are exhausted."""
+
+    def __init__(
+        self,
+        message: str = RATE_LIMIT_USER_MSG,
+        status_code: Optional[int] = 429,
+        body: Any = None,
+        stale_rows: Optional[List[Dict[str, Any]]] = None,
+    ):
+        super().__init__(message, status_code=status_code, body=body)
+        self.stale_rows = list(stale_rows or [])
+
+
+def is_mediago_rate_limited(exc: BaseException) -> bool:
+    if isinstance(exc, MediaGoRateLimitError) or getattr(exc, "status_code", None) == 429:
+        return True
+    blob = str(exc).lower().replace(".", "")
+    return "operatetoomuch" in blob or "rate-limited" in blob or "rate limited" in blob
+
+
+def _retry_after_seconds(resp: Any) -> Optional[float]:
+    headers = getattr(resp, "headers", None) or {}
+    raw = None
+    if hasattr(headers, "get"):
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+    if raw in (None, ""):
+        return None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _looks_rate_limited(status: int, body: Any, msg: str = "") -> bool:
+    if status == 429:
+        return True
+    blob = f"{msg} {body}".lower().replace(".", "")
+    return "operatetoomuch" in blob
 
 
 def unwrap_list(body: Any, *keys: str) -> List[Dict[str, Any]]:
@@ -273,7 +318,7 @@ class MediaGoClient:
             except ValueError:
                 body = {"raw": resp.text}
 
-            if resp.status_code >= 400:
+            if resp.status_code >= 400 or _looks_rate_limited(resp.status_code, body):
                 msg = (
                     (body.get("error") if isinstance(body, dict) else None)
                     or (body.get("errmsg") if isinstance(body, dict) else None)
@@ -281,6 +326,25 @@ class MediaGoClient:
                     or (body.get("msg") if isinstance(body, dict) else None)
                     or resp.reason
                 )
+                if _looks_rate_limited(resp.status_code, body, str(msg or "")):
+                    if attempt < self.max_retries:
+                        delay = _retry_after_seconds(resp)
+                        if delay is None:
+                            delay = RATE_LIMIT_BACKOFF_S[min(attempt, len(RATE_LIMIT_BACKOFF_S) - 1)]
+                        logger.warning(
+                            "MediaGo 429 on %s %s — retry in %.1fs (attempt %s)",
+                            method,
+                            path,
+                            delay,
+                            attempt + 1,
+                        )
+                        time.sleep(delay)
+                        continue
+                    raise MediaGoRateLimitError(
+                        RATE_LIMIT_USER_MSG,
+                        status_code=resp.status_code or 429,
+                        body=body,
+                    )
                 raise MediaGoAPIError(
                     f"MediaGo {method} {path} failed ({resp.status_code}): {msg}",
                     status_code=resp.status_code,
@@ -291,6 +355,18 @@ class MediaGoClient:
                 code = body.get("code")
                 if errno not in (None, 0) or (isinstance(code, int) and code not in (0, 200)):
                     msg = body.get("errmsg") or body.get("error") or body.get("message") or "error"
+                    if _looks_rate_limited(resp.status_code, body, str(msg)):
+                        if attempt < self.max_retries:
+                            delay = _retry_after_seconds(resp) or RATE_LIMIT_BACKOFF_S[
+                                min(attempt, len(RATE_LIMIT_BACKOFF_S) - 1)
+                            ]
+                            time.sleep(delay)
+                            continue
+                        raise MediaGoRateLimitError(
+                            RATE_LIMIT_USER_MSG,
+                            status_code=429,
+                            body=body,
+                        )
                     raise MediaGoAPIError(
                         f"MediaGo {method} {path} rejected: {msg}",
                         status_code=resp.status_code,
@@ -634,6 +710,9 @@ class MediaGoClient:
 __all__ = [
     "MediaGoAPIError",
     "MediaGoAuthError",
+    "MediaGoRateLimitError",
+    "is_mediago_rate_limited",
+    "RATE_LIMIT_USER_MSG",
     "MediaGoClient",
     "BASE_URL",
     "unwrap_list",

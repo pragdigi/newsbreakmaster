@@ -1286,6 +1286,10 @@ def api_sources_report():
         return jsonify({"error": "account_id is required"}), 400
     campaign_id = (request.args.get("campaign_id") or "").strip()
     start, end, days = _sources_date_window()
+    if days > 7:
+        start = end - timedelta(days=6)
+        days = 7
+    from mediago_api import MediaGoRateLimitError, RATE_LIMIT_USER_MSG
     from platforms.mediago import (
         gemini_cut_note,
         mark_cut_rec_flags,
@@ -1310,10 +1314,16 @@ def api_sources_report():
                     ),
                 }
             )
+        rate_err = None
+        cached = False
         try:
             raw = adapter.fetch_campaign_site_report_rows(
                 account_id, campaign_id, start, end
             )
+        except MediaGoRateLimitError as e:
+            raw = list(e.stale_rows or [])
+            rate_err = RATE_LIMIT_USER_MSG
+            cached = bool(raw)
         except Exception as e:
             return jsonify({"ok": False, "error": str(e), "rows": [], "campaign_id": campaign_id}), 502
         scored = score_source_rows(raw, target_cpa=target_cpa)
@@ -1326,22 +1336,24 @@ def api_sources_report():
         recs = recommend_sites_to_cut(scored, target_cpa)
         mark_cut_rec_flags(scored, recs)
         note = gemini_cut_note(recs, target_cpa)
-        return jsonify(
-            {
-                "ok": True,
-                "account_id": account_id,
-                "campaign_id": campaign_id,
-                "target_cpa": target_cpa,
-                "start": start.isoformat(),
-                "end": end.isoformat(),
-                "days": days,
-                "rows": scored,
-                "exclusions": exclusions,
-                "recommendations": recs,
-                "gemini_note": note,
-                "auto_blocked": False,
-            }
-        )
+        payload = {
+            "ok": True if scored or not rate_err else False,
+            "account_id": account_id,
+            "campaign_id": campaign_id,
+            "target_cpa": target_cpa,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "days": days,
+            "rows": scored,
+            "exclusions": exclusions,
+            "recommendations": recs,
+            "gemini_note": note,
+            "auto_blocked": False,
+            "cached": cached,
+        }
+        if rate_err:
+            payload["error"] = rate_err
+        return jsonify(payload), (200 if scored or not rate_err else 429)
     if not hasattr(adapter, "fetch_site_report_rows"):
         return jsonify(
             {
@@ -1355,6 +1367,12 @@ def api_sources_report():
         )
     try:
         raw = adapter.fetch_site_report_rows(account_id, start, end)
+        rate_err = None
+        cached = False
+    except MediaGoRateLimitError as e:
+        raw = list(e.stale_rows or [])
+        rate_err = RATE_LIMIT_USER_MSG
+        cached = bool(raw)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "rows": []}), 502
     scored = score_source_rows(raw)
@@ -1364,20 +1382,22 @@ def api_sources_report():
         row["excluded"] = str(row.get("site_id")) in excluded_ids
     recs = recommend_sites_to_cut(scored, None)
     mark_cut_rec_flags(scored, recs)
-    return jsonify(
-        {
-            "ok": True,
-            "account_id": account_id,
-            "start": start.isoformat(),
-            "end": end.isoformat(),
-            "days": days,
-            "rows": scored,
-            "exclusions": exclusions,
-            "recommendations": recs,
-            "gemini_note": None,
-            "auto_blocked": False,
-        }
-    )
+    payload = {
+        "ok": True if scored or not rate_err else False,
+        "account_id": account_id,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "days": days,
+        "rows": scored,
+        "exclusions": exclusions,
+        "recommendations": recs,
+        "gemini_note": None,
+        "auto_blocked": False,
+        "cached": cached,
+    }
+    if rate_err:
+        payload["error"] = rate_err
+    return jsonify(payload), (200 if scored or not rate_err else 429)
 
 
 @app.route("/api/sources/exclusions", methods=["GET", "POST"])

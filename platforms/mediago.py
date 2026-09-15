@@ -15,18 +15,18 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Any, BinaryIO, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
-from mediago_api import MediaGoClient
+from mediago_api import MediaGoClient, MediaGoRateLimitError, is_mediago_rate_limited, RATE_LIMIT_USER_MSG
 
 logger = logging.getLogger(__name__)
 
 _REPORT_CACHE: Dict[tuple, tuple[float, List[Dict[str, Any]]]] = {}
 _REPORT_CACHE_LOCK = threading.Lock()
-_REPORT_CACHE_TTL_S = 180.0
-_FETCH_WORKERS = 4
+_REPORT_CACHE_TTL_S = 480.0
+_SITE_REPORT_MAX_DAYS = 7
+_WINDOW_GAP_S = 0.3
 
 
 def clear_mediago_report_cache() -> None:
@@ -34,21 +34,30 @@ def clear_mediago_report_cache() -> None:
         _REPORT_CACHE.clear()
 
 
-def _cache_get(key: tuple) -> Optional[List[Dict[str, Any]]]:
+def _cache_get(key: tuple, *, allow_stale: bool = False) -> Optional[List[Dict[str, Any]]]:
     with _REPORT_CACHE_LOCK:
         hit = _REPORT_CACHE.get(key)
         if not hit:
             return None
         ts, rows = hit
-        if time.time() - ts > _REPORT_CACHE_TTL_S:
-            _REPORT_CACHE.pop(key, None)
-            return None
-        return list(rows)
+        fresh = (time.time() - ts) <= _REPORT_CACHE_TTL_S
+        if fresh or allow_stale:
+            return list(rows)
+        return None
 
 
 def _cache_set(key: tuple, rows: List[Dict[str, Any]]) -> None:
     with _REPORT_CACHE_LOCK:
         _REPORT_CACHE[key] = (time.time(), list(rows))
+
+
+def _clamp_site_window(start: date, end: date) -> Tuple[date, date]:
+    if start > end:
+        start, end = end, start
+    span = (end - start).days + 1
+    if span > _SITE_REPORT_MAX_DAYS:
+        start = end - timedelta(days=_SITE_REPORT_MAX_DAYS - 1)
+    return start, end
 
 DEFAULT_CUT_OVER_MULTIPLE = 1.0
 DEFAULT_CUT_SPEND_MULTIPLE = 1.0
@@ -854,37 +863,29 @@ class MediaGoAdapter:
         timezone: str = "est",
     ) -> List[Dict[str, Any]]:
         """Pull site-dimension rows, day-by-day (account API max window is 1 day)."""
+        start, end = _clamp_site_window(start, end)
         key = ("account", str(account_id), start.isoformat(), end.isoformat(), timezone)
         cached = _cache_get(key)
         if cached is not None:
             return cached
         windows: List[Tuple[str, str]] = []
         day = start
-        guard = 0
-        while day <= end and guard < 31:
+        while day <= end:
             ds = day.strftime("%Y-%m-%d")
             windows.append((ds, ds))
             day += timedelta(days=1)
-            guard += 1
 
         def _one(window: Tuple[str, str]) -> List[Dict[str, Any]]:
             ds, de = window
-            last_err: Optional[Exception] = None
-            for attempt in range(3):
-                try:
-                    return list(
-                        self.client.account_site_report(
-                            account_id, ds, de, timezone=timezone
-                        )
-                    )
-                except Exception as exc:
-                    last_err = exc
-                    time.sleep(0.35 * (attempt + 1))
-            if last_err:
-                raise last_err
-            return []
+            return list(
+                self.client.account_site_report(account_id, ds, de, timezone=timezone)
+            )
 
-        rows = self._run_window_fetches(windows, _one)
+        try:
+            rows = self._run_window_fetches(windows, _one)
+        except Exception as exc:
+            self._reraise_rate_limit(exc, key)
+            raise
         _cache_set(key, rows)
         return rows
 
@@ -897,7 +898,8 @@ class MediaGoAdapter:
         *,
         timezone: str = "est",
     ) -> List[Dict[str, Any]]:
-        """Pull campaign site rows in ≤7-day windows (API max), cap 31 days."""
+        """Pull campaign site rows in one ≤7-day window (API max)."""
+        start, end = _clamp_site_window(start, end)
         key = (
             "campaign",
             str(account_id),
@@ -909,52 +911,44 @@ class MediaGoAdapter:
         cached = _cache_get(key)
         if cached is not None:
             return cached
-        windows: List[Tuple[str, str]] = []
-        cursor = start
-        consumed = 0
-        while cursor <= end and consumed < 31:
-            remaining = min(7, 31 - consumed)
-            chunk_end = min(cursor + timedelta(days=remaining - 1), end)
-            windows.append((cursor.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
-            consumed += (chunk_end - cursor).days + 1
-            cursor = chunk_end + timedelta(days=1)
+        windows = [(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))]
 
         def _one(window: Tuple[str, str]) -> List[Dict[str, Any]]:
             ds, de = window
-            last_err: Optional[Exception] = None
-            for attempt in range(3):
-                try:
-                    return list(
-                        self.client.campaign_site_report(
-                            account_id, campaign_id, ds, de, timezone=timezone
-                        )
-                    )
-                except Exception as exc:
-                    last_err = exc
-                    time.sleep(0.35 * (attempt + 1))
-            if last_err:
-                raise last_err
-            return []
+            return list(
+                self.client.campaign_site_report(
+                    account_id, campaign_id, ds, de, timezone=timezone
+                )
+            )
 
-        rows = self._run_window_fetches(windows, _one)
+        try:
+            rows = self._run_window_fetches(windows, _one)
+        except Exception as exc:
+            self._reraise_rate_limit(exc, key)
+            raise
         _cache_set(key, rows)
         return rows
+
+    @staticmethod
+    def _reraise_rate_limit(exc: BaseException, key: tuple) -> None:
+        if not is_mediago_rate_limited(exc):
+            return
+        stale = _cache_get(key, allow_stale=True) or []
+        if isinstance(exc, MediaGoRateLimitError):
+            exc.stale_rows = stale or list(exc.stale_rows or [])
+            raise exc
+        raise MediaGoRateLimitError(RATE_LIMIT_USER_MSG, stale_rows=stale) from exc
 
     @staticmethod
     def _run_window_fetches(
         windows: Sequence[Tuple[str, str]],
         fetch_one: Callable[[Tuple[str, str]], List[Dict[str, Any]]],
     ) -> List[Dict[str, Any]]:
-        if not windows:
-            return []
-        if len(windows) == 1:
-            return list(fetch_one(windows[0]) or [])
         rows: List[Dict[str, Any]] = []
-        workers = min(_FETCH_WORKERS, len(windows))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {pool.submit(fetch_one, w): w for w in windows}
-            for fut in as_completed(futs):
-                rows.extend(fut.result() or [])
+        for i, window in enumerate(windows):
+            if i:
+                time.sleep(_WINDOW_GAP_S)
+            rows.extend(fetch_one(window) or [])
         return rows
 
     # ------------------------------------------------------------------

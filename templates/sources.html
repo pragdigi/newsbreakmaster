@@ -198,10 +198,24 @@
     if (start && end) return 'start='+encodeURIComponent(start)+'&end='+encodeURIComponent(end);
     return 'days='+encodeURIComponent(document.getElementById('src-days').value || '7');
   }
+  function setStatus(t){ document.getElementById('src-status').textContent = t || ''; }
   function friendlyStatus(body, fallback){
     const e = String((body && body.error) || fallback || '');
     if (/429|operatetoomuch|rate.?limit/i.test(e)) return 'MediaGo rate-limited — wait a minute and retry';
     return e;
+  }
+  function reportStatus(body){
+    if (!body) return 'Load failed — no response from server.';
+    if (body.error) {
+      let msg = friendlyStatus(body);
+      if (body.cached) msg += ' (showing cached data)';
+      return msg;
+    }
+    const n = (body.rows || []).length;
+    const win = 'Window ' + (body.start || '') + ' → ' + (body.end || '');
+    if (!n) return win + ' — no sites with spend in this window.';
+    if (body.cached) return win + ' (cached)';
+    return win;
   }
 
   function statusPill(c){
@@ -464,10 +478,17 @@
       if (cid) url += '&campaign_id='+encodeURIComponent(cid);
       if (campaign && campaign.target_cpa != null) url += '&target_cpa='+encodeURIComponent(campaign.target_cpa);
       const res = await fetch(url);
-      const body = await res.json();
+      let body = {};
+      try { body = await res.json(); } catch (parseErr) {
+        setStatus('Load failed (' + res.status + ') — invalid response.');
+        rows = [];
+        render();
+        showSites();
+        return;
+      }
       rows = body.rows || [];
-      if (body.error) setStatus(friendlyStatus(body));
-      else setStatus('Window '+(body.start||'')+' → '+(body.end||''));
+      if (!res.ok && !body.error) body.error = 'HTTP ' + res.status;
+      setStatus(reportStatus(body));
       targetCpa = body.target_cpa != null ? Number(body.target_cpa) : (campaign && campaign.target_cpa != null ? Number(campaign.target_cpa) : null);
       recs = recsMeetingFloor(body.recommendations || []);
       excluded = new Set();

@@ -1690,6 +1690,7 @@ class MediaGoSourcesApiTest(unittest.TestCase):
         self.assertIn("Zero conversions", html)
         self.assertIn("rate-limited", html)
         self.assertIn("src-status", html)
+        self.assertIn("function setStatus", html)
 
 
 if __name__ == "__main__":

@@ -256,6 +256,33 @@ class MediaGoAdapterTest(unittest.TestCase):
         self.assertEqual(row["conversions"], 2)
         self.assertAlmostEqual(row["cpa"], 10.0)
         self.assertEqual(row["status"], "on")
+        self.assertEqual(row["events"].get("purchase"), 2)
+
+    def test_select_purchase_ignores_zero_cv_purchase(self):
+        from platforms.mediago import MediaGoAdapter, select_mediago_purchase
+
+        raw = {
+            "id": "c1",
+            "name": "Camp",
+            "spend": 100,
+            "click": 10,
+            "impression": 100,
+            "conversion": 18,
+            "cv_purchase": 0,
+            "cv_lead": 0,
+            "cv_start_checkout": 18,
+            "roas": 0,
+            "status": 1,
+        }
+        count, field = select_mediago_purchase(raw)
+        self.assertEqual(count, 18)
+        self.assertEqual(field, "conversion")
+        row = MediaGoAdapter(object())._canonicalize_report_row(raw, "campaign")  # type: ignore
+        self.assertEqual(row["conversions"], 18)
+        self.assertEqual(row["events"].get("initiate_checkout"), 18)
+        self.assertNotIn("purchase", row["events"])
+        count2, field2 = select_mediago_purchase(row)
+        self.assertEqual((count2, field2), (18, "conversion"))
 
     def test_block_sites_chunks_and_skips_zero(self):
         from platforms.mediago import MediaGoAdapter

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from datetime import date, timedelta
@@ -128,6 +129,91 @@ def _num(v: Any) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+# Day reports include every cv_* column, almost all of them 0. A present
+# cv_purchase of 0 is not a purchase. Prefer a non-zero purchase-like column
+# (cv_purchase first, then any cv_* named purchase/order/sale, then
+# cv_deal_completed). Otherwise use `conversion`, the total dashboards, site
+# scoring, and rules already treat as the buying event. Do not sum cv_*
+# columns — they overlap that total (Xeviola's conversion == cv_start_checkout).
+_PURCHASE_LIKE_CV = re.compile(
+    r"(?:^|_)(purchase|order|sale|deal_completed)(?:_|$)",
+    re.I,
+)
+_CV_EVENT_DEST = {
+    "cv_purchase": "purchase",
+    "cv_lead": "lead",
+    "cv_view_content": "view_content",
+    "cv_add_to_cart": "add_to_cart",
+    "cv_add_to_car": "add_to_cart",
+    "cv_start_checkout": "initiate_checkout",
+}
+
+
+def _row_sources(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    sources = [row]
+    raw = row.get("raw")
+    if isinstance(raw, dict) and raw is not row:
+        sources.append(raw)
+    return sources
+
+
+def mediago_cv_counts(row: Dict[str, Any]) -> Dict[str, float]:
+    """cv_* count columns. Skips rates and value columns. First source wins."""
+    out: Dict[str, float] = {}
+    for src in _row_sources(row):
+        for key, val in src.items():
+            if not isinstance(key, str) or not key.startswith("cv_") or key in out:
+                continue
+            lower = key.lower()
+            if lower.endswith(("_value", "_rate", "_cpa", "_roas", "_cvr")):
+                continue
+            n = _num(val)
+            if n is None:
+                continue
+            out[key] = n
+    return out
+
+
+def _purchase_like_rank(key: str) -> Tuple[int, str]:
+    low = key.lower()
+    if low == "cv_purchase" or low.endswith("_purchase"):
+        return (0, low)
+    if "purchase" in low:
+        return (1, low)
+    if "order" in low or "sale" in low:
+        return (2, low)
+    return (3, low)
+
+
+def select_mediago_purchase(row: Dict[str, Any]) -> Tuple[float, str]:
+    """Return ``(count, field)`` for the MediaGo buying event on one row.
+
+    ``field`` is a purchase-like ``cv_*`` name when that column is non-zero,
+    otherwise ``conversion``.
+    """
+    counts = mediago_cv_counts(row)
+    purchase_like = [key for key, n in counts.items() if n and _PURCHASE_LIKE_CV.search(key)]
+    if purchase_like:
+        key = sorted(purchase_like, key=_purchase_like_rank)[0]
+        return counts[key], key
+    for src in _row_sources(row):
+        for key in ("conversion", "conversions"):
+            if key in src and src.get(key) is not None:
+                return _num(src.get(key)) or 0.0, "conversion"
+    return 0.0, "conversion"
+
+
+def mediago_event_counts(row: Dict[str, Any]) -> Dict[str, float]:
+    """Non-zero cv_* counts keyed by event name (purchase, initiate_checkout, …)."""
+    events: Dict[str, float] = {}
+    for key, val in mediago_cv_counts(row).items():
+        if not val:
+            continue
+        dest = _CV_EVENT_DEST.get(key, key[3:])
+        events[dest] = events.get(dest, 0.0) + val
+    return events
 
 
 def _cents_to_usd(cents: Optional[int]) -> Optional[float]:
@@ -1115,8 +1201,10 @@ class MediaGoAdapter:
         spend = _num(r.get("spend")) or 0.0
         clicks = int(_num(r.get("click") or r.get("clicks")) or 0)
         impressions = int(_num(r.get("impression") or r.get("impressions")) or 0)
+        # Dashboards and rules keep the API `conversion` total (not cv_purchase).
+        # cv_purchase is 0 on accounts whose optimized event is something else;
+        # select_mediago_purchase is what the stats blender uses for purchases.
         conversions = _num(r.get("conversion") or r.get("conversions") or r.get("cv_purchase")) or 0.0
-        purchases = _num(r.get("cv_purchase")) or 0.0
         cpa = _num(r.get("cpa"))
         if cpa is None and spend and conversions:
             cpa = spend / conversions
@@ -1129,18 +1217,7 @@ class MediaGoAdapter:
             status = "on"
         elif status_raw in (0, "0"):
             status = "paused"
-        events: Dict[str, float] = {}
-        for key, dest in (
-            ("cv_purchase", "purchase"),
-            ("cv_lead", "lead"),
-            ("cv_view_content", "view_content"),
-            ("cv_add_to_cart", "add_to_cart"),
-            ("cv_add_to_car", "add_to_cart"),
-            ("cv_start_checkout", "initiate_checkout"),
-        ):
-            v = _num(r.get(key))
-            if v:
-                events[dest] = v
+        events = mediago_event_counts(r)
         return {
             **r,
             "scope": scope,
@@ -1152,7 +1229,7 @@ class MediaGoAdapter:
             "impressions": impressions,
             "clicks": clicks,
             "ctr": ctr,
-            "conversions": conversions or purchases,
+            "conversions": conversions,
             "cpa": cpa,
             "roas": _num(r.get("roas")),
             "value": None,
@@ -1188,4 +1265,6 @@ __all__ = [
     "clear_mediago_report_cache",
     "normalize_account_pixel",
     "optimization_type_for_conversion",
+    "select_mediago_purchase",
+    "mediago_cv_counts",
 ]

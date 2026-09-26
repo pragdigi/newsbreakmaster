@@ -162,12 +162,6 @@ def _revenue_from_row(row: Dict[str, Any]) -> tuple[Optional[float], bool]:
     return None, False
 
 
-def _mediago_purchase_label(metric: str) -> str:
-    """Slack label, e.g. ``(mediago conversion)`` or ``(mediago cv_purchase)``."""
-    name = metric or "conversion"
-    return f"(mediago {name})"
-
-
 def rollup_rows(
     rows: Iterable[Dict[str, Any]],
     *,
@@ -294,11 +288,6 @@ def fetch_newsbreak(start: date, end: date) -> Dict[str, Any]:
             except (TypeError, ValueError):
                 ids.append(aid)
         result = _base_result("newsbreak", start, end)
-        result["gaps"] = [
-            "Purchases are NewsBreak CONVERSION (all conversion events, not purchase-only).",
-            "Revenue is NewsBreak VALUE.",
-            "Report timezone is UTC, matching the existing integrated-report client.",
-        ]
         result["timezone"] = "UTC"
         if not ids:
             result["ok"] = True
@@ -326,8 +315,6 @@ def fetch_newsbreak(start: date, end: date) -> Dict[str, Any]:
         # Rows that didn't match a discovered account still count in the total.
         totals = rollup_rows(rows, prefer_purchase=False, revenue_supported=True)
         totals["purchases_metric"] = "CONVERSION"
-        if not totals["revenue_available"]:
-            result["gaps"].append("NewsBreak returned no VALUE for this window.")
         return _apply_totals(result, totals, accounts)
     except Exception as exc:  # noqa: BLE001 — surface a redacted error, do not crash the blend
         return _failed("newsbreak", start, end, exc)
@@ -348,13 +335,6 @@ def fetch_mediago(start: date, end: date) -> Dict[str, Any]:
         )
         raw_accounts = adapter.get_accounts() or []
         result = _base_result("mediago", start, end)
-        result["gaps"] = [
-            "Purchases use a non-zero purchase-like cv_* column (cv_purchase first). "
-            "MediaGo returns every cv_* column as 0 when unused, so a zero cv_purchase "
-            "falls through to conversion, the total the dashboards already use.",
-            "Revenue is included only when a row has a value field or a positive ROAS. MediaGo daily reports often omit revenue.",
-            "Dates use the MediaGo report timezone parameter est (US Eastern), on the same calendar dates.",
-        ]
         result["timezone"] = "est"
         rows: List[Dict[str, Any]] = []
         accounts = []
@@ -391,14 +371,6 @@ def fetch_mediago(start: date, end: date) -> Dict[str, Any]:
             result["error"] = "; ".join(errors)
             return result
         totals = rollup_rows(rows, prefer_purchase=True, revenue_supported=True)
-        chosen = totals.get("purchases_metric") or "conversion"
-        if chosen == "conversion":
-            result["gaps"].append(
-                "cv_purchase was zero or absent; purchases are MediaGo conversion."
-            )
-        totals["purchases_metric"] = _mediago_purchase_label(chosen)
-        if not totals["revenue_available"]:
-            result["gaps"].append("No MediaGo revenue/ROAS on these rows, so revenue is omitted from the blend.")
         if errors:
             result["gaps"].append("Some MediaGo accounts failed: " + "; ".join(errors))
         return _apply_totals(result, totals, accounts)
@@ -425,10 +397,6 @@ def fetch_smartnews(start: date, end: date) -> Dict[str, Any]:
         )
         raw_accounts = adapter.get_accounts() or []
         result = _base_result("smartnews", start, end)
-        result["gaps"] = [
-            "Purchases are metrics_count_purchase.",
-            "SmartNews insights used here have spend and purchase count, not purchase value or ROAS.",
-        ]
         result["timezone"] = "UTC"
         currencies = set()
         rows: List[Dict[str, Any]] = []

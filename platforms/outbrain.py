@@ -225,7 +225,12 @@ class OutbrainAdapter:
                 {
                     "tracking_id": str(cid),
                     "name": c.get("name") or f"Conversion {cid}",
-                    "event_type": c.get("conversionEvent") or c.get("type") or "conversion",
+                    "event_type": (
+                        c.get("category")
+                        or c.get("conversionEvent")
+                        or c.get("type")
+                        or "conversion"
+                    ),
                     "pixel_id": None,
                     "tracking_type": "outbrain_conversion",
                     "status": "ACTIVE" if c.get("enabled", True) else "OFF",

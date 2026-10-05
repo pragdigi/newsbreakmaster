@@ -1022,15 +1022,50 @@
         </div>
         <div>
           <label class="nb-label">Objective</label>
-          <select name="objective" class="nb-select">
-            <option value="Traffic" selected>Traffic</option>
-            <option value="Conversions">Conversions</option>
+          <select name="objective" id="ob-objective" class="nb-select">
+            <option value="Conversions" selected>Conversions</option>
+            <option value="Traffic">Traffic</option>
             <option value="Awareness">Awareness</option>
-            <option value="LeadGeneration">Lead generation</option>
-            <option value="Engagement">Engagement</option>
-            <option value="VideoViews">Video views</option>
             <option value="AppInstall">App install</option>
           </select>
+          <div class="nb-hint">New campaigns optimize for conversions. Traffic is clicks only.</div>
+        </div>
+      </div>
+      <div class="nb-row-3" id="ob-conversion-row" style="margin-top:12px;">
+        <div>
+          <label class="nb-label">Bid strategy</label>
+          <select name="bid_strategy" id="ob-bid-strategy" class="nb-select">
+            <option value="max_conversions" selected>Max conversions</option>
+            <option value="target_cpa">Target CPA</option>
+            <option value="target_roas">Target ROAS</option>
+          </select>
+          <div class="nb-hint">Max conversions spends the budget toward the conversion below. Amplify may adjust CPC.</div>
+        </div>
+        <div>
+          <label class="nb-label">Targeted conversion</label>
+          <div style="display:flex;gap:8px;">
+            <select name="conversion_id" id="ob-conversion" class="nb-select" style="flex:1;">
+              <option value="">— Select a conversion —</option>
+            </select>
+            <button type="button" class="nb-btn nb-btn-small" id="ob-conversion-refresh" title="Refresh conversions">Refresh</button>
+          </div>
+          <div class="nb-hint" id="ob-conversion-status">Pulled from the selected marketer. Required for Conversions.</div>
+        </div>
+        <div id="ob-goal-wrap">
+          <div id="ob-target-cpa-wrap" style="display:none;">
+            <label class="nb-label">Target CPA <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
+            <input type="number" name="target_cpa_usd" id="ob-target-cpa" class="nb-input" min="0.01" step="0.01" placeholder="e.g. 40">
+            <div class="nb-hint">Required for Target CPA. Sent as <code>targetCpa</code>.</div>
+          </div>
+          <div id="ob-target-roas-wrap" style="display:none;">
+            <label class="nb-label">Target ROAS</label>
+            <input type="number" name="target_roas" id="ob-target-roas" class="nb-input" min="0.01" step="0.01" placeholder="e.g. 1.5">
+            <div class="nb-hint">1.5 means $1.50 of conversion value per $1 spent. The conversion must pass a value.</div>
+          </div>
+          <div id="ob-max-conv-hint">
+            <label class="nb-label">Goal</label>
+            <div class="nb-hint" style="margin-top:8px;">No CPA or ROAS goal. Outbrain maximizes the selected conversion inside the budget.</div>
+          </div>
         </div>
       </div>
       <div class="nb-row-3" style="margin-top:12px;">
@@ -1044,8 +1079,9 @@
           <input type="number" name="daily_target_usd" class="nb-input" min="0" step="0.01" placeholder="even pacing if blank">
         </div>
         <div>
-          <label class="nb-label">Max CPC bid <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
+          <label class="nb-label">Starting CPC <span class="nb-muted" style="font-weight:400;">(USD)</span></label>
           <input type="number" name="cpc_usd" class="nb-input" min="0.01" step="0.01" value="0.30" required>
+          <div class="nb-hint">Amplify still requires a starting CPC. Max conversions, Target CPA, and Target ROAS may change it. For Traffic this is the CPC bid.</div>
         </div>
       </div>
       <div class="nb-row-2" style="margin-top:12px;">
@@ -1198,13 +1234,126 @@
     setMode(initial ? initial.value : 'new');
   })();
 
-  // --- Offer prefill ---
+  // --- Offer prefill + conversion events ---
   (function(){
     var OFFERS = {{ offers|tojson }};
+    var EVENTS = {{ events|tojson }};
     var sel = document.getElementById('ob-offer-ref');
     var summary = document.getElementById('ob-offer-summary');
-    if (!sel) return;
+    var acct = document.getElementById('ob-account-id');
+    var objSel = document.getElementById('ob-objective');
+    var bidSel = document.getElementById('ob-bid-strategy');
+    var convSel = document.getElementById('ob-conversion');
+    var convBtn = document.getElementById('ob-conversion-refresh');
+    var convStatus = document.getElementById('ob-conversion-status');
+    var convRow = document.getElementById('ob-conversion-row');
+    var cpaWrap = document.getElementById('ob-target-cpa-wrap');
+    var roasWrap = document.getElementById('ob-target-roas-wrap');
+    var maxHint = document.getElementById('ob-max-conv-hint');
+    var tcpaEl = document.getElementById('ob-target-cpa');
+    var pendingConv = '';
+
     function cleanLanding(u){ return String(u||'').trim().replace(/[?&=]+$/,''); }
+    function isConversionObjective(){
+      var v = objSel ? objSel.value : 'Conversions';
+      return v === 'Conversions' || v === 'AppInstall' || v === 'AppInstalls';
+    }
+    function setConvStatus(msg, color){
+      if (!convStatus) return;
+      convStatus.textContent = msg || '';
+      convStatus.style.color = color || '';
+    }
+    function syncConversionUi(){
+      var conv = isConversionObjective();
+      if (convRow) convRow.style.display = conv ? '' : 'none';
+      var strategy = bidSel ? bidSel.value : 'max_conversions';
+      if (cpaWrap) cpaWrap.style.display = (conv && strategy === 'target_cpa') ? '' : 'none';
+      if (roasWrap) roasWrap.style.display = (conv && strategy === 'target_roas') ? '' : 'none';
+      if (maxHint) maxHint.style.display = (conv && strategy === 'max_conversions') ? '' : 'none';
+    }
+    function ensureConversionOption(id, label){
+      if (!convSel || !id) return;
+      var found = false;
+      Array.prototype.slice.call(convSel.options).forEach(function(op){
+        if (String(op.value) === String(id)) found = true;
+      });
+      if (!found) {
+        var opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = label || id;
+        convSel.appendChild(opt);
+      }
+      convSel.value = id;
+    }
+    function offerConversionId(o){
+      if (!o) return '';
+      if (o.pixels && o.pixels.outbrain) return String(o.pixels.outbrain);
+      var ev = (EVENTS||[]).find(function(e){ return e.id === o.event_id; });
+      if (ev) return String(ev.tracking_id || ev.event_type || '');
+      return '';
+    }
+    function applyPendingConversion(){
+      if (!pendingConv) return;
+      ensureConversionOption(pendingConv, pendingConv);
+      pendingConv = '';
+      setConvStatus('Loaded conversions. Preselected from the offer.', '#34d399');
+    }
+    function loadConversions(){
+      if (!convSel || !acct) return;
+      var id = acct.value;
+      var keep = convSel.value || pendingConv;
+      if (!id) {
+        convSel.innerHTML = '<option value="">— Select a conversion —</option>';
+        setConvStatus('Select a marketer to load conversion events.', '#9ca3af');
+        return;
+      }
+      setConvStatus('Fetching conversion events from Outbrain…', '#9ca3af');
+      fetch('/api/outbrain/conversions/' + encodeURIComponent(id), { credentials: 'same-origin' })
+        .then(function(r){ return r.json().then(function(body){ return { ok: r.ok, body: body }; }); })
+        .then(function(res){
+          if (!res.ok) {
+            convSel.innerHTML = '<option value="">— Select a conversion —</option>';
+            if (keep) ensureConversionOption(keep, keep);
+            setConvStatus((res.body && res.body.error) || 'Failed to load conversions', '#f87171');
+            return;
+          }
+          var rows = (res.body && res.body.conversions) || [];
+          convSel.innerHTML = '<option value="">— Select a conversion —</option>';
+          rows.forEach(function(c){
+            var cid = c.tracking_id || c.id || '';
+            if (!cid) return;
+            var opt = document.createElement('option');
+            opt.value = cid;
+            var bits = [c.name || cid];
+            if (c.event_type && c.event_type !== cid) bits.push(c.event_type);
+            if (c.status && c.status !== 'ACTIVE') bits.push(c.status);
+            opt.textContent = bits.join(' · ');
+            convSel.appendChild(opt);
+          });
+          if (keep) ensureConversionOption(keep, keep);
+          if (!rows.length && !keep) {
+            setConvStatus('No conversion events on this marketer. Create one in Outbrain before launching a Conversions campaign.', '#f87171');
+          } else if (pendingConv) {
+            applyPendingConversion();
+          } else {
+            setConvStatus('Loaded ' + rows.length + ' conversion event' + (rows.length === 1 ? '' : 's') + '.', '#34d399');
+          }
+        })
+        .catch(function(){
+          convSel.innerHTML = '<option value="">— Select a conversion —</option>';
+          if (keep) ensureConversionOption(keep, keep);
+          setConvStatus('Error loading conversions', '#f87171');
+        });
+    }
+
+    if (objSel) objSel.addEventListener('change', syncConversionUi);
+    if (bidSel) bidSel.addEventListener('change', syncConversionUi);
+    syncConversionUi();
+    if (acct) acct.addEventListener('change', loadConversions);
+    if (convBtn) convBtn.addEventListener('click', loadConversions);
+    if (acct && acct.value) loadConversions();
+
+    if (!sel) return;
     sel.addEventListener('change', function(){
       var o = (OFFERS||[]).find(function(x){ return x.id === sel.value; });
       if (!o) { if (summary) summary.textContent=''; return; }
@@ -1216,7 +1365,21 @@
       if (defL && land) defL.value = land;
       if (defH && o.headline) defH.value = o.headline;
       [defH, defL].forEach(function(el){ if (el) el.dispatchEvent(new Event('input',{bubbles:true})); });
-      if (summary) summary.textContent = (o.brand_name || o.name || '') + (o.payout ? ' · $'+Number(o.payout).toFixed(2) : '');
+      if (tcpaEl && o.target_cpa && Number(o.target_cpa) > 0) tcpaEl.value = Number(o.target_cpa).toFixed(2);
+      var cid = offerConversionId(o);
+      if (cid) {
+        pendingConv = cid;
+        if (convSel && Array.prototype.slice.call(convSel.options).some(function(op){ return String(op.value) === cid; })) {
+          applyPendingConversion();
+        } else {
+          ensureConversionOption(cid, cid);
+          pendingConv = '';
+        }
+      }
+      var bits = [(o.brand_name || o.name || '')];
+      if (o.payout) bits.push('$'+Number(o.payout).toFixed(2));
+      if (cid) bits.push('Conversion '+cid);
+      if (summary) summary.textContent = bits.filter(Boolean).join(' · ');
     });
   })();
 
@@ -1301,6 +1464,35 @@
         else if (h.length > 100) invalid.push('Ad '+(i+1)+': headline too long ('+h.length+'>100)');
       });
       if (invalid.length) { e.preventDefault(); alert('Fix the following:\n\n'+invalid.join('\n')); grid.scrollIntoView({behavior:'smooth',block:'center'}); return; }
+      var mode = (document.querySelector('input[name="campaign_mode"]:checked') || {}).value || 'new';
+      var obj = (document.getElementById('ob-objective') || {}).value || 'Conversions';
+      var needsConv = mode !== 'existing' && (obj === 'Conversions' || obj === 'AppInstall' || obj === 'AppInstalls');
+      var conv = document.getElementById('ob-conversion');
+      if (needsConv && conv && !String(conv.value || '').trim()) {
+        e.preventDefault();
+        alert('Pick a targeted conversion. Outbrain will not create this campaign as Traffic.');
+        conv.scrollIntoView({behavior:'smooth',block:'center'});
+        return;
+      }
+      var bid = (document.getElementById('ob-bid-strategy') || {}).value || 'max_conversions';
+      if (needsConv && bid === 'target_cpa') {
+        var tcpa = document.getElementById('ob-target-cpa');
+        if (tcpa && !(Number(tcpa.value) > 0)) {
+          e.preventDefault();
+          alert('Enter a Target CPA (USD) for the Target CPA bid strategy.');
+          tcpa.scrollIntoView({behavior:'smooth',block:'center'});
+          return;
+        }
+      }
+      if (needsConv && bid === 'target_roas') {
+        var troas = document.getElementById('ob-target-roas');
+        if (troas && !(Number(troas.value) > 0)) {
+          e.preventDefault();
+          alert('Enter a Target ROAS for the Target ROAS bid strategy.');
+          troas.scrollIntoView({behavior:'smooth',block:'center'});
+          return;
+        }
+      }
       var holder = document.createElement('div');
       holder.style.display='none'; holder.setAttribute('data-ob-generated','1');
       items.forEach(function(it,i){

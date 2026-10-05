@@ -26,10 +26,16 @@ Expected form fields (see ``templates/launch.html`` outbrain block):
     campaign_mode       new|existing            (default new)
     campaign_id         required when mode=existing
     campaign_name       required when mode=new
-    objective           default Traffic
+    objective           default Conversions
+    bid_strategy        max_conversions | target_cpa | target_roas
+                        (default max_conversions; conversion objectives only)
+    conversion_id       required for Conversions / AppInstalls
+                        (Amplify targetConversionId / targetCpaConversionId)
+    target_cpa_usd      required when bid_strategy=target_cpa
+    target_roas         required when bid_strategy=target_roas
     budget_amount_usd   required when mode=new   (total budget)
     daily_target_usd    optional                 (pacing daily cap)
-    cpc_usd             default 0.30             (max CPC bid)
+    cpc_usd             default 0.30             (starting CPC; required by create)
     start_time/end_time ISO 8601 (optional)
     creative_format     "1:1" | "16:9"           (default 1:1)
     platforms[]         DESKTOP|MOBILE|TABLET     (default all three)
@@ -71,9 +77,36 @@ _CTA_VALUES = {
     "REGISTER", "WATCH_MORE", "TRY_NOW", "ORDER_NOW", "DONATE", "VISIT_SITE",
 }
 
-_OBJECTIVE_VALUES = {
-    "Traffic", "Conversions", "Awareness", "AppInstall", "LeadGeneration",
-    "Engagement", "VideoViews",
+# Amplify Campaign Objective values. App installs are ``AppInstalls`` in the
+# API (the launch form still posts the shorter ``AppInstall`` alias).
+_OBJECTIVE_ALIASES = {
+    "traffic": "Traffic",
+    "conversions": "Conversions",
+    "awareness": "Awareness",
+    "appinstall": "AppInstalls",
+    "appinstalls": "AppInstalls",
+    "leadgeneration": "LeadGeneration",
+    "engagement": "Engagement",
+    "videoviews": "VideoViews",
+}
+_DEFAULT_OBJECTIVE = "Conversions"
+# Objectives whose supported optimization types are conversion strategies
+# (CPC / max conversions / target CPA / target ROAS), not TRAFFIC.
+_CONVERSION_OBJECTIVES = {"Conversions", "AppInstalls"}
+_DEFAULT_BID_STRATEGY = "max_conversions"
+_BID_STRATEGY_ALIASES = {
+    "max": "max_conversions",
+    "max_conversion": "max_conversions",
+    "maxconversions": "max_conversions",
+    "max_conversion_fully_automated": "max_conversions",
+    "tcpa": "target_cpa",
+    "targetcpa": "target_cpa",
+    "cpa": "target_cpa",
+    "target_cpa_fully_automated": "target_cpa",
+    "troas": "target_roas",
+    "targetroas": "target_roas",
+    "roas": "target_roas",
+    "target_roas_fully_automated": "target_roas",
 }
 
 
@@ -364,6 +397,86 @@ def _build_budget_payload(form: Mapping[str, Any], *, campaign_name: str) -> Dic
     return payload
 
 
+def _norm_objective(raw: Any) -> str:
+    key = re.sub(r"[\s_-]+", "", str(raw or "").strip().lower())
+    if not key:
+        return _DEFAULT_OBJECTIVE
+    return _OBJECTIVE_ALIASES.get(key, _DEFAULT_OBJECTIVE)
+
+
+def _norm_bid_strategy(raw: Any) -> str:
+    key = re.sub(r"[\s-]+", "_", str(raw or "").strip().lower())
+    if not key:
+        return _DEFAULT_BID_STRATEGY
+    key = _BID_STRATEGY_ALIASES.get(key, key)
+    if key not in ("max_conversions", "target_cpa", "target_roas"):
+        return _DEFAULT_BID_STRATEGY
+    return key
+
+
+def _conversion_id(form: Mapping[str, Any]) -> str:
+    for key in ("conversion_id", "target_conversion_id", "targetConversionId"):
+        val = form.get(key)
+        if val not in (None, ""):
+            text = str(val).strip()
+            if text:
+                return text
+    return ""
+
+
+def _campaign_optimization(form: Mapping[str, Any], objective: str) -> Dict[str, Any]:
+    """Amplify ``campaignOptimization`` for the chosen objective.
+
+    Conversion objectives refuse to launch without a conversion event id.
+    Sending only ``objective`` + ``cpc`` is what made earlier launches come
+    out as Traffic (Amplify's default optimization is clicks).
+    """
+    if objective in ("Traffic", "Awareness"):
+        # Those objectives only support the TRAFFIC optimization type.
+        return {"optimizationType": "TRAFFIC"}
+    if objective not in _CONVERSION_OBJECTIVES:
+        # Lead generation / engagement / video views are not Amplify objectives.
+        # Leave optimization unset rather than silently forcing clicks.
+        return {}
+
+    strategy = _norm_bid_strategy(form.get("bid_strategy") or form.get("optimization_type"))
+    conv = _conversion_id(form)
+    if not conv:
+        raise ValueError(
+            "A targeted conversion is required for a Conversions campaign. "
+            "Pick a conversion event on the launch form (or save one on the offer). "
+            "This launch was not created as Traffic."
+        )
+
+    if strategy == "target_cpa":
+        tcpa = _usd(form.get("target_cpa_usd") or form.get("target_cpa"))
+        if tcpa is None or tcpa <= 0:
+            raise ValueError(
+                "Target CPA (USD) is required when the bid strategy is Target CPA."
+            )
+        return {
+            "optimizationType": "TARGET_CPA_FULLY_AUTOMATED",
+            "targetCpaConversionId": conv,
+            "targetCpa": round(tcpa, 2),
+        }
+    if strategy == "target_roas":
+        troas = _usd(form.get("target_roas") or form.get("target_roas_usd"))
+        if troas is None or troas <= 0:
+            raise ValueError(
+                "Target ROAS is required when the bid strategy is Target ROAS "
+                "(1.5 means $1.50 of conversion value per $1 spent)."
+            )
+        return {
+            "optimizationType": "TARGET_ROAS_FULLY_AUTOMATED",
+            "targetRoasConversionId": conv,
+            "targetRoas": round(troas, 2),
+        }
+    return {
+        "optimizationType": "MAX_CONVERSION_FULLY_AUTOMATED",
+        "targetConversionId": conv,
+    }
+
+
 def _build_campaign_payload(form: Mapping[str, Any], *, budget_id: str) -> Dict[str, Any]:
     name = (form.get("campaign_name") or "").strip()
     if not name:
@@ -371,9 +484,7 @@ def _build_campaign_payload(form: Mapping[str, Any], *, budget_id: str) -> Dict[
     cpc = _usd(form.get("cpc_usd"))
     if cpc is None:
         cpc = 0.30
-    objective = (form.get("objective") or "Traffic").strip()
-    if objective not in _OBJECTIVE_VALUES:
-        objective = "Traffic"
+    objective = _norm_objective(form.get("objective"))
 
     platforms = [p for p in _form_list(form, "platforms") if p in ("DESKTOP", "MOBILE", "TABLET")]
     if not platforms:
@@ -394,6 +505,9 @@ def _build_campaign_payload(form: Mapping[str, Any], *, budget_id: str) -> Dict[
         "objective": objective,
         "targeting": targeting,
     }
+    optimization = _campaign_optimization(form, objective)
+    if optimization:
+        payload["campaignOptimization"] = optimization
     suffix = (form.get("suffix_tracking_code") or "").strip()
     if suffix:
         payload["suffixTrackingCode"] = suffix
@@ -472,8 +586,11 @@ def outbrain_bulk_launch(
         campaign_name = (form.get("campaign_name") or "").strip()
         if not campaign_name:
             return {"ok": False, "error": "campaign_name is required"}
+        # Validate the campaign (objective, conversion, CPA) before creating a
+        # budget so a missing pixel does not leave an orphan budget behind.
         try:
             budget_payload = _build_budget_payload(form, campaign_name=campaign_name)
+            campaign_payload = _build_campaign_payload(form, budget_id="")
         except ValueError as e:
             return {"ok": False, "error": str(e)}
         try:
@@ -486,10 +603,7 @@ def outbrain_bulk_launch(
         if not budget_id:
             return {"ok": False, "error": f"budget create returned no id: {created_budget}"}
 
-        try:
-            campaign_payload = _build_campaign_payload(form, budget_id=budget_id)
-        except ValueError as e:
-            return {"ok": False, "error": str(e), "budget_id": budget_id}
+        campaign_payload["budgetId"] = budget_id
         try:
             _progress("Creating campaign…")
             created_campaign = adapter.create_campaign(account_id, campaign_payload)

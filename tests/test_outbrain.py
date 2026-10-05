@@ -94,6 +94,24 @@ class OutbrainApiHelpersTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in rows], ["1", "2", "3"])
         self.assertEqual(calls["n"], 2)
 
+    def test_list_conversions_uses_conversion_events(self):
+        from outbrain_api import OutbrainClient
+
+        c = OutbrainClient(token="tok")
+        seen = {}
+
+        def fake_get(path, params=None):
+            seen["path"] = path
+            return {
+                "count": 1,
+                "conversionEvents": [{"id": "cv1", "name": "Purchase", "category": "PURCHASE"}],
+            }
+
+        c.get = fake_get  # type: ignore
+        rows = c.list_conversions("mk1")
+        self.assertEqual(seen["path"], "/marketers/mk1/conversionEvents")
+        self.assertEqual(rows[0]["id"], "cv1")
+
 
 # ----------------------------------------------------------------------
 # Adapter
@@ -254,6 +272,8 @@ class OutbrainLauncherTest(unittest.TestCase):
         # campaign payload
         _, camp = adapter.campaigns[0]
         self.assertEqual(camp["budgetId"], "bud-1")
+        self.assertEqual(camp["objective"], "Traffic")
+        self.assertEqual(camp["campaignOptimization"], {"optimizationType": "TRAFFIC"})
         self.assertEqual(camp["cpc"], 0.40)
         self.assertFalse(camp["enabled"])
         self.assertEqual(camp["targeting"]["platform"], ["DESKTOP", "MOBILE"])
@@ -318,6 +338,7 @@ class OutbrainLauncherTest(unittest.TestCase):
             "campaign_name": "C",
             "budget_amount_usd": "800",
             "end_time": "2026-12-31T00:00",
+            "conversion_id": "conv-purchase",
             "creative_format": "1:1",
             "landing_page_url": "https://e.com",
             "headline_0": "Bounded budget campaign",
@@ -329,6 +350,88 @@ class OutbrainLauncherTest(unittest.TestCase):
         self.assertEqual(bud["type"], "CAMPAIGN")
         self.assertEqual(bud["endDate"], "2026-12-31")
         self.assertFalse(bud["runForever"])
+        _, camp = adapter.campaigns[0]
+        self.assertEqual(camp["objective"], "Conversions")
+        self.assertEqual(
+            camp["campaignOptimization"],
+            {
+                "optimizationType": "MAX_CONVERSION_FULLY_AUTOMATED",
+                "targetConversionId": "conv-purchase",
+            },
+        )
+
+    def test_missing_conversion_does_not_create_traffic(self):
+        from bulk_launcher_outbrain import outbrain_bulk_launch
+
+        adapter = _LaunchAdapter()
+        host_image, _ = self._host()
+        form = _MultiDictForm({
+            "account_id": "mk1",
+            "campaign_mode": "new",
+            "campaign_name": "C",
+            "budget_amount_usd": "100",
+            "landing_page_url": "https://e.com",
+            "headline_0": "Needs a pixel",
+        })
+        files = {"creative_0": _UploadStub(_png_bytes(), "a.png")}
+        res = outbrain_bulk_launch(adapter, form=form, files=files, host_image=host_image)
+        self.assertFalse(res["ok"])
+        self.assertIn("targeted conversion", res["error"].lower())
+        self.assertEqual(adapter.budgets, [])
+        self.assertEqual(adapter.campaigns, [])
+
+    def test_target_cpa_payload(self):
+        from bulk_launcher_outbrain import outbrain_bulk_launch
+
+        adapter = _LaunchAdapter()
+        host_image, _ = self._host()
+        form = _MultiDictForm({
+            "account_id": "mk1",
+            "campaign_mode": "new",
+            "campaign_name": "CPA Camp",
+            "objective": "Conversions",
+            "bid_strategy": "target_cpa",
+            "conversion_id": "conv-lead",
+            "target_cpa_usd": "25",
+            "budget_amount_usd": "200",
+            "landing_page_url": "https://e.com",
+            "headline_0": "CPA headline",
+        })
+        files = {"creative_0": _UploadStub(_png_bytes(), "a.png")}
+        res = outbrain_bulk_launch(adapter, form=form, files=files, host_image=host_image)
+        self.assertTrue(res["ok"], res)
+        _, camp = adapter.campaigns[0]
+        self.assertEqual(camp["objective"], "Conversions")
+        self.assertEqual(
+            camp["campaignOptimization"],
+            {
+                "optimizationType": "TARGET_CPA_FULLY_AUTOMATED",
+                "targetCpaConversionId": "conv-lead",
+                "targetCpa": 25.0,
+            },
+        )
+        self.assertNotIn("baseCpc", camp["campaignOptimization"])
+
+    def test_target_cpa_requires_amount(self):
+        from bulk_launcher_outbrain import outbrain_bulk_launch
+
+        adapter = _LaunchAdapter()
+        host_image, _ = self._host()
+        form = _MultiDictForm({
+            "account_id": "mk1",
+            "campaign_mode": "new",
+            "campaign_name": "CPA Camp",
+            "bid_strategy": "target_cpa",
+            "conversion_id": "conv-lead",
+            "budget_amount_usd": "200",
+            "landing_page_url": "https://e.com",
+            "headline_0": "CPA headline",
+        })
+        files = {"creative_0": _UploadStub(_png_bytes(), "a.png")}
+        res = outbrain_bulk_launch(adapter, form=form, files=files, host_image=host_image)
+        self.assertFalse(res["ok"])
+        self.assertIn("Target CPA", res["error"])
+        self.assertEqual(adapter.budgets, [])
 
     def test_prepare_creative_1to1_dims(self):
         from bulk_launcher_outbrain import prepare_creative

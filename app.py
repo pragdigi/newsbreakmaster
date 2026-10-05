@@ -1953,6 +1953,26 @@ def api_smartnews_pixels(account_id: str):
     return jsonify({"ok": True, "account_id": account_id, "pixels": pixels})
 
 
+@app.route("/api/outbrain/conversions/<account_id>")
+def api_outbrain_conversions(account_id: str):
+    """Conversion events for an Outbrain/Teads marketer.
+
+    Amplify: ``GET /marketers/{id}/conversionEvents``. The launch form uses
+    the event ``id`` as ``targetConversionId`` / ``targetCpaConversionId``.
+    """
+    if _active_platform() != "outbrain":
+        return jsonify({"error": "Switch to Outbrain to list conversion events"}), 400
+    adapter = _adapter()
+    if not adapter:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        events = adapter.list_events(account_id) or []
+    except Exception as e:
+        app.logger.warning("outbrain list_conversions failed account=%s err=%s", account_id, e)
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"ok": True, "account_id": account_id, "conversions": events})
+
+
 @app.route("/api/mediago/pixels/<account_id>")
 def api_mediago_pixels(account_id: str):
     """Return conversion pixels for a MediaGo ad account (``GET /manage/v1/account``)."""

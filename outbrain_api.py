@@ -74,7 +74,17 @@ def unwrap_list(body: Any, *keys: str) -> List[Dict[str, Any]]:
         return [r for r in body if isinstance(r, dict)]
     if not isinstance(body, dict):
         return []
-    for k in (*keys, "marketers", "budgets", "campaigns", "promotedLinks", "results", "data"):
+    for k in (
+        *keys,
+        "marketers",
+        "budgets",
+        "campaigns",
+        "promotedLinks",
+        "conversionEvents",
+        "conversions",
+        "results",
+        "data",
+    ):
         v = body.get(k)
         if isinstance(v, list):
             return [r for r in v if isinstance(r, dict)]
@@ -486,11 +496,13 @@ class OutbrainClient:
         return unwrap_list(body, "locations", "results")
 
     def list_conversions(self, marketer_id: str) -> List[Dict[str, Any]]:
-        try:
-            body = self.get(f"/marketers/{marketer_id}/conversions")
-        except OutbrainAPIError:
-            return []
-        return unwrap_list(body, "conversions", "results")
+        """Conversion events for a marketer (``GET /marketers/{id}/conversionEvents``).
+
+        The list envelope is ``{count, conversionEvents: [...]}``. Errors
+        propagate so a dead token is not reported as "no pixels".
+        """
+        body = self.get(f"/marketers/{marketer_id}/conversionEvents")
+        return unwrap_list(body, "conversionEvents", "conversions", "results")
 
 
 # ----------------------------------------------------------------------

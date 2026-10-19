@@ -169,6 +169,16 @@ def _env_org_ids() -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
+def _newsbreak_org_ids() -> list[str]:
+    from newsbreak_org import resolve_newsbreak_org_ids
+
+    token = _env_access_token()
+    explicit = _env_org_ids()
+    if not token:
+        return explicit
+    return resolve_newsbreak_org_ids(token, explicit)
+
+
 def _env_smartnews_client_id() -> str:
     return (_cfg_val("SMARTNEWS_CLIENT_ID", "") or "").strip()
 
@@ -244,7 +254,7 @@ def _effective_token(platform: str | None = None) -> dict | None:
     if p == "newsbreak":
         env_tok = _env_access_token()
         if env_tok:
-            return {"access_token": env_tok, "org_ids": _env_org_ids(), "platform": p}
+            return {"access_token": env_tok, "org_ids": _newsbreak_org_ids(), "platform": p}
         return storage.load_token(_user_id(), platform=p)
     if p == "smartnews":
         if _env_smartnews_configured():
@@ -351,9 +361,11 @@ def _ad_accounts_for_current_token() -> dict:
         raw = cl.get_ad_accounts(tok.get("org_ids") or [])
     except Exception:
         return {}
+    from newsbreak_org import sort_newsbreak_accounts
+
     return {
         str(a.get("id")): a.get("name", a.get("id"))
-        for a in _flatten_ad_accounts(raw)
+        for a in sort_newsbreak_accounts(_flatten_ad_accounts(raw))
         if a.get("id")
     }
 

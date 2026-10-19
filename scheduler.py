@@ -19,9 +19,11 @@ _scheduler: BackgroundScheduler | None = None
 def _env_credentials_for(platform: str) -> List[Dict[str, Any]]:
     """Env-configured credentials per platform (preferred — survives redeploys)."""
     if platform == "newsbreak":
+        from newsbreak_org import parse_csv_ids, resolve_newsbreak_org_ids
+
         tok = (os.environ.get("NEWSBREAK_ACCESS_TOKEN") or "").strip()
         raw = os.environ.get("NEWSBREAK_DEFAULT_ORG_IDS", "")
-        org_ids = [x.strip() for x in raw.split(",") if x.strip()]
+        org_ids = resolve_newsbreak_org_ids(tok, parse_csv_ids(raw))
         if tok and org_ids:
             return [{"uid": "env", "access_token": tok, "org_ids": org_ids}]
         return []

@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from typing import Any, BinaryIO, Dict, List, Optional, Union
 
 from newsbreak_api import NewsBreakAPIError, NewsBreakClient, unwrap_list_response
+from newsbreak_org import sort_newsbreak_accounts
 
 
 class NewsBreakAdapter:
@@ -26,7 +27,7 @@ class NewsBreakAdapter:
     # --- accounts ---
     def get_accounts(self) -> List[Dict[str, Any]]:
         raw = self.client.get_ad_accounts(self.org_ids or [])
-        return _flatten_ad_accounts(raw)
+        return sort_newsbreak_accounts(_flatten_ad_accounts(raw))
 
     # --- campaigns / ad sets / ads ---
     def get_campaigns(self, account_id: str) -> List[Dict[str, Any]]:

@@ -266,10 +266,15 @@ def fetch_newsbreak(start: date, end: date) -> Dict[str, Any]:
         from platforms import get_adapter
         from rules_engine import build_report_payload, normalize_report_rows
 
-        org_ids = _csv_ids("NEWSBREAK_DEFAULT_ORG_IDS")
+        from newsbreak_org import resolve_newsbreak_org_ids
+
+        token = os.environ.get("NEWSBREAK_ACCESS_TOKEN", "").strip()
+        org_ids = resolve_newsbreak_org_ids(
+            token, _csv_ids("NEWSBREAK_DEFAULT_ORG_IDS")
+        )
         adapter = get_adapter(
             "newsbreak",
-            access_token=os.environ.get("NEWSBREAK_ACCESS_TOKEN", "").strip(),
+            access_token=token,
             org_ids=org_ids,
         )
         raw_accounts = adapter.get_accounts() or []

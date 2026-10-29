@@ -1931,28 +1931,25 @@
       op.textContent = label || ('Account ' + sid);
       acct.appendChild(op);
     }
-    function selectAccount(ids){
+    function selectAccount(ids, label){
       if (!acct) return;
-      (ids || []).forEach(function(id){
-        ensureAccountOption(id);
+      ids = (ids || []).map(String).filter(Boolean);
+      ids.forEach(function(id){
+        ensureAccountOption(id, label);
       });
+      if (!ids.length) {
+        if (acct.value) loadPixels();
+        return;
+      }
       var current = String(acct.value || '');
       var match = null;
-      if (ids && ids.length) {
-        if (ids.indexOf(current) !== -1) match = current;
-        else {
-          match = ids.find(function(id){
-            return Array.prototype.slice.call(acct.options).some(function(op){
-              return String(op.value) === String(id);
-            });
-          }) || null;
-        }
-      }
-      if (!match) {
-        var xe = Array.prototype.slice.call(acct.options).find(function(op){
-          return /xeviola/i.test(op.textContent || '') || /xeviola/i.test(op.value || '');
-        });
-        if (xe) match = xe.value;
+      if (current && ids.indexOf(current) !== -1) match = current;
+      else {
+        match = ids.find(function(id){
+          return Array.prototype.slice.call(acct.options).some(function(op){
+            return String(op.value) === String(id);
+          });
+        }) || ids[0];
       }
       if (match && String(acct.value) !== String(match)) {
         acct.value = match;
@@ -2062,9 +2059,9 @@
     sel.addEventListener('change', function(){
       var o = (OFFERS||[]).find(function(x){ return x.id === sel.value; });
       if (!o) { if (summary) summary.textContent=''; return; }
-      selectAccount(offerAccountIds(o));
-      var land = offerLanding(o);
       var brand = o.brand_name || o.name || '';
+      selectAccount(offerAccountIds(o), brand);
+      var land = offerLanding(o);
       var landEl = document.getElementById('mg-landing');
       var brandEl = document.getElementById('mg-brand-name');
       var defH = document.getElementById('mg-default-headline');

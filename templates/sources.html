@@ -22,6 +22,7 @@
         <option value="{{ id }}">{{ name }} ({{ id }})</option>
         {% endfor %}
       </select>
+      <p id="src-account-active" class="nb-hint" style="margin:6px 0 0;"></p>
     </div>
     <div>
       <label class="nb-label">From</label>
@@ -155,11 +156,39 @@
   let shown = PAGE;
   let renderedUntil = 0;
 
+  const ACCOUNT_STORE = 'nb_mediago_src_account';
   const params = new URLSearchParams(window.location.search);
   const presetAccount = params.get('account') || params.get('account_id') || '';
-  if (presetAccount) {
-    const sel = document.getElementById('src-account');
-    if ([].some.call(sel.options, function(o){ return o.value === presetAccount; })) sel.value = presetAccount;
+  const accountSel = document.getElementById('src-account');
+  function accountLabel(){
+    if (!accountSel || !accountSel.value) return '';
+    const opt = accountSel.options[accountSel.selectedIndex];
+    return opt ? (opt.textContent || opt.value) : accountSel.value;
+  }
+  function syncAccountBanner(){
+    const el = document.getElementById('src-account-active');
+    if (!el) return;
+    const lab = accountLabel();
+    el.textContent = lab ? ('Using ad account: ' + lab) : '';
+  }
+  function persistAccount(){
+    if (!accountSel || !accountSel.value) return;
+    try { sessionStorage.setItem(ACCOUNT_STORE, accountSel.value); } catch (e) {}
+    syncAccountBanner();
+  }
+  if (accountSel) {
+    if (presetAccount && [].some.call(accountSel.options, function(o){ return o.value === presetAccount; })) {
+      accountSel.value = presetAccount;
+    } else {
+      try {
+        const saved = sessionStorage.getItem(ACCOUNT_STORE);
+        if (saved && [].some.call(accountSel.options, function(o){ return o.value === saved; })) {
+          accountSel.value = saved;
+        }
+      } catch (e) {}
+    }
+    accountSel.addEventListener('change', persistAccount);
+    syncAccountBanner();
   }
 
   function iso(d){ return d.toISOString().slice(0,10); }
@@ -445,10 +474,23 @@
     });
   }
 
+  function tinnitoTitlesOnNonTinnitoAccount(acctName, list){
+    const n = String(acctName || '').toLowerCase();
+    if (!n || n.indexOf('tinnito') >= 0 || n.indexOf('xeviola') >= 0) return '';
+    if (!list || !list.length) return '';
+    const allLegacy = list.every(function(c){
+      const t = String(c.name || '').toLowerCase();
+      return t.indexOf('tinnito') >= 0 || t.indexOf('xeviola') >= 0;
+    });
+    if (!allLegacy) return '';
+    return ' Campaign titles may still say Tinnito/Xeviola if they were copied onto this account in MediaGo.';
+  }
+
   async function loadCampaigns(){
     const account = accountId();
     if (!account) { setStatus('Pick an account.'); return; }
-    setStatus('Loading live campaign stats…');
+    persistAccount();
+    setStatus('Loading campaigns for ' + (accountLabel() || account) + '…');
     try {
       const res = await fetch('/api/sources/campaigns?account_id='+encodeURIComponent(account)+'&'+rangeQs());
       const body = await res.json();
@@ -456,7 +498,10 @@
         setStatus(body.error);
         campaigns = body.campaigns || [];
       } else {
-        setStatus('Window '+(body.start||'')+' → '+(body.end||''));
+        const who = body.account_name ? (body.account_name + ' (' + (body.account_id || account) + ')') : (accountLabel() || account);
+        let msg = who + ' · ' + (body.start||'') + ' → ' + (body.end||'');
+        msg += tinnitoTitlesOnNonTinnitoAccount(body.account_name || who, body.campaigns || []);
+        setStatus(msg);
         campaigns = body.campaigns || [];
       }
       showCampaigns();

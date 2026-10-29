@@ -1356,10 +1356,14 @@ def api_sources_campaigns():
     from platforms.mediago import rollup_campaign_source_stats
 
     rows = rollup_campaign_source_stats(campaigns, report)
+    account_name = account_id
+    if adapter.platform == "mediago":
+        account_name = _mediago_account_labels().get(account_id, account_id)
     return jsonify(
         {
             "ok": True,
             "account_id": account_id,
+            "account_name": account_name,
             "start": start.isoformat(),
             "end": end.isoformat(),
             "days": days,

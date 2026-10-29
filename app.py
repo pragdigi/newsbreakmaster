@@ -239,6 +239,31 @@ def _env_mediago_account_ids() -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
+def _mediago_org_ids(*extra_account_ids: str | Iterable[str]) -> list[str]:
+    """Env allowlist, saved login ids, and MediaGo offer links."""
+    ids = list(_env_mediago_account_ids())
+    seen = set(ids)
+    for raw in extra_account_ids:
+        if isinstance(raw, (list, tuple)):
+            candidates = raw
+        else:
+            candidates = [raw]
+        for aid in candidates:
+            aid = str(aid or "").strip()
+            if aid and aid not in seen:
+                seen.add(aid)
+                ids.append(aid)
+    try:
+        for offer in storage.list_offers(platform="mediago"):
+            for aid in storage.offer_account_ids(offer, "mediago"):
+                if aid and aid not in seen:
+                    seen.add(aid)
+                    ids.append(aid)
+    except Exception:
+        pass
+    return ids
+
+
 def _env_mediago_configured() -> bool:
     return bool(_env_mediago_api_token())
 
@@ -289,12 +314,14 @@ def _effective_token(platform: str | None = None) -> dict | None:
             return {
                 "api_token": _env_mediago_api_token(),
                 "auth_level": _env_mediago_auth_level(),
-                "org_ids": _env_mediago_account_ids(),
+                "org_ids": _mediago_org_ids(),
                 "platform": p,
             }
         saved = storage.load_token(_user_id(), platform=p)
         if saved and (saved.get("api_token") or saved.get("access_token")):
-            return saved
+            merged = dict(saved)
+            merged["org_ids"] = _mediago_org_ids(*(saved.get("org_ids") or []))
+            return merged
         return None
     return None
 

@@ -776,6 +776,22 @@ class MediaGoAdapter:
     def verify(self) -> None:
         self.client.verify()
 
+    def _resolved_account_ids(self) -> List[str]:
+        """Env/login allowlist plus ad accounts linked on saved MediaGo offers."""
+        ids = list(self.account_ids)
+        seen = set(ids)
+        try:
+            import storage as _storage
+
+            for offer in _storage.list_offers(platform="mediago"):
+                for aid in _storage.offer_account_ids(offer, "mediago"):
+                    if aid and aid not in seen:
+                        seen.add(aid)
+                        ids.append(aid)
+        except Exception:
+            pass
+        return ids
+
     def _append_account_row(
         self, out: List[Dict[str, Any]], seen: set[str], acc: Dict[str, Any]
     ) -> None:
@@ -785,7 +801,8 @@ class MediaGoAdapter:
         aid = str(aid)
         if aid in seen:
             return
-        if self.account_ids and aid not in self.account_ids:
+        allow = self._resolved_account_ids()
+        if allow and aid not in allow:
             return
         pixels = acc.get("pixels") if isinstance(acc.get("pixels"), list) else []
         self._account_pixels[aid] = pixels
@@ -809,7 +826,7 @@ class MediaGoAdapter:
 
         # Allowlisted ids (MEDIAGO_DEFAULT_ACCOUNT_IDS) may include accounts that
         # client-level listing omits — hydrate each via manage API.
-        for aid in self.account_ids:
+        for aid in self._resolved_account_ids():
             if aid in seen:
                 continue
             matched: Optional[Dict[str, Any]] = None

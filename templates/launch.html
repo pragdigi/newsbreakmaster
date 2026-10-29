@@ -1919,8 +1919,23 @@
       var picked = document.querySelector('input[name="dayparting_mode"]:checked');
       period.style.display = (picked && picked.value === 'period') ? '' : 'none';
     }
+    function ensureAccountOption(id, label){
+      if (!acct || !id) return;
+      var sid = String(id);
+      var exists = Array.prototype.slice.call(acct.options).some(function(op){
+        return String(op.value) === sid;
+      });
+      if (exists) return;
+      var op = document.createElement('option');
+      op.value = sid;
+      op.textContent = label || ('Account ' + sid);
+      acct.appendChild(op);
+    }
     function selectAccount(ids){
       if (!acct) return;
+      (ids || []).forEach(function(id){
+        ensureAccountOption(id);
+      });
       var current = String(acct.value || '');
       var match = null;
       if (ids && ids.length) {

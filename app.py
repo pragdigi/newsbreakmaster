@@ -264,6 +264,59 @@ def _mediago_org_ids(*extra_account_ids: str | Iterable[str]) -> list[str]:
     return ids
 
 
+def _mediago_account_labels() -> dict[str, str]:
+    """Ad account id → display name from env allowlist and saved offers."""
+    labels: dict[str, str] = {}
+    for aid in _mediago_org_ids():
+        labels.setdefault(str(aid), f"MediaGo {aid}")
+    try:
+        for offer in storage.list_offers(platform="mediago"):
+            for aid in storage.offer_account_ids(offer, "mediago"):
+                aid = str(aid or "").strip()
+                if not aid:
+                    continue
+                name = (offer.get("brand_name") or offer.get("name") or "").strip()
+                if name:
+                    labels[aid] = name
+    except Exception as exc:
+        app.logger.warning("mediago account labels from offers failed: %s", exc)
+    return labels
+
+
+def _sort_mediago_accounts(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _key(a: Dict[str, Any]) -> tuple:
+        n = (a.get("name") or "").lower()
+        if "cardian" in n:
+            return (0, n)
+        if "tinnito" in n or "xeviola" in n:
+            return (1, n)
+        return (2, n)
+
+    return sorted(rows, key=_key)
+
+
+def _adapter_accounts(adapter) -> List[Dict[str, Any]]:
+    """Adapter account list, with MediaGo offer/env ids merged in."""
+    rows = list(adapter.get_accounts() or [])
+    if getattr(adapter, "platform", "") != "mediago":
+        return rows
+    seen = {str(a.get("id")) for a in rows if a.get("id")}
+    currency = getattr(adapter, "currency", "USD")
+    for aid, name in _mediago_account_labels().items():
+        if aid in seen:
+            continue
+        rows.append(
+            {
+                "id": aid,
+                "name": name,
+                "currency": currency,
+                "pixels": [],
+            }
+        )
+        seen.add(aid)
+    return _sort_mediago_accounts(rows)
+
+
 def _env_mediago_configured() -> bool:
     return bool(_env_mediago_api_token())
 
@@ -735,7 +788,7 @@ def dashboard():
     err = None
     accounts: list[dict] = []
     try:
-        accounts = adapter.get_accounts()
+        accounts = _adapter_accounts(adapter)
     except Exception as e:
         err = str(e)
     return render_template("dashboard.html", accounts=accounts, error=err)
@@ -850,7 +903,7 @@ def launch():
         return redirect(url_for("login"))
     platform = adapter.platform
     try:
-        accounts = adapter.get_accounts()
+        accounts = _adapter_accounts(adapter)
     except Exception:
         accounts = []
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
@@ -1558,7 +1611,9 @@ def api_accounts():
     if not adapter:
         return jsonify({"error": "unauthorized"}), 401
     try:
-        return jsonify({"accounts": adapter.get_accounts(), "platform": adapter.platform})
+        return jsonify(
+            {"accounts": _adapter_accounts(adapter), "platform": adapter.platform}
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -2061,7 +2116,7 @@ def api_mediago_sync_events():
     errors: list = []
 
     try:
-        raw_accounts = adapter.get_accounts() or []
+        raw_accounts = _adapter_accounts(adapter) or []
     except Exception as e:
         app.logger.warning("mediago sync: get_accounts failed err=%s", e)
         raw_accounts = []

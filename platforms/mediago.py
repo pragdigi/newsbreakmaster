@@ -788,8 +788,8 @@ class MediaGoAdapter:
                     if aid and aid not in seen:
                         seen.add(aid)
                         ids.append(aid)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("mediago offer account merge failed: %s", exc)
         return ids
 
     def _append_account_row(

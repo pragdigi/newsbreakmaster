@@ -871,6 +871,44 @@ class MediaGoPixelAndCpaTest(unittest.TestCase):
 
 
 class MediaGoAppPixelRoutesTest(unittest.TestCase):
+    def test_api_accounts_merges_offer_linked_ad_accounts(self):
+        from tests.test_ai_studio import _TempStorage
+
+        with _TempStorage():
+            import app as appmod
+            import storage
+
+            storage.upsert_offer(
+                {
+                    "name": "Cardian",
+                    "brand_name": "Cardian",
+                    "ad_account_ids": ["39484"],
+                    "accounts": {"mediago": "39484"},
+                    "landing_url": "https://example.com",
+                },
+                platform="mediago",
+            )
+
+            class FakeAdapter:
+                platform = "mediago"
+                currency = "USD"
+
+                def get_accounts(self):
+                    return [{"id": "38485", "name": "Xeviola", "pixels": []}]
+
+            with (
+                patch.object(appmod, "_adapter", return_value=FakeAdapter()),
+                patch.object(appmod, "_effective_token", return_value={"api_token": "x"}),
+            ):
+                client = appmod.app.test_client()
+                with client.session_transaction() as s:
+                    s["platform"] = "mediago"
+                resp = client.get("/api/accounts")
+                self.assertEqual(resp.status_code, 200)
+                ids = [a["id"] for a in resp.get_json()["accounts"]]
+                self.assertEqual(ids, ["39484", "38485"])
+                self.assertEqual(resp.get_json()["accounts"][0]["name"], "Cardian")
+
     def test_sync_list_and_offer_pixels_map(self):
         from tests.test_ai_studio import _TempStorage
 
@@ -879,6 +917,7 @@ class MediaGoAppPixelRoutesTest(unittest.TestCase):
 
             class FakeAdapter:
                 platform = "mediago"
+                currency = "USD"
 
                 def get_accounts(self):
                     return [{"id": "acc1", "name": "Acme"}]

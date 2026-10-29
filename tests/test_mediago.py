@@ -196,6 +196,24 @@ class MediaGoAdapterTest(unittest.TestCase):
         self.assertFalse(a.supports_ad_set_scope)
         self.assertEqual(a.get_ad_groups("1", "2"), [])
 
+    def test_get_accounts_hydrates_allowlisted_ids_missing_from_client_list(self):
+        from platforms.mediago import MediaGoAdapter
+
+        class _C:
+            def get_accounts(self):
+                return [{"account_id": "38485", "account_name": "Xeviola", "pixels": []}]
+
+            def get_authorized_accounts(self, account_id=None):
+                if str(account_id) == "39484":
+                    return [{"account_id": "39484", "account_name": "Cardian", "pixels": []}]
+                return []
+
+        a = MediaGoAdapter(_C(), account_ids=["38485", "39484"])
+        rows = a.get_accounts()
+        ids = [r["id"] for r in rows]
+        self.assertEqual(ids, ["38485", "39484"])
+        self.assertEqual(rows[1]["name"], "Cardian")
+
     def test_prepare_campaign_payload_defaults_native_allows_display(self):
         from platforms.mediago import MediaGoAdapter
 

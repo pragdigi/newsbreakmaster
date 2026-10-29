@@ -776,26 +776,65 @@ class MediaGoAdapter:
     def verify(self) -> None:
         self.client.verify()
 
+    def _append_account_row(
+        self, out: List[Dict[str, Any]], seen: set[str], acc: Dict[str, Any]
+    ) -> None:
+        aid = acc.get("account_id") or acc.get("id")
+        if not aid:
+            return
+        aid = str(aid)
+        if aid in seen:
+            return
+        if self.account_ids and aid not in self.account_ids:
+            return
+        pixels = acc.get("pixels") if isinstance(acc.get("pixels"), list) else []
+        self._account_pixels[aid] = pixels
+        out.append(
+            {
+                "id": aid,
+                "name": acc.get("account_name") or acc.get("name") or f"MediaGo {aid}",
+                "currency": self.currency,
+                "pixels": pixels,
+                "raw": acc,
+            }
+        )
+        seen.add(aid)
+
     def get_accounts(self) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
+        seen: set[str] = set()
         for acc in self.client.get_accounts():
-            aid = acc.get("account_id") or acc.get("id")
-            if not aid:
+            if isinstance(acc, dict):
+                self._append_account_row(out, seen, acc)
+
+        # Allowlisted ids (MEDIAGO_DEFAULT_ACCOUNT_IDS) may include accounts that
+        # client-level listing omits — hydrate each via manage API.
+        for aid in self.account_ids:
+            if aid in seen:
                 continue
-            aid = str(aid)
-            if self.account_ids and aid not in self.account_ids:
-                continue
-            pixels = acc.get("pixels") if isinstance(acc.get("pixels"), list) else []
-            self._account_pixels[aid] = pixels
-            out.append(
-                {
-                    "id": aid,
-                    "name": acc.get("account_name") or acc.get("name") or f"MediaGo {aid}",
-                    "currency": self.currency,
-                    "pixels": pixels,
-                    "raw": acc,
-                }
-            )
+            matched: Optional[Dict[str, Any]] = None
+            try:
+                rows = self.client.get_authorized_accounts(account_id=aid) or []
+            except Exception as exc:
+                logger.warning("mediago get_accounts hydrate failed account=%s err=%s", aid, exc)
+                rows = []
+            for acc in rows:
+                if not isinstance(acc, dict):
+                    continue
+                rid = str(acc.get("account_id") or acc.get("id") or "")
+                if rid == aid:
+                    matched = acc
+                    break
+            if matched is None and len(rows) == 1 and isinstance(rows[0], dict):
+                matched = rows[0]
+            if matched:
+                self._append_account_row(out, seen, matched)
+            else:
+                self._append_account_row(
+                    out,
+                    seen,
+                    {"account_id": aid, "account_name": f"MediaGo {aid}", "pixels": []},
+                )
         return out
 
     # ------------------------------------------------------------------

@@ -234,6 +234,12 @@ def _env_mediago_auth_level() -> str:
     return (_cfg_val("MEDIAGO_AUTH_LEVEL", "auto") or "auto").strip().lower() or "auto"
 
 
+def _env_mediago_account_tokens() -> dict[str, str]:
+    from platforms.mediago import parse_account_tokens
+
+    return parse_account_tokens(_cfg_val("MEDIAGO_ACCOUNT_TOKENS", ""))
+
+
 def _env_mediago_account_ids() -> list[str]:
     raw = _cfg_val("MEDIAGO_DEFAULT_ACCOUNT_IDS", "")
     return [x.strip() for x in raw.split(",") if x.strip()]
@@ -368,12 +374,14 @@ def _effective_token(platform: str | None = None) -> dict | None:
                 "api_token": _env_mediago_api_token(),
                 "auth_level": _env_mediago_auth_level(),
                 "org_ids": _mediago_org_ids(),
+                "account_tokens": _env_mediago_account_tokens(),
                 "platform": p,
             }
         saved = storage.load_token(_user_id(), platform=p)
         if saved and (saved.get("api_token") or saved.get("access_token")):
             merged = dict(saved)
             merged["org_ids"] = _mediago_org_ids(*(saved.get("org_ids") or []))
+            merged["account_tokens"] = _env_mediago_account_tokens()
             return merged
         return None
     return None
@@ -421,6 +429,7 @@ def _adapter(platform: str | None = None):
             "api_token": tok.get("api_token") or tok.get("access_token"),
             "auth_level": tok.get("auth_level") or _env_mediago_auth_level(),
             "account_ids": tok.get("org_ids") or tok.get("account_ids") or [],
+            "account_tokens": tok.get("account_tokens") or _env_mediago_account_tokens(),
         }
     else:
         return None

@@ -752,6 +752,24 @@ def normalize_account_pixel(px: Dict[str, Any], account_id: str = "") -> Dict[st
     }
 
 
+def parse_account_tokens(raw: str) -> Dict[str, str]:
+    """Parse ``MEDIAGO_ACCOUNT_TOKENS`` (``39484:<token>,…``).
+
+    Tokens are Base64 and may end with ``=``, so each pair is split on the
+    first colon only.
+    """
+    out: Dict[str, str] = {}
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        aid, tok = part.split(":", 1)
+        aid, tok = aid.strip(), tok.strip()
+        if aid and tok:
+            out[aid] = tok
+    return out
+
+
 class MediaGoAdapter:
     platform = "mediago"
     label = "MediaGo"
@@ -763,14 +781,19 @@ class MediaGoAdapter:
         client: MediaGoClient,
         account_ids: Optional[Sequence[Union[int, str]]] = None,
         default_currency: Optional[str] = None,
+        account_tokens: Optional[Dict[str, str]] = None,
     ):
         self.client = client
         self.account_ids = [str(x) for x in (account_ids or [])]
         if default_currency:
             self.currency = default_currency.upper()
+        self.account_tokens = {
+            str(k).strip(): str(v).strip()
+            for k, v in (account_tokens or {}).items()
+            if str(k).strip() and str(v).strip()
+        }
+        self._account_clients: Dict[str, MediaGoClient] = {}
         self._account_pixels: Dict[str, List[Dict[str, Any]]] = {}
-        self._token_account_ids: Optional[set] = None
-        self._token_account_labels: List[str] = []
 
     # ------------------------------------------------------------------
     # Auth / accounts
@@ -792,6 +815,10 @@ class MediaGoAdapter:
                         ids.append(aid)
         except Exception as exc:
             logger.warning("mediago offer account merge failed: %s", exc)
+        for aid in self.account_tokens:
+            if aid not in seen:
+                seen.add(aid)
+                ids.append(aid)
         return ids
 
     def _append_account_row(
@@ -832,8 +859,9 @@ class MediaGoAdapter:
             if aid in seen:
                 continue
             matched: Optional[Dict[str, Any]] = None
+            client = self._client_for(aid)
             try:
-                rows = self.client.get_authorized_accounts(account_id=aid) or []
+                rows = client.get_accounts() or []
             except Exception as exc:
                 logger.warning("mediago get_accounts hydrate failed account=%s err=%s", aid, exc)
                 rows = []
@@ -859,52 +887,60 @@ class MediaGoAdapter:
     # ------------------------------------------------------------------
     # Hierarchy reads
     # ------------------------------------------------------------------
-    def _token_accounts(self) -> Optional[set]:
-        """Account ids this API token can actually read. None if the check fails."""
-        if self._token_account_ids is not None:
-            return self._token_account_ids
-        try:
-            rows = self.client.get_accounts() or []
-        except Exception as exc:
-            logger.warning("mediago token account check failed: %s", exc)
-            return None
-        ids: set = set()
-        labels: List[str] = []
-        for acc in rows:
-            if not isinstance(acc, dict):
-                continue
-            aid = str(acc.get("account_id") or acc.get("id") or "").strip()
-            if not aid:
-                continue
-            ids.add(aid)
-            name = acc.get("account_name") or acc.get("name") or "account"
-            labels.append(f"{name} ({aid})")
-        self._token_account_ids = ids
-        self._token_account_labels = labels
-        return ids
+    def _client_for(self, account_id: str) -> MediaGoClient:
+        """Use a per-account token when ``MEDIAGO_ACCOUNT_TOKENS`` has one."""
+        aid = str(account_id or "").strip()
+        tok = self.account_tokens.get(aid)
+        if not tok:
+            return self.client
+        cached = self._account_clients.get(aid)
+        if cached is None:
+            level = getattr(self.client, "auth_level_pref", None) or "auto"
+            cached = MediaGoClient(tok, auth_level=level)
+            self._account_clients[aid] = cached
+        return cached
 
     def _require_account(self, account_id: str) -> None:
         """Refuse to serve another account's data when the token cannot switch.
 
         An account-level MediaGo token ignores ``Account-Id`` and always
-        returns its own campaigns. Offer-linked ids (Cardian 39484) must not
-        be presented as if that data loaded.
+        returns its own campaigns. A dedicated token in ``account_tokens``
+        is checked on its own.
         """
         aid = str(account_id or "").strip()
-        ids = self._token_accounts()
-        if not aid or not ids or aid in ids:
+        if not aid:
             return
-        seen = ", ".join(self._token_account_labels) or "a different account"
+        client = self._client_for(aid)
+        try:
+            rows = client.get_accounts() or []
+        except Exception as exc:
+            logger.warning("mediago token account check failed account=%s err=%s", aid, exc)
+            return
+        ids = {
+            str(acc.get("account_id") or acc.get("id") or "").strip()
+            for acc in rows
+            if isinstance(acc, dict)
+        }
+        ids.discard("")
+        if not ids or aid in ids:
+            return
+        labels = []
+        for acc in rows:
+            if not isinstance(acc, dict):
+                continue
+            name = acc.get("account_name") or acc.get("name") or "account"
+            labels.append(f"{name} ({acc.get('account_id') or acc.get('id')})")
+        seen = ", ".join(labels) or "a different account"
         raise ValueError(
             f"MediaGo token cannot read account {aid}. "
             f"This API token only has access to {seen}. "
-            "Replace MEDIAGO_API_TOKEN with a client-level token that includes "
-            f"{aid}, or with that account's own API token."
+            f"Add {aid}:<token> to MEDIAGO_ACCOUNT_TOKENS."
         )
 
     def get_campaigns(self, account_id: str) -> List[Dict[str, Any]]:
         self._require_account(account_id)
-        rows = [self._normalize_campaign(c, account_id) for c in self.client.list_campaigns(account_id)]
+        client = self._client_for(account_id)
+        rows = [self._normalize_campaign(c, account_id) for c in client.list_campaigns(account_id)]
         missing = [c for c in rows if not c.get("status") and c.get("id")]
         if not missing or not hasattr(self.client, "get_campaign_detail"):
             return rows
@@ -914,7 +950,7 @@ class MediaGoAdapter:
         for i in range(0, len(ids), 50):
             chunk = ids[i : i + 50]
             try:
-                details.extend(self.client.get_campaign_detail(account_id, chunk) or [])
+                details.extend(client.get_campaign_detail(account_id, chunk) or [])
             except Exception as exc:
                 logger.warning("mediago campaign detail hydrate failed: %s", exc)
         for d in details:
@@ -940,14 +976,14 @@ class MediaGoAdapter:
         return []
 
     def get_ads(self, account_id: str, parent_id: str) -> List[Dict[str, Any]]:
-        rows = self.client.list_ads(account_id, campaign_ids=[parent_id])
+        rows = self._client_for(account_id).list_ads(account_id, campaign_ids=[parent_id])
         return [self._normalize_ad(a, account_id, parent_id) for a in rows]
 
     # ------------------------------------------------------------------
     # Writes
     # ------------------------------------------------------------------
     def create_campaign(self, account_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        body = self.client.create_campaign(account_id, self._prepare_campaign_payload(payload))
+        body = self._client_for(account_id).create_campaign(account_id, self._prepare_campaign_payload(payload))
         if isinstance(body, dict):
             return body
         return {"raw": body}
@@ -963,10 +999,11 @@ class MediaGoAdapter:
         if not account_id:
             raise ValueError("MediaGo update_status requires account_id")
         lvl = (level or "").lower()
+        client = self._client_for(account_id)
         if lvl in ("campaign", "ad_set", "ad_group"):
-            body = self.client.set_campaign_status(account_id, [entity_id], enabled)
+            body = client.set_campaign_status(account_id, [entity_id], enabled)
         elif lvl == "ad":
-            body = self.client.set_ad_status(account_id, [entity_id], enabled)
+            body = client.set_ad_status(account_id, [entity_id], enabled)
         else:
             raise ValueError(f"Unknown level {level}")
         return body if isinstance(body, dict) else {"raw": body}
@@ -982,7 +1019,8 @@ class MediaGoAdapter:
     ) -> Dict[str, Any]:
         if not account_id:
             raise ValueError("MediaGo update_budget requires account_id")
-        details = self.client.get_campaign_detail(account_id, entity_id)
+        client = self._client_for(account_id)
+        details = client.get_campaign_detail(account_id, entity_id)
         current = details[0] if details else {}
         daily = _cents_to_usd(budget_cents) or 20.0
         payload: Dict[str, Any] = {
@@ -996,7 +1034,7 @@ class MediaGoAdapter:
         }
         if current.get("cpc") is not None:
             payload["cpc"] = current.get("cpc")
-        body = self.client.update_campaign(account_id, payload)
+        body = client.update_campaign(account_id, payload)
         return body if isinstance(body, dict) else {"raw": body}
 
     def block_sites(
@@ -1036,11 +1074,12 @@ class MediaGoAdapter:
         campaign_id: Optional[str],
         block: bool,
     ) -> Any:
+        client = self._client_for(account_id)
         if campaign_id:
-            return self.client.block_campaign_sites(
+            return client.block_campaign_sites(
                 account_id, campaign_id, chunk, block=block
             )
-        return self.client.block_account_sites(account_id, chunk, block=block)
+        return client.block_account_sites(account_id, chunk, block=block)
 
     def fetch_site_report_rows(
         self,
@@ -1064,10 +1103,12 @@ class MediaGoAdapter:
             windows.append((ds, ds))
             day += timedelta(days=1)
 
+        client = self._client_for(account_id)
+
         def _one(window: Tuple[str, str]) -> List[Dict[str, Any]]:
             ds, de = window
             return list(
-                self.client.account_site_report(account_id, ds, de, timezone=timezone)
+                client.account_site_report(account_id, ds, de, timezone=timezone)
             )
 
         try:
@@ -1102,11 +1143,12 @@ class MediaGoAdapter:
         if cached is not None:
             return cached
         windows = [(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))]
+        client = self._client_for(account_id)
 
         def _one(window: Tuple[str, str]) -> List[Dict[str, Any]]:
             ds, de = window
             return list(
-                self.client.campaign_site_report(
+                client.campaign_site_report(
                     account_id, campaign_id, ds, de, timezone=timezone
                 )
             )
@@ -1152,13 +1194,14 @@ class MediaGoAdapter:
         end: date,
     ) -> List[Dict[str, Any]]:
         self._require_account(account_id)
+        client = self._client_for(account_id)
         start_s = start.strftime("%Y-%m-%d")
         end_s = end.strftime("%Y-%m-%d")
         lvl = (scope or "campaign").lower()
         if lvl in ("ad", "ads"):
-            raw = list(self.client.ad_daily_report(account_id, start_s, end_s))
+            raw = list(client.ad_daily_report(account_id, start_s, end_s))
             return [self._canonicalize_report_row(r, "ad") for r in raw]
-        raw = list(self.client.campaign_daily_report(account_id, start_s, end_s))
+        raw = list(client.campaign_daily_report(account_id, start_s, end_s))
         return [self._canonicalize_report_row(r, "campaign") for r in raw]
 
     # ------------------------------------------------------------------
@@ -1173,7 +1216,7 @@ class MediaGoAdapter:
         aid = str(account_id or "")
         raw: List[Dict[str, Any]] = []
         try:
-            raw = self.client.list_account_pixels(aid) or []
+            raw = self._client_for(aid).list_account_pixels(aid) or []
         except Exception:
             raw = []
         if not raw:

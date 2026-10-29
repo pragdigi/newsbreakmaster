@@ -233,6 +233,37 @@ class MediaGoAdapterTest(unittest.TestCase):
         self.assertIn("Xeviola", str(ctx.exception))
         self.assertEqual(a.get_campaigns("38485")[0]["id"], "1")
 
+    def test_dedicated_account_token_reads_that_account(self):
+        from platforms.mediago import MediaGoAdapter, parse_account_tokens
+
+        self.assertEqual(
+            parse_account_tokens("39484:abc==,38485:zzz"),
+            {"39484": "abc==", "38485": "zzz"},
+        )
+
+        class _Default:
+            auth_level_pref = "auto"
+
+            def get_accounts(self):
+                return [{"account_id": "38485", "account_name": "Xeviola"}]
+
+            def list_campaigns(self, account_id, **_k):
+                return [{"campaign_id": "1", "campaign_name": "Tinnito"}]
+
+        class _Cardian:
+            def get_accounts(self):
+                return [{"account_id": "39484", "account_name": "Cardian"}]
+
+            def list_campaigns(self, account_id, **_k):
+                return [{"campaign_id": "9", "campaign_name": "Cardian MG"}]
+
+        with patch("platforms.mediago.MediaGoClient", return_value=_Cardian()):
+            adapter = MediaGoAdapter(_Default(), account_tokens={"39484": "secret"})
+            cardian = adapter.get_campaigns("39484")
+            xeviola = adapter.get_campaigns("38485")
+        self.assertEqual(cardian[0]["name"], "Cardian MG")
+        self.assertEqual(xeviola[0]["name"], "Tinnito")
+
     def test_prepare_campaign_payload_defaults_native_allows_display(self):
         from platforms.mediago import MediaGoAdapter
 

@@ -118,6 +118,7 @@ def get_adapter(platform: str, **credentials: Any) -> AdPlatformAdapter:
             credentials.get("account_ids")
             or credentials.get("org_ids")
             or [],
+            account_tokens=credentials.get("account_tokens") or {},
         )
 
     raise ValueError(f"Unknown platform {platform}")

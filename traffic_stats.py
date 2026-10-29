@@ -17,6 +17,12 @@ from typing import Any, Dict, Iterable, List, Optional
 
 NATIVE_SOURCES = ("newsbreak", "mediago", "smartnews")
 
+
+def _mediago_account_tokens() -> Dict[str, str]:
+    from platforms.mediago import parse_account_tokens
+
+    return parse_account_tokens(os.environ.get("MEDIAGO_ACCOUNT_TOKENS", ""))
+
 _SECRET_RE = re.compile(
     r"(?i)(access[_ ]?token|client[_ ]?secret|api[_ ]?key|api[_ ]?token|authorization|bearer|basic)\s*[:=]\s*\S+"
 )
@@ -337,6 +343,7 @@ def fetch_mediago(start: date, end: date) -> Dict[str, Any]:
             api_token=os.environ.get("MEDIAGO_API_TOKEN", "").strip(),
             auth_level=(os.environ.get("MEDIAGO_AUTH_LEVEL") or "auto").strip() or "auto",
             account_ids=_csv_ids("MEDIAGO_DEFAULT_ACCOUNT_IDS"),
+            account_tokens=_mediago_account_tokens(),
         )
         raw_accounts = adapter.get_accounts() or []
         result = _base_result("mediago", start, end)

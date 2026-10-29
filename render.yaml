@@ -28,6 +28,10 @@ services:
       # the login form is the fallback.
       - key: MEDIAGO_API_TOKEN
         sync: false
+      # Per-account tokens when the main token is account-scoped.
+      # Format: 39484:<base64token>,otherId:<base64token>
+      - key: MEDIAGO_ACCOUNT_TOKENS
+        sync: false
       - key: MEDIAGO_AUTH_LEVEL
         sync: false
       - key: MEDIAGO_DEFAULT_ACCOUNT_IDS

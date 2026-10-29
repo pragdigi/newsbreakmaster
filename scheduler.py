@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 _scheduler: BackgroundScheduler | None = None
 
 
+def _mediago_account_tokens() -> Dict[str, str]:
+    from platforms.mediago import parse_account_tokens
+
+    return parse_account_tokens(os.environ.get("MEDIAGO_ACCOUNT_TOKENS", ""))
+
+
 def _env_credentials_for(platform: str) -> List[Dict[str, Any]]:
     """Env-configured credentials per platform (preferred — survives redeploys)."""
     if platform == "newsbreak":
@@ -74,6 +80,7 @@ def _env_credentials_for(platform: str) -> List[Dict[str, Any]]:
                     "api_token": tok,
                     "auth_level": (os.environ.get("MEDIAGO_AUTH_LEVEL") or "auto").strip(),
                     "account_ids": account_ids,
+                    "account_tokens": _mediago_account_tokens(),
                 }
             ]
         return []
@@ -161,6 +168,7 @@ def _run_for_platform(platform: str) -> None:
                     api_token=cred.get("api_token"),
                     auth_level=cred.get("auth_level") or "auto",
                     account_ids=cred.get("account_ids") or [],
+                    account_tokens=cred.get("account_tokens") or _mediago_account_tokens(),
                 )
             else:
                 continue
@@ -245,6 +253,7 @@ def _adapters_for_platform(platform: str):
                     api_token=cred.get("api_token"),
                     auth_level=cred.get("auth_level") or "auto",
                     account_ids=cred.get("account_ids") or [],
+                    account_tokens=cred.get("account_tokens") or _mediago_account_tokens(),
                 )
             else:
                 continue

@@ -1244,7 +1244,7 @@ def scaling():
     if not adapter:
         return redirect(url_for("login"))
     try:
-        accounts = adapter.get_accounts()
+        accounts = _adapter_accounts(adapter)
     except Exception:
         accounts = []
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
@@ -1261,7 +1261,7 @@ def sources_page():
     if not adapter:
         return redirect(url_for("login"))
     try:
-        accounts = adapter.get_accounts()
+        accounts = _adapter_accounts(adapter)
     except Exception:
         accounts = []
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}
@@ -1579,7 +1579,7 @@ def rules_page():
     if not adapter:
         return redirect(url_for("login"))
     try:
-        accounts = adapter.get_accounts()
+        accounts = _adapter_accounts(adapter)
     except Exception:
         accounts = []
     account_options = {str(a.get("id")): a.get("name", a.get("id")) for a in accounts if a.get("id")}

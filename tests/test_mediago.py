@@ -1711,6 +1711,49 @@ class MediaGoSourcesApiTest(unittest.TestCase):
         self.assertEqual(data["rows"], [])
         self.assertIn("site", (data.get("error") or "").lower())
 
+    def test_sources_page_includes_offer_linked_accounts(self):
+        from tests.test_ai_studio import _TempStorage
+
+        with _TempStorage():
+            import app as appmod
+            import storage
+
+            storage.upsert_offer(
+                {
+                    "name": "Cardian",
+                    "brand_name": "Cardian",
+                    "ad_account_ids": ["39484"],
+                    "accounts": {"mediago": "39484"},
+                    "landing_url": "https://example.com",
+                },
+                platform="mediago",
+            )
+
+            class FakeAdapter:
+                platform = "mediago"
+                label = "MediaGo"
+                currency = "USD"
+
+                def get_accounts(self):
+                    return [{"id": "38485", "name": "Xeviola"}]
+
+                def block_sites(self, *a, **k):
+                    return []
+
+                def fetch_site_report_rows(self, *a, **k):
+                    return []
+
+                def fetch_campaign_site_report_rows(self, *a, **k):
+                    return []
+
+            with patch.object(appmod, "_adapter", return_value=FakeAdapter()):
+                client = appmod.app.test_client()
+                with client.session_transaction() as s:
+                    s["platform"] = "mediago"
+                html = client.get("/sources").get_data(as_text=True)
+                self.assertIn("39484", html)
+                self.assertIn("Cardian", html)
+
     def test_sources_page_renders_campaign_table(self):
         class FakeAdapter:
             platform = "mediago"

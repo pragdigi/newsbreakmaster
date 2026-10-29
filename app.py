@@ -9,7 +9,7 @@ import secrets
 import sys
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),

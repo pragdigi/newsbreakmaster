@@ -214,6 +214,25 @@ class MediaGoAdapterTest(unittest.TestCase):
         self.assertEqual(ids, ["38485", "39484"])
         self.assertEqual(rows[1]["name"], "Cardian")
 
+    def test_get_campaigns_refuses_account_the_token_cannot_read(self):
+        from platforms.mediago import MediaGoAdapter
+
+        class _C:
+            def get_accounts(self):
+                return [{"account_id": "38485", "account_name": "Xeviola"}]
+
+            def list_campaigns(self, account_id, **_k):
+                if str(account_id) != "38485":
+                    raise AssertionError("must not list another account's campaigns")
+                return [{"campaign_id": "1", "campaign_name": "Ok"}]
+
+        a = MediaGoAdapter(_C())
+        with self.assertRaises(ValueError) as ctx:
+            a.get_campaigns("39484")
+        self.assertIn("39484", str(ctx.exception))
+        self.assertIn("Xeviola", str(ctx.exception))
+        self.assertEqual(a.get_campaigns("38485")[0]["id"], "1")
+
     def test_prepare_campaign_payload_defaults_native_allows_display(self):
         from platforms.mediago import MediaGoAdapter
 

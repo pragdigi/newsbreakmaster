@@ -769,6 +769,8 @@ class MediaGoAdapter:
         if default_currency:
             self.currency = default_currency.upper()
         self._account_pixels: Dict[str, List[Dict[str, Any]]] = {}
+        self._token_account_ids: Optional[set] = None
+        self._token_account_labels: List[str] = []
 
     # ------------------------------------------------------------------
     # Auth / accounts
@@ -857,7 +859,51 @@ class MediaGoAdapter:
     # ------------------------------------------------------------------
     # Hierarchy reads
     # ------------------------------------------------------------------
+    def _token_accounts(self) -> Optional[set]:
+        """Account ids this API token can actually read. None if the check fails."""
+        if self._token_account_ids is not None:
+            return self._token_account_ids
+        try:
+            rows = self.client.get_accounts() or []
+        except Exception as exc:
+            logger.warning("mediago token account check failed: %s", exc)
+            return None
+        ids: set = set()
+        labels: List[str] = []
+        for acc in rows:
+            if not isinstance(acc, dict):
+                continue
+            aid = str(acc.get("account_id") or acc.get("id") or "").strip()
+            if not aid:
+                continue
+            ids.add(aid)
+            name = acc.get("account_name") or acc.get("name") or "account"
+            labels.append(f"{name} ({aid})")
+        self._token_account_ids = ids
+        self._token_account_labels = labels
+        return ids
+
+    def _require_account(self, account_id: str) -> None:
+        """Refuse to serve another account's data when the token cannot switch.
+
+        An account-level MediaGo token ignores ``Account-Id`` and always
+        returns its own campaigns. Offer-linked ids (Cardian 39484) must not
+        be presented as if that data loaded.
+        """
+        aid = str(account_id or "").strip()
+        ids = self._token_accounts()
+        if not aid or not ids or aid in ids:
+            return
+        seen = ", ".join(self._token_account_labels) or "a different account"
+        raise ValueError(
+            f"MediaGo token cannot read account {aid}. "
+            f"This API token only has access to {seen}. "
+            "Replace MEDIAGO_API_TOKEN with a client-level token that includes "
+            f"{aid}, or with that account's own API token."
+        )
+
     def get_campaigns(self, account_id: str) -> List[Dict[str, Any]]:
+        self._require_account(account_id)
         rows = [self._normalize_campaign(c, account_id) for c in self.client.list_campaigns(account_id)]
         missing = [c for c in rows if not c.get("status") and c.get("id")]
         if not missing or not hasattr(self.client, "get_campaign_detail"):
@@ -1005,6 +1051,7 @@ class MediaGoAdapter:
         timezone: str = "est",
     ) -> List[Dict[str, Any]]:
         """Pull site-dimension rows, day-by-day (account API max window is 1 day)."""
+        self._require_account(account_id)
         start, end = _clamp_site_window(start, end)
         key = ("account", str(account_id), start.isoformat(), end.isoformat(), timezone)
         cached = _cache_get(key)
@@ -1041,6 +1088,7 @@ class MediaGoAdapter:
         timezone: str = "est",
     ) -> List[Dict[str, Any]]:
         """Pull campaign site rows in one ≤7-day window (API max)."""
+        self._require_account(account_id)
         start, end = _clamp_site_window(start, end)
         key = (
             "campaign",
@@ -1103,6 +1151,7 @@ class MediaGoAdapter:
         start: date,
         end: date,
     ) -> List[Dict[str, Any]]:
+        self._require_account(account_id)
         start_s = start.strftime("%Y-%m-%d")
         end_s = end.strftime("%Y-%m-%d")
         lvl = (scope or "campaign").lower()

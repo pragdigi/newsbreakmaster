@@ -22,10 +22,10 @@
     <tbody id="rules-tbody">
       {% for r in rules %}
       <tr data-rule-id="{{ r.id }}">
-        <td>{{ r.name }}</td>
-        <td><input type="checkbox" class="rule-enabled" {% if r.enabled %}checked{% endif %}></td>
-        <td><input type="checkbox" class="rule-dry" {% if r.get('dry_run', True) %}checked{% endif %}></td>
-        <td><button type="button" class="nb-btn nb-btn-small btn-save-rule">Save</button>
+        <td data-label="Name">{{ r.name }}</td>
+        <td data-label="Enabled"><input type="checkbox" class="rule-enabled" {% if r.enabled %}checked{% endif %}></td>
+        <td data-label="Dry run"><input type="checkbox" class="rule-dry" {% if r.get('dry_run', True) %}checked{% endif %}></td>
+        <td data-label="Actions" class="nb-row-actions"><button type="button" class="nb-btn nb-btn-small btn-save-rule">Save</button>
             <button type="button" class="nb-btn nb-btn-small btn-del-rule">Delete</button></td>
       </tr>
       {% endfor %}

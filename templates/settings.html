@@ -163,10 +163,10 @@ function renderPixels() {
   if (!tb) return;
   tb.innerHTML = state.pixels.length ? state.pixels.map(p => `
     <tr>
-      <td><strong>${escape(p.name)}</strong></td>
-      <td><code>${escape(p.pixel_id)}</code></td>
-      <td class="nb-muted">${escape(p.notes||'')}</td>
-      <td class="nb-row-actions">
+      <td data-label="Name"><strong>${escape(p.name)}</strong></td>
+      <td data-label="ID"><code>${escape(p.pixel_id)}</code></td>
+      <td data-label="Notes" class="nb-muted">${escape(p.notes||'')}</td>
+      <td data-label="Actions" class="nb-row-actions">
         <button type="button" class="nb-btn-ghost" data-edit="pixel" data-id="${p.id}">Edit</button>
         <button type="button" class="nb-btn-ghost nb-danger" data-del="pixel" data-id="${p.id}">Delete</button>
       </td>
@@ -182,10 +182,10 @@ function renderEvents() {
       : '<span class="nb-badge nb-badge-muted">Conversion</span>';
     return `
     <tr>
-      <td><strong>${escape(e.name)}</strong></td>
-      <td><code>${escape(tid)}</code></td>
-      <td>${typeLabel}</td>
-      <td class="nb-row-actions">
+      <td data-label="Name"><strong>${escape(e.name)}</strong></td>
+      <td data-label="Tracking ID"><code>${escape(tid)}</code></td>
+      <td data-label="Type">${typeLabel}</td>
+      <td data-label="Actions" class="nb-row-actions">
         <button type="button" class="nb-btn-ghost" data-edit="event" data-id="${e.id}">Edit</button>
         <button type="button" class="nb-btn-ghost nb-danger" data-del="event" data-id="${e.id}">Delete</button>
       </td>
@@ -197,15 +197,15 @@ function renderOffers() {
   const tb = document.querySelector('#offers-table tbody');
   tb.innerHTML = state.offers.length ? state.offers.map(o => `
     <tr>
-      <td><strong>${escape(o.name)}</strong><br><span class="nb-muted nb-small">${escape((o.headline||'').slice(0,60))}</span></td>
-      <td>${escape(o.brand_name||'—')}${o.cta ? `<br><span class="nb-muted nb-small">CTA: ${escape(o.cta)}</span>` : ''}</td>
-      <td class="nb-muted nb-small">${escape(accountsLabel(offerAccountIds(o)))}</td>
-      <td class="nb-muted nb-small">${escape((o.landing_url||'').slice(0,50))}</td>
-      <td>${SHOW_PIXELS ? pixelName(offerPixelRef(o)) : '—'}</td>
-      <td>${eventName(o.event_id)}</td>
-      <td>${fmtMoney(o.payout)}</td>
-      <td>${fmtMoney(o.target_cpa)}</td>
-      <td class="nb-row-actions">
+      <td data-label="Offer"><strong>${escape(o.name)}</strong><br><span class="nb-muted nb-small">${escape((o.headline||'').slice(0,60))}</span></td>
+      <td data-label="Brand">${escape(o.brand_name||'—')}${o.cta ? `<br><span class="nb-muted nb-small">CTA: ${escape(o.cta)}</span>` : ''}</td>
+      <td data-label="Accounts" class="nb-muted nb-small">${escape(accountsLabel(offerAccountIds(o)))}</td>
+      <td data-label="Landing URL" class="nb-muted nb-small">${escape((o.landing_url||'').slice(0,80))}</td>
+      <td data-label="Pixel">${SHOW_PIXELS ? pixelName(offerPixelRef(o)) : '—'}</td>
+      <td data-label="Event">${eventName(o.event_id)}</td>
+      <td data-label="Payout">${fmtMoney(o.payout)}</td>
+      <td data-label="Target CPA">${fmtMoney(o.target_cpa)}</td>
+      <td data-label="Actions" class="nb-row-actions">
         <button type="button" class="nb-btn-ghost" data-edit="offer" data-id="${o.id}">Edit</button>
         <button type="button" class="nb-btn-ghost nb-danger" data-del="offer" data-id="${o.id}">Delete</button>
       </td>

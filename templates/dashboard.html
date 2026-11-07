@@ -41,17 +41,17 @@
     <tbody>
       {% for a in accounts %}
       <tr data-account-id="{{ a.get('id') }}">
-        <td><strong>{{ a.get('name', '—') }}</strong></td>
-        <td><code>{{ a.get('id') }}</code></td>
-        <td>
+        <td data-label="Name"><strong>{{ a.get('name', '—') }}</strong></td>
+        <td data-label="Account ID"><code>{{ a.get('id') }}</code></td>
+        <td data-label="Status">
           {% set s = a.get('status', 'active')|lower %}
           <span class="nb-badge {{ 'nb-badge-ok' if s == 'active' else 'nb-badge-warn' }}">{{ s }}</span>
         </td>
-        <td class="c-spend">…</td>
-        <td class="c-conv">…</td>
-        <td class="c-cpa">…</td>
-        <td class="c-roas">…</td>
-        <td>
+        <td data-label="7d spend" class="c-spend">…</td>
+        <td data-label="7d conv." class="c-conv">…</td>
+        <td data-label="CPA" class="c-cpa">…</td>
+        <td data-label="ROAS" class="c-roas">…</td>
+        <td data-label="Actions" class="nb-row-actions">
           <a class="nb-btn nb-btn-small" href="{{ url_for('launch') }}?account={{ a.get('id') }}">Launch</a>
           <a class="nb-btn nb-btn-small" href="{{ url_for('scaling') }}?account_id={{ a.get('id') }}">Scaling</a>
           <a class="nb-btn nb-btn-small" href="{{ url_for('sources_page') }}">Sources</a>
